@@ -1,0 +1,6 @@
+__pycache__/
+Data/Instruments/*.instrument
+Data/Instruments/*.share
+Data/Instruments/*.bond
+Data/Instruments/*.etf
+Data/_gather.queue
