@@ -6,6 +6,7 @@ import configparser
 import json
 import copy
 import random
+import math
 from os import listdir
 from os.path import isfile, join
 from datetime import date, datetime, timezone
@@ -13,7 +14,6 @@ from dateutil import parser
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
-import random
 from joblib import Parallel, delayed
 from tinkoff.invest.constants import INVEST_GRPC_API
 from tinkoff.invest import Client
@@ -108,7 +108,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     min_delta_ts = min( min_delta_ts, delta_ts )
             
             distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, orderbook_width , quotation_to_float(share.min_price_increment()) * min_price_increment_factor )
-            labels = [ 0.5 * (i[0] + i[1]) for i in descriptor]
+            labels = [ math.copysign( max(abs(i[0]),abs(i[1])), 0.5*(i[0]+i[1])) for i in descriptor]
             TkUI.set_series_with_labels("x_axis_orderbook","y_axis_orderbook","orderbook_series", distribution.tolist(), labels)
 
             last_trades_sample = raw_samples[i*2+1]
