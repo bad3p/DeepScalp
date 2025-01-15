@@ -83,6 +83,7 @@ if __name__ ==  '__main__':
     orderbook_depth = int(config['GatherData']['OrderBookDepth'])
     last_trades_period_in_minutes = int(config['GatherData']['LastTradesPeriodInMinutes'])
     max_iteration_time = int(config['GatherData']['MaxIterationTime'])
+    ignore_tickers = json.loads(config['GatherData']['IgnoreTickers'])
 
     def init_gather_data_queue_callback():
         print( 'Initializing gather data queue...' )
@@ -97,19 +98,21 @@ if __name__ ==  '__main__':
 
         ticker = queue.pop()
 
-        process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes))
-        process.daemon = True
-        process.start()
+        if not ( ticker in ignore_tickers ):
 
-        start_time = time.time()
-        while process.exitcode == None:
-            if time.time() - start_time > max_iteration_time:
-                print( 'Gathering process exceeds maximal timeout, will be terminated' )
+            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes))
+            process.daemon = True
+            process.start()
+
+            start_time = time.time()
+            while process.exitcode == None:
+                if time.time() - start_time > max_iteration_time:
+                    print( 'Gathering process exceeds maximal timeout, will be terminated' )
+                    break
+                time.sleep(1.0)
+
+            if process.exitcode == None or process.exitcode > 0:
                 break
-            time.sleep(1.0)
-
-        if process.exitcode == None or process.exitcode > 0:
-            break
 
         queue.push(ticker)
         queue.flush()
