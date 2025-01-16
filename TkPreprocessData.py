@@ -52,10 +52,10 @@ class TkAutoencoderDataPreprocessor():
 
         self._orderbook_training_index = []
         self._orderbook_test_index = []
-        self._orderBook_training_data_offset = 0
-        self._orderBook_test_data_offset = 0
-        self._orderBook_training_data_stream = open( join(self._data_path, self._orderbook_training_data_filename), 'wb+')
-        self._orderBook_test_data_stream = open( join(self._data_path, self._orderbook_test_data_filename), 'wb+')
+        self._orderbook_training_data_offset = 0
+        self._orderbook_test_data_offset = 0
+        self._orderbook_training_data_stream = open( join(self._data_path, self._orderbook_training_data_filename), 'wb+')
+        self._orderbook_test_data_stream = open( join(self._data_path, self._orderbook_test_data_filename), 'wb+')
 
         self._last_trades_training_index = []
         self._last_trades_test_index = []
@@ -78,8 +78,8 @@ class TkAutoencoderDataPreprocessor():
         TkIO.append_at_path( join(self._data_path, self._orderbook_index_filename), self._orderbook_test_index )
         TkIO.write_at_path( join(self._data_path, self._last_trades_index_filename), self._last_trades_training_index )
         TkIO.append_at_path( join(self._data_path, self._last_trades_index_filename), self._last_trades_test_index )
-        self._orderBook_training_data_stream.close()
-        self._orderBook_test_data_stream.close()
+        self._orderbook_training_data_stream.close()
+        self._orderbook_test_data_stream.close()
         self._last_trades_training_data_stream.close()
         self._last_trades_test_data_stream.close()
         
@@ -140,10 +140,10 @@ class TkAutoencoderDataPreprocessor():
             self._normalized_orderbook_samples,
             self._orderbook_training_index, 
             self._orderbook_test_index, 
-            self._orderBook_training_data_offset, 
-            self._orderBook_test_data_offset, 
-            self._orderBook_training_data_stream,
-            self._orderBook_test_data_stream,
+            self._orderbook_training_data_offset, 
+            self._orderbook_test_data_offset, 
+            self._orderbook_training_data_stream,
+            self._orderbook_test_data_stream,
         )
 
         self._last_trades_training_data_offset, self._last_trades_test_data_offset = write_samples(
