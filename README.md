@@ -3,6 +3,8 @@
 
 MOEX scalping trade bot based on deep learning model.
 
+Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up similarity measurement of trading data samples.
+
 # Prerequisites
 
 * https://numpy.org/

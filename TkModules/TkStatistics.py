@@ -1,6 +1,7 @@
 
 import os.path
 import numpy as np
+import random
 from tinkoff.invest.schemas import Quotation
 from tinkoff.invest import GetOrderBookResponse, GetLastTradesResponse
 from TkModules.TkQuotation import quotation_to_float
@@ -134,3 +135,34 @@ class TkStatistics():
                     distribution[-1] = distribution[-1] + trade.quantity
 
         return distribution, descriptor, volume
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Convert discrete distribution to cumulative form
+    # * the distribution pivot is at the middle point of input array
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def to_cumulative_distribution(distribution : np.ndarray):
+        if distribution.size % 2 > 0:
+            raise RuntimeError('Distribution size mismatch!')
+        half_size = int(distribution.size/2)-1
+        for i in range(1, half_size+1):
+            distribution[half_size-i] = distribution[half_size-i] + distribution[half_size-i+1]
+            distribution[half_size+i+1] = distribution[half_size+i+1] + distribution[half_size+i]
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Generates discrete distribution based on the given scheme
+    # * the scheme is a list of mandatory modes that should form the distribution
+    # * bias term determines how much magnitudes of modes could deviate from the scheme value
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def generate_distribution(distribution : np.ndarray, scheme : list, bias : float):
+        cumulative_distribution_weight = 0
+        for i in range(len(scheme)):
+            sample_weight = scheme[i] * (1.0 + random.uniform(-bias,bias))
+            idx = random.randint(0, distribution.size-1)
+            distribution[idx] = distribution[idx] + sample_weight
+            cumulative_distribution_weight = cumulative_distribution_weight + sample_weight
+        
+        distribution *= 1.0 / cumulative_distribution_weight
