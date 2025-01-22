@@ -69,6 +69,9 @@ class TkAutoencoderDataPreprocessor():
         self._normalized_orderbook_samples = []
         self._normalized_last_trades_samples = []
 
+        self._orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
+        self._last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
+
     def num_orderbook_samples(self):
         return len(self._orderbook_training_index) + len(self._orderbook_test_index)
 
@@ -106,9 +109,6 @@ class TkAutoencoderDataPreprocessor():
         min_price_increment = quotation_to_float( share.min_price_increment() )
         raw_sample_count = int( len(raw_samples) / 2 ) # orderbook, last_trades
 
-        orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
-        last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
-
         self._normalized_orderbook_samples = []
         self._normalized_last_trades_samples = []
 
@@ -119,19 +119,19 @@ class TkAutoencoderDataPreprocessor():
             distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor ) 
             if volume > 0:
                 distribution *= 1.0 / volume
-            lsh_query = orderbook_lsh.query( distribution, num_results=1 )
+            lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
                 self._normalized_orderbook_samples.append(distribution)
-                orderbook_lsh.index(distribution)
+                self._orderbook_lsh.index(distribution)
 
             last_trades_sample = raw_samples[i*2+1]
             distribution, descriptor, volume = TkStatistics.trades_distribution( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
             if volume > 0:
                 distribution *= 1.0 / volume
-            lsh_query = last_trades_lsh.query( distribution, num_results=1 )
+            lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                 self._normalized_last_trades_samples.append(distribution)
-                last_trades_lsh.index(distribution)
+                self._last_trades_lsh.index(distribution)
 
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
@@ -158,7 +158,11 @@ class TkAutoencoderDataPreprocessor():
             self._last_trades_test_data_stream
         )
 
-    def generate_synthetic_samples(self, num_samples : int, render_callback):
+    def generate_synthetic_samples(self, render_callback):
+
+        synthetic_sample_ratio = float(config['Autoencoders']['SyntheticSampleRatio'])
+        num_samples = int( synthetic_sample_ratio * max( self.num_orderbook_samples(), self.num_last_trades_samples() ) )
+
         synthetic_orderbook_scheme = json.loads(config['Autoencoders']['SyntheticOrderbookScheme'])
         if not type(synthetic_orderbook_scheme) is list:
             raise RuntimeError('SyntheticOrderbookScheme is expected to be a list of lists!')
@@ -172,9 +176,6 @@ class TkAutoencoderDataPreprocessor():
         self._normalized_orderbook_samples = []
         self._normalized_last_trades_samples = []
 
-        orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
-        last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
-
         discarded_orderbook_samples = 0
         discarded_last_trades_samples = 0
 
@@ -185,20 +186,20 @@ class TkAutoencoderDataPreprocessor():
             distribution = np.zeros( self._orderbook_width, dtype=float)
             TkStatistics.generate_distribution( distribution, orderbook_scheme, synthetic_sample_bias )
             TkStatistics.to_cumulative_distribution(distribution)
-            lsh_query = orderbook_lsh.query( distribution, num_results=1 )
+            lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
                 self._normalized_orderbook_samples.append(distribution)
-                orderbook_lsh.index(distribution)
+                self._orderbook_lsh.index(distribution)
             else:
                 discarded_orderbook_samples = discarded_orderbook_samples + 1
 
             last_trades_scheme = synthetic_last_trades_scheme[random.randint(0, len(synthetic_last_trades_scheme)-1)]
             distribution = np.zeros( self._last_trades_width, dtype=float)
             TkStatistics.generate_distribution( distribution, last_trades_scheme, synthetic_sample_bias )
-            lsh_query = last_trades_lsh.query( distribution, num_results=1 )
+            lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                 self._normalized_last_trades_samples.append(distribution)
-                last_trades_lsh.index(distribution)
+                self._last_trades_lsh.index(distribution)
             else:
                 discarded_last_trades_samples = discarded_last_trades_samples + 1
 
@@ -232,7 +233,6 @@ class TkAutoencoderDataPreprocessor():
             self._last_trades_test_data_stream
         )
 
-
 #------------------------------------------------------------------------------------------------------------------------
 
 TOKEN = os.environ["TK_TOKEN"]
@@ -245,7 +245,7 @@ data_extension = config['Paths']['OrderbookFileExtension']
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
 random.shuffle(data_files)
-# data_files = data_files[:1] # slice the rest
+# data_files = data_files[:5] # slice the rest in test purpose
 
 print( 'Data files found:', len(data_files) )
 
@@ -298,7 +298,10 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     for filename in data_files:
         
         dpg.set_value("filename", filename)
-        dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
+
+        dpg.render_dearpygui_frame()
+        if not dpg.is_dearpygui_running():
+            break
 
         ticker = filename[ 0: filename.find("_") ]
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
@@ -306,10 +309,10 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         preprocessor.add_samples(share, raw_samples, render_samples)
 
-        dpg.render_dearpygui_frame()
-        if not dpg.is_dearpygui_running():
-            break
+        total_samples = total_samples + int( len( raw_samples ) / 2 )
+        files_processed = files_processed + 1
 
+        dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
         dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
         dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
 
@@ -317,18 +320,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         if not dpg.is_dearpygui_running():
             break
 
-        total_samples = total_samples + int( len( raw_samples ) / 2 )
-        files_processed = files_processed + 1
-
     end_time = time.time()
     print('Elapsed time:',end_time-start_time)
 
     dpg.set_value("filename", 'Generating synthetic samples...')
     dpg.render_dearpygui_frame()
-
-    preprocessor.generate_synthetic_samples( 10000, render_samples )
+    
+    preprocessor.generate_synthetic_samples( render_samples )
     dpg.render_dearpygui_frame()
 
+    dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
+    dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
     dpg.set_value("filename", '...all is done!')
     dpg.render_dearpygui_frame()
 
