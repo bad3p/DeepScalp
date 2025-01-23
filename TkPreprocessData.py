@@ -254,7 +254,7 @@ preprocessor = TkAutoencoderDataPreprocessor( config )
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
-    dpg.create_viewport()
+    dpg.create_viewport(title='Data preprocessor', width=1572, height=768)
     dpg.setup_dearpygui()
 
     with dpg.window(tag="primary_window", label="Preprocess data"):
