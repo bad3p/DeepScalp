@@ -150,6 +150,29 @@ class TkOrderbookAutoencoder(torch.nn.Module):
 
 #------------------------------------------------------------------------------------------------------------------------
 
+class TkLastTradesAutoencoder(torch.nn.Module):
+
+    def __init__(self, _cfg : configparser.ConfigParser):
+
+        super(TkLastTradesAutoencoder, self).__init__()
+
+        self._cfg = _cfg
+        self._code = None
+        self._encoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesEncoder']) )
+        self._decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesDecoder']) )
+
+    def code(self):
+        return self._code
+
+    def encode(self, input):
+        return self._encoder( input )
+
+    def forward(self, input):
+        self._code = self._encoder( input )
+        return self._decoder( self._code )
+
+#------------------------------------------------------------------------------------------------------------------------
+
 class TkAutoencoderDataLoader():
 
     def __init__(self, _cfg : configparser.ConfigParser, _orderbook_training_sample_id = 0, _orderbook_test_sample_id = 0, _last_trades_training_sample_id = 0, _last_trades_test_sample_id = 0):
@@ -388,12 +411,16 @@ data_path = config['Paths']['DataPath']
 orderbook_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['OrderbookAutoencoderModelFileName'] )
 orderbook_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['OrderbookAutoencoderOptimizerFileName'] )
 orderbook_history_path = join( config['Paths']['ModelsPath'], config['Paths']['OrderbookAutoencoderTrainingHistoryFileName'] )
+last_trades_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderModelFileName'] )
+last_trades_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderOptimizerFileName'] )
+last_trades_history_path = join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderTrainingHistoryFileName'] )
 
 training_batch_size = int(config['Autoencoders']['TrainingBatchSize'])
 test_batch_size = int(config['Autoencoders']['TestBatchSize'])
 orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 orderbook_code_layer_size = int(config['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
+last_trades_code_layer_size = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
 learning_rate = float(config['Autoencoders']['LearningRate'])
 weight_decay = float(config['Autoencoders']['WeightDecay'])
 history_size = int( config['Autoencoders']['HistorySize'] )
@@ -409,18 +436,29 @@ orderbook_loss = torch.nn.MSELoss()
 orderbook_accuracy = torch.nn.MSELoss()
 orderbook_training_history = TkTrainingHistory(orderbook_history_path, history_size)
 
+last_trades_autoencoder = TkLastTradesAutoencoder(config)
+last_trades_autoencoder.to(cuda)
+if os.path.isfile(last_trades_model_path):
+    last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
+last_trades_optimizer = torch.optim.RAdam( last_trades_autoencoder.parameters(), lr=learning_rate, weight_decay=weight_decay )
+if os.path.isfile(last_trades_optimizer_path):
+    last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
+last_trades_loss = torch.nn.MSELoss()
+last_trades_accuracy = torch.nn.MSELoss()
+last_trades_training_history = TkTrainingHistory(last_trades_history_path, history_size)
+
 data_loader = TkAutoencoderDataLoader(
     config,
     orderbook_training_history.training_sample_id(),
     orderbook_training_history.test_sample_id(),
-    0,
-    0
+    last_trades_training_history.training_sample_id(),
+    last_trades_training_history.test_sample_id()
 )
 
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
-    dpg.create_viewport(title='Autoencoder training', width=1572, height=768)
+    dpg.create_viewport(title='Autoencoder training', width=1644, height=1102)
     dpg.setup_dearpygui()
 
     with dpg.window(tag="primary_window", label="Preprocess data"):
@@ -441,6 +479,22 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_output" )
                 dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Orderbook output", parent="x_axis_orderbook_output", tag="orderbook_output_series" )
         with dpg.group(horizontal=True):
+            with dpg.plot(label="Last trades input", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades input", parent="x_axis_last_trades", tag="last_trades_series" )
+            with dpg.plot(label="Code layer", width=256, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_code" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_code" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Code layer", parent="x_axis_last_trades_code", tag="last_trades_code_series" )
+            with dpg.plot(label="Last trades output", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_output" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_output" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades output", parent="x_axis_last_trades_output", tag="last_trades_output_series" )
+        with dpg.group(horizontal=True):
             with dpg.plot(label="Orderbook training", width=512, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_training" )
@@ -453,6 +507,19 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_training_epoch" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_training_epoch", tag="orderbook_loss_series_epoch" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_training_epoch", tag="orderbook_accuracy_series_epoch" )
+        with dpg.group(horizontal=True):
+            with dpg.plot(label="Last trades training", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_training" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_training" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_training", tag="last_trades_loss_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_training", tag="last_trades_accuracy_series" )
+            with dpg.plot(label="Last trades training per epoch", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_training_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_training_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_training_epoch", tag="last_trades_loss_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_training_epoch", tag="last_trades_accuracy_series_epoch" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -467,20 +534,36 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         orderbook_input = torch.reshape( orderbook_input, ( training_batch_size, 1, orderbook_width) )
         orderbook_input = orderbook_input.to(cuda)
 
+        last_trades_input = torch.Tensor( list( itertools.chain.from_iterable(last_trades_samples) ) )
+        last_trades_input = torch.reshape( last_trades_input, ( training_batch_size, 1, last_trades_width) )
+        last_trades_input = last_trades_input.to(cuda)
+
         data_loader.start_load_test_data()
 
         y = orderbook_autoencoder.forward( orderbook_input )
+        z = last_trades_autoencoder.forward( last_trades_input )
 
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_orderbook_output", "y_axis_orderbook_output","orderbook_output_series",y,0)
 
-        loss = orderbook_loss( y, orderbook_input )
-        loss = loss.mean()
+        TkUI.set_series_from_tensor("x_axis_last_trades", "y_axis_last_trades","last_trades_series",last_trades_input,0)
+        TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
+        TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
+
+        y_loss = orderbook_loss( y, orderbook_input )
+        y_loss = y_loss.mean()
         orderbook_optimizer.zero_grad()
-        loss.backward()
+        y_loss.backward()
         orderbook_optimizer.step()
-        loss_val = loss.item()
+        y_loss_val = y_loss.item()
+
+        z_loss = last_trades_loss( z, last_trades_input )
+        z_loss = z_loss.mean()
+        last_trades_optimizer.zero_grad()
+        z_loss.backward()
+        last_trades_optimizer.step()
+        z_loss_val = z_loss.item()
 
         dpg.render_dearpygui_frame()
 
@@ -490,29 +573,52 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         orderbook_input = torch.reshape( orderbook_input, ( test_batch_size, 1, orderbook_width) )
         orderbook_input = orderbook_input.to(cuda)
 
+        last_trades_input = torch.Tensor( list( itertools.chain.from_iterable(last_trades_samples) ) )
+        last_trades_input = torch.reshape( last_trades_input, ( test_batch_size, 1, last_trades_width) )
+        last_trades_input = last_trades_input.to(cuda)
+
         data_loader.start_load_training_data()
 
         orderbook_autoencoder.train(False)
         y = orderbook_autoencoder.forward( orderbook_input )
         orderbook_autoencoder.train(True)
 
+        last_trades_autoencoder.train(False)
+        z = last_trades_autoencoder.forward( last_trades_input )
+        last_trades_autoencoder.train(True)
+
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_orderbook_output", "y_axis_orderbook_output","orderbook_output_series",y,0)
 
-        accuracy = orderbook_accuracy( y, orderbook_input )
-        accuracy = accuracy.mean()
-        accuracy_val = accuracy.item()
+        TkUI.set_series_from_tensor("x_axis_last_trades", "y_axis_last_trades","last_trades_series",last_trades_input,0)
+        TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
+        TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
+
+        y_accuracy = orderbook_accuracy( y, orderbook_input )
+        y_accuracy = y_accuracy.mean()
+        y_accuracy_val = y_accuracy.item()
+
+        z_accuracy = last_trades_accuracy( z, last_trades_input )
+        z_accuracy = z_accuracy.mean()
+        z_accuracy_val = z_accuracy.item()
 
         dpg.render_dearpygui_frame()
 
-        orderbook_training_history.log(data_loader.orderbook_training_sample_id(), data_loader.orderbook_test_sample_id(), loss_val, accuracy_val)
+        orderbook_training_history.log(data_loader.orderbook_training_sample_id(), data_loader.orderbook_test_sample_id(), y_loss_val, y_accuracy_val)
+        last_trades_training_history.log(data_loader.last_trades_training_sample_id(), data_loader.last_trades_test_sample_id(), z_loss_val, z_accuracy_val)
 
         TkUI.set_series("x_axis_orderbook_training", "y_axis_orderbook_training", "orderbook_loss_series", orderbook_training_history.loss_history())
         TkUI.set_series("x_axis_orderbook_training_epoch", "y_axis_orderbook_training_epoch", "orderbook_loss_series_epoch", orderbook_training_history.epoch_loss_history())
-
         TkUI.set_series("x_axis_orderbook_training", "y_axis_orderbook_training", "orderbook_accuracy_series", orderbook_training_history.accuracy_history())
         TkUI.set_series("x_axis_orderbook_training_epoch", "y_axis_orderbook_training_epoch", "orderbook_accuracy_series_epoch", orderbook_training_history.epoch_accuracy_history())
+
+        TkUI.set_series("x_axis_last_trades_training", "y_axis_last_trades_training", "last_trades_loss_series", last_trades_training_history.loss_history())
+        TkUI.set_series("x_axis_last_trades_training_epoch", "y_axis_last_trades_training_epoch", "last_trades_loss_series_epoch", last_trades_training_history.epoch_loss_history())
+        TkUI.set_series("x_axis_last_trades_training", "y_axis_last_trades_training", "last_trades_accuracy_series", last_trades_training_history.accuracy_history())
+        TkUI.set_series("x_axis_last_trades_training_epoch", "y_axis_last_trades_training_epoch", "last_trades_accuracy_series_epoch", last_trades_training_history.epoch_accuracy_history())
+
+        dpg.render_dearpygui_frame()
         
 
     dpg.destroy_context()
@@ -523,3 +629,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     orderbook_training_history.save()
     torch.save( orderbook_autoencoder.state_dict(), orderbook_model_path )
     torch.save( orderbook_optimizer.state_dict(), orderbook_optimizer_path )    
+
+    last_trades_training_history.save()
+    torch.save( last_trades_autoencoder.state_dict(), last_trades_model_path )
+    torch.save( last_trades_optimizer.state_dict(), last_trades_optimizer_path )    
