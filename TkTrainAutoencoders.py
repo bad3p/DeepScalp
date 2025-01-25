@@ -137,6 +137,7 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._code = None
         self._encoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookEncoder']) )
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookDecoder']) )
+        self._sigmoid = torch.nn.Sigmoid()
 
     def code(self):
         return self._code
@@ -146,7 +147,7 @@ class TkOrderbookAutoencoder(torch.nn.Module):
 
     def forward(self, input):
         self._code = self._encoder( input )
-        return self._decoder( self._code )
+        return self._sigmoid( self._decoder( self._code ) )
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -160,6 +161,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         self._code = None
         self._encoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesEncoder']) )
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesDecoder']) )
+        self._soft_max = torch.nn.Softmax(dim=2)
 
     def code(self):
         return self._code
@@ -169,7 +171,8 @@ class TkLastTradesAutoencoder(torch.nn.Module):
 
     def forward(self, input):
         self._code = self._encoder( input )
-        return self._decoder( self._code )
+        output = self._decoder( self._code )
+        return self._soft_max( output )
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -186,7 +189,6 @@ class TkAutoencoderDataLoader():
         self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName']
         self._last_trades_test_data_filename = _cfg['Paths']['LastTradesTestDataFileName']
         
-        self._sample_scale = json.loads(_cfg['Autoencoders']['SampleScale'])
         self._training_batch_size = int(_cfg['Autoencoders']['TrainingBatchSize'])
         self._test_batch_size = int(_cfg['Autoencoders']['TestBatchSize'])
 
@@ -237,22 +239,12 @@ class TkAutoencoderDataLoader():
             id = 0
         return id, sample
 
-    def get_sample_scale(self):
-        weight = random.uniform( 0.0, 1.0 )
-        cumulative_weight = 0.0
-        i = 0
-        while i < len(self._sample_scale)-1 and weight > self._sample_scale[i][0] + cumulative_weight:
-            cumulative_weight = cumulative_weight + self._sample_scale[i][0]
-            i = i + 1
-        return random.uniform( self._sample_scale[i][1], self._sample_scale[i][2] )
-
     def get_orderbook_training_sample(self):
         self._orderbook_training_sample_id, orderbook_sample = TkAutoencoderDataLoader.load_sample(
             self._orderbook_training_sample_id,
             self._orderbook_training_index,
             self._orderbook_training_data_stream
         )
-        orderbook_sample *= self.get_sample_scale()
         return orderbook_sample
 
     def get_orderbook_test_sample(self):
@@ -261,7 +253,6 @@ class TkAutoencoderDataLoader():
             self._orderbook_test_index,
             self._orderbook_test_data_stream
         )
-        orderbook_sample *= self.get_sample_scale()
         return orderbook_sample
 
     def get_last_trades_training_sample(self):
@@ -270,7 +261,6 @@ class TkAutoencoderDataLoader():
             self._last_trades_training_index,
             self._last_trades_training_data_stream
         )
-        last_trades_sample *= self.get_sample_scale()
         return last_trades_sample
 
     def get_last_trades_test_sample(self):
@@ -279,7 +269,6 @@ class TkAutoencoderDataLoader():
             self._last_trades_test_index,
             self._last_trades_test_data_stream
         )
-        last_trades_sample *= self.get_sample_scale()
         return last_trades_sample
 
     def start_load_training_data(self):
@@ -432,8 +421,8 @@ if os.path.isfile(orderbook_model_path):
 orderbook_optimizer = torch.optim.RAdam( orderbook_autoencoder.parameters(), lr=learning_rate, weight_decay=weight_decay )
 if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
-orderbook_loss = torch.nn.MSELoss()
-orderbook_accuracy = torch.nn.MSELoss()
+orderbook_loss = torch.nn.BCELoss()
+orderbook_accuracy = torch.nn.BCELoss()
 orderbook_training_history = TkTrainingHistory(orderbook_history_path, history_size)
 
 last_trades_autoencoder = TkLastTradesAutoencoder(config)
@@ -443,8 +432,8 @@ if os.path.isfile(last_trades_model_path):
 last_trades_optimizer = torch.optim.RAdam( last_trades_autoencoder.parameters(), lr=learning_rate, weight_decay=weight_decay )
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
-last_trades_loss = torch.nn.MSELoss()
-last_trades_accuracy = torch.nn.MSELoss()
+last_trades_loss = torch.nn.BCELoss()
+last_trades_accuracy = torch.nn.BCELoss()
 last_trades_training_history = TkTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(
