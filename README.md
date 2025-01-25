@@ -33,10 +33,13 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 
 An example of the gathered tading data:
 
-![python_y3DZ4i6pbr](https://github.com/user-attachments/assets/509091af-7e51-4e83-8aaa-c364a2a04b98)
+![python_ogQfLvLvfv](https://github.com/user-attachments/assets/c08fddd4-59ab-43b7-86d5-baa12dc2ee63)
 
 # Training autoencoders
 
 * The forecasting model uses compressed representation of orderbooks and last trades distribution samples.
 * The aforementioned compressed representation is a learnable models based on autoencoders.
 * To train those autoencoders you need to preprocess the gathered trading data using TkPreprocessData.py.
+* Upon completion of preprocessing data, you can launch TkTrainAutoencoders. It will display feedback regarding the training process, so you can decide for yourself when it should be stopped.
+
+  ![python_6Lbg4oOwMS](https://github.com/user-attachments/assets/3852f933-f45c-472f-8198-a7d58ba469ae)
