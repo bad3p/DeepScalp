@@ -50,7 +50,7 @@ class TkStatistics():
 
     #------------------------------------------------------------------------------------------------------------------------
     # For the given orderbook, the method returns cumulative distrubution of order volumes,
-    # * pivoted around maximal bid price
+    # * pivoted around maximal bid price / minimal ask price / last price - conditionally on availability of specific orders
     # * with discretization proportional to given min_price_increment
     # * ask orders grouped in the positive range
     # * bid orders grouped in the negative range
@@ -60,8 +60,14 @@ class TkStatistics():
     def orderbook_distribution(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
 
         pivot_price = 0.0
-        for bid in orderbook.bids:
-            pivot_price = max( pivot_price, quotation_to_float( bid.price ) )
+
+        if len(orderbook.bids) > 0:
+            for bid in orderbook.bids:
+                pivot_price = max( pivot_price, quotation_to_float( bid.price ) )
+        else:
+            pivot_price = quotation_to_float( orderbook.last_price )
+            for ask in orderbook.asks:
+                pivot_price = min( pivot_price, quotation_to_float( ask.price ) )
 
         distribution_incremental_value = min_price_increment / pivot_price * 100
         descriptor = TkStatistics.cumulative_distribution_descriptor( distribution_incremental_value, int(orderbook_width / 2) )

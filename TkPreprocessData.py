@@ -245,7 +245,7 @@ data_extension = config['Paths']['OrderbookFileExtension']
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
 random.shuffle(data_files)
-# data_files = data_files[:5] # slice the rest in test purpose
+# data_files = data_files[:100] # slice the rest in test purpose
 
 print( 'Data files found:', len(data_files) )
 
