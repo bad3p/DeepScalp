@@ -143,6 +143,37 @@ class TkStatistics():
         return distribution, descriptor, volume
 
     #------------------------------------------------------------------------------------------------------------------------
+    # Accumulate another sample of anonymized trades in the given distrubution of order volumes
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def accumulate_trades_distribution(distribution : np.ndarray, descriptor : list, volume : int, trades : GetLastTradesResponse, pivot_price : float):
+
+        for trade in trades.trades:
+            price = quotation_to_float( trade.price )
+            price_percent = ( price / pivot_price - 1.0 ) * 100
+            volume = volume + trade.quantity
+
+            outOfBounds = True
+            for i in range(len(descriptor)):
+                if price_percent < 0:
+                    if price_percent > descriptor[i][0] and price_percent <= descriptor[i][1]:
+                        distribution[i] = distribution[i] + trade.quantity
+                        outOfBounds = False
+                        break
+                else:
+                    if price_percent >= descriptor[i][0] and price_percent < descriptor[i][1]:
+                        distribution[i] = distribution[i] + trade.quantity
+                        outOfBounds = False
+            if outOfBounds:
+                if price_percent < 0:
+                    distribution[0] = distribution[0] + trade.quantity
+                else:
+                    distribution[-1] = distribution[-1] + trade.quantity
+
+        return volume
+
+    #------------------------------------------------------------------------------------------------------------------------
     # Convert discrete distribution to cumulative form
     # * the distribution pivot is at the middle point of input array
     #------------------------------------------------------------------------------------------------------------------------
@@ -172,3 +203,38 @@ class TkStatistics():
             cumulative_distribution_weight = cumulative_distribution_weight + sample_weight
         
         distribution *= 1.0 / cumulative_distribution_weight
+
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Return modes of the given discrete distribution
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_distribution_modes(distribution : np.ndarray, descriptor : list, num_modes : int):
+        result = []
+        for i in range(1, len(distribution)):
+            mode = ( distribution[i], 0.5 * (descriptor[i][0] + descriptor[i][1]) )            
+            if mode[0] > 0:
+                for j in range(0, len(result)):
+                    if result[j][0] < mode[0]:
+                        result.insert(j, mode)
+                        mode = None
+                        break
+                if mode != None and len(result) < num_modes:
+                    result.append(mode)
+                if len(result) > num_modes:
+                    result.pop()
+        return result        
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Return mean of the given discrete distribution
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_distribution_mean(distribution : np.ndarray, descriptor : list):
+        mean = 0.0
+        for i in range(len(distribution)):
+            avg_bin_price = 0.5 *( descriptor[i][0] + descriptor[i][1] )
+            bin_weight = distribution[i]        
+            mean += avg_bin_price * bin_weight
+        return mean
