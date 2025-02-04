@@ -1,4 +1,4 @@
-
+![chrome_AJeMXIAgXf](https://github.com/user-attachments/assets/5e69ec03-6435-4272-9922-2c8b22e68096)
 # DeepScalp
 
 MOEX scalping trade bot based on deep learning model.
@@ -39,7 +39,17 @@ An example of the gathered tading data:
 
 * The forecasting model uses compressed representation of orderbooks and last trades distribution samples.
 * The aforementioned compressed representation is a learnable models based on autoencoders.
-* To train those autoencoders you need to preprocess the gathered trading data using TkPreprocessData.py.
+* To train those autoencoders you need to preprocess the gathered trading data using TkPreprocessAutoencoderData.py
 * Upon completion of preprocessing data, you can launch TkTrainAutoencoders. It will display feedback regarding the training process, so you can decide for yourself when it should be stopped.
 
   ![python_6Lbg4oOwMS](https://github.com/user-attachments/assets/3852f933-f45c-472f-8198-a7d58ba469ae)
+
+# Training time series forecasting model
+
+* With trained autoencoder models we can prepare training data for time series prediction model using TkPreprocessTimeSeriesData.py.
+* Upon completion of preprocessing data, it is all ready for launching TkTrainTimeSeries.py and training of the forecasting model. The training script will display feedback regarding the training process as well, it is just take significantly more time than training of the autoencoders.
+
+![chrome_AJeMXIAgXf](https://github.com/user-attachments/assets/895c73d1-ae47-4a5a-95c4-8529690ecfa5)
+
+
+  
