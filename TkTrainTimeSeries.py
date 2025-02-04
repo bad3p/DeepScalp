@@ -1,5 +1,6 @@
 
 import os
+import gc
 import time
 import numpy as np
 import configparser
@@ -246,6 +247,7 @@ test_batch_size = int(config['TimeSeries']['TestBatchSize'])
 learning_rate = float(config['TimeSeries']['LearningRate'])
 weight_decay = float(config['TimeSeries']['WeightDecay'])
 history_size = int( config['TimeSeries']['HistorySize'] )
+cooldown = float( config['TimeSeries']['Cooldown'] )
 
 ts_model = TkTimeSeriesForecaster(config)
 ts_model.to(cuda)
@@ -384,7 +386,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, display_batch_id)
 
-        y_accuracy = ts_accuracy( y, target )
+        y_accuracy = ts_accuracy( y, target ).detach()
         y_accuracy = y_accuracy.mean()
         y_accuracy_val = y_accuracy.item()
 
@@ -400,7 +402,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series("x_axis_training", "y_axis_training", "accuracy_series", ts_training_history.accuracy_history())
         TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history())
 
-        dpg.render_dearpygui_frame()
+        cooldownRemaining = cooldown
+        cooldownStep = 1.0 / 30.0
+        while dpg.is_dearpygui_running() and cooldownRemaining > 0.0:            
+            time.sleep(cooldownStep)
+            cooldownRemaining -= cooldownStep
+            dpg.render_dearpygui_frame()
         
 
     dpg.destroy_context()

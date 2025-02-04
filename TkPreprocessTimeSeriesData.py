@@ -210,7 +210,7 @@ class TkTimeSeriesDataPreprocessor():
             else:
                 ts_target_modes = TkStatistics.get_distribution_modes( ts_target_distribution, ts_target_descriptor, self._priority_mode_count )
                 ts_target_mean = TkStatistics.get_distribution_mean( ts_target_distribution, ts_target_descriptor )
-                is_priority_sample = any( ts_target_mode[1] > self._priority_mode_threshold for ts_target_mode in ts_target_modes) or ts_target_mean > self._priority_mean_threshold
+                is_priority_sample = any( abs(ts_target_mode[1]) > self._priority_mode_threshold for ts_target_mode in ts_target_modes) or abs(ts_target_mean) > self._priority_mean_threshold
                 if is_priority_sample:
                     self._priority_table.append( len(self._training_index) )
                 else:

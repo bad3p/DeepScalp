@@ -31,7 +31,7 @@ from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
 from TkModules.TkOrderbookAutoencoder import TkOrderbookAutoencoder
 from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
-from TkModules.TkTrainingHistory import TkTrainingHistory
+from TkModules.TkTrainingHistory import TkAutoencoderTrainingHistory
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -201,7 +201,7 @@ if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
 orderbook_loss = torch.nn.BCELoss()
 orderbook_accuracy = torch.nn.BCELoss()
-orderbook_training_history = TkTrainingHistory(orderbook_history_path, history_size)
+orderbook_training_history = TkAutoencoderTrainingHistory(orderbook_history_path, history_size)
 
 last_trades_autoencoder = TkLastTradesAutoencoder(config)
 last_trades_autoencoder.to(cuda)
@@ -212,7 +212,7 @@ if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
 last_trades_loss = torch.nn.BCELoss()
 last_trades_accuracy = torch.nn.BCELoss()
-last_trades_training_history = TkTrainingHistory(last_trades_history_path, history_size)
+last_trades_training_history = TkAutoencoderTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(
     config,
