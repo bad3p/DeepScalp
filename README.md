@@ -1,4 +1,3 @@
-![chrome_AJeMXIAgXf](https://github.com/user-attachments/assets/5e69ec03-6435-4272-9922-2c8b22e68096)
 # DeepScalp
 
 MOEX scalping trade bot based on deep learning model.
@@ -52,4 +51,3 @@ An example of the gathered tading data:
 ![chrome_AJeMXIAgXf](https://github.com/user-attachments/assets/895c73d1-ae47-4a5a-95c4-8529690ecfa5)
 
 
-  
