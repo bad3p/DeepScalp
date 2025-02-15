@@ -249,6 +249,12 @@ def group_by_ticker(filenames:list):
         ticker = ticker_from_filename(filename)
         date = date_from_filename(filename)
         result[ticker].append( (date, filename) )
+
+    for key in result:
+        files = result[key]
+        files = sorted( files, key=lambda x: x[0] )
+        result[key] = files
+
     return result
 
 #------------------------------------------------------------------------------------------------------------------------    

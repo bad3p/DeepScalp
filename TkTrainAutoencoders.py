@@ -250,7 +250,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades input", parent="x_axis_last_trades", tag="last_trades_series" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades input", parent="x_axis_last_trades", tag="last_trades_series" )
             with dpg.plot(label="Code layer", width=256, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_code" )
@@ -260,7 +260,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_output" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_output" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades output", parent="x_axis_last_trades_output", tag="last_trades_output_series" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades output", parent="x_axis_last_trades_output", tag="last_trades_output_series" )
         with dpg.group(horizontal=True):
             with dpg.plot(label="Orderbook training", width=512, height=256):
                 dpg.add_plot_legend()
@@ -307,8 +307,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         data_loader.start_load_test_data()
 
-        y = orderbook_autoencoder.forward( orderbook_input )
-        z = last_trades_autoencoder.forward( last_trades_input )
+        y, y_mean, y_logvar = orderbook_autoencoder.forward( orderbook_input )
+        z, z_mean, z_logvar = last_trades_autoencoder.forward( last_trades_input )
 
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
@@ -318,14 +318,16 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
-        y_loss = orderbook_loss( y, orderbook_input )
+        y_KLD = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
+        y_loss = orderbook_loss( y, orderbook_input ) + y_KLD
         y_loss = y_loss.mean()
         orderbook_optimizer.zero_grad()
         y_loss.backward()
         orderbook_optimizer.step()
         y_loss_val = y_loss.item()
 
-        z_loss = last_trades_loss( z, last_trades_input )
+        z_KLD = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
+        z_loss = last_trades_loss( z, last_trades_input ) + z_KLD
         z_loss = z_loss.mean()
         last_trades_optimizer.zero_grad()
         z_loss.backward()
@@ -347,11 +349,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data()
 
         orderbook_autoencoder.train(False)
-        y = orderbook_autoencoder.forward( orderbook_input )
+        y, y_mean, y_logvar = orderbook_autoencoder.forward( orderbook_input )
         orderbook_autoencoder.train(True)
 
         last_trades_autoencoder.train(False)
-        z = last_trades_autoencoder.forward( last_trades_input )
+        z, z_mean, z_logvar = last_trades_autoencoder.forward( last_trades_input )
         last_trades_autoencoder.train(True)
 
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
