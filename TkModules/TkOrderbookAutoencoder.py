@@ -17,20 +17,19 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookDecoder']) )
         self._hidden_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderHiddenLayerSize'])
         self._code_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
-        self._code_scale = float( _cfg['Autoencoders']['OrderbookAutoencoderCodeScale'] )
-        
+        self._code_scale = float( _cfg['Autoencoders']['OrderbookAutoencoderCodeScale'] )        
 
-        self._mean_layer = torch.nn.Linear(self._hidden_layer_size, int(self._code_layer_size/2))
-        self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, int(self._code_layer_size/2))
-        self._reparametrization_layer = torch.nn.Linear(int(self._code_layer_size/2), self._hidden_layer_size)
+        self._mean_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
+        self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
+        self._reparametrization_layer = torch.nn.Linear(self._code_layer_size, self._hidden_layer_size)
 
     def code(self):
         return self._code
 
     def encode(self, input):
         y = self._encoder( input )
-        mean, logvar = self._mean_layer(y), self._logvar_layer(y)
-        return torch.cat( (mean, logvar), dim=1 ) * self._code_scale
+        mean = self._mean_layer(y)
+        return mean * self._code_scale
 
     def forward(self, input):
         y = self._encoder( input )
