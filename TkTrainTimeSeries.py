@@ -33,6 +33,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
+from TkModules.TkSelfAttention import TkSelfAttention
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -48,22 +49,29 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._target_width = int(_cfg['TimeSeries']['TargetWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._lstm_specification = json.loads(_cfg['TimeSeries']['LSTM'])
+        self._self_attention_specification = json.loads(_cfg['TimeSeries']['SelfAttention'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
         self._soft_max = torch.nn.Softmax(dim=1)
 
         if len(self._input_slices) != len(self._lstm_specification):
             raise RuntimeError('InputSlices and LSTM config mismatched!')
 
+        if len(self._input_slices) != len(self._self_attention_specification):
+            raise RuntimeError('InputSlices and SelfAttention config mismatched!')
+
         self._lstm = []
+        self._self_attention = []
         self._mlp_input_size = 0
         for i in range(len(self._input_slices)):
             ch0 = self._input_slices[i][0]
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
             self._lstm.append( TkStackedLSTM( slice_size, self._prior_steps_count, self._lstm_specification[i]) )
-            self._mlp_input_size = self._mlp_input_size + self._lstm_specification[i][-1]
+            self._self_attention.append( TkSelfAttention( slice_size, self._prior_steps_count, self._self_attention_specification[i], True ) )
+            self._mlp_input_size = self._mlp_input_size + self._lstm_specification[i][-1] + self._self_attention_specification[i]
 
         self._lstm = torch.nn.ModuleList( self._lstm )
+        self._self_attention = torch.nn.ModuleList( self._self_attention )
         
         self._mlp_input_tensors = None
 
@@ -89,6 +97,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             input_slice_tensor = input[:, :, ch0:ch1]
             self._input_slice_tensors.append( input_slice_tensor )
             self._mlp_input_tensors.append( self._lstm[i](input_slice_tensor) )
+            self._mlp_input_tensors.append( self._self_attention[i](input_slice_tensor) )
         
         self._mlp_input_tensors = tuple(self._mlp_input_tensors)
         self._mlp_input_tensors = torch.cat( self._mlp_input_tensors, dim=1) 
