@@ -38,6 +38,18 @@ class TkModel(torch.nn.Module):
             layer_leakage = params[0]
             return torch.nn.LeakyReLU(layer_leakage)
 
+        def create_prelu_layer(params : list):
+            channels = params[0]
+            alpha = params[1]
+            return torch.nn.PReLU(num_parameters=channels, init=alpha)
+
+        def create_sigmoid_layer(params : list):
+            return torch.nn.Sigmoid()
+
+        def create_softmax_layer(params : list):
+            dimension = params[0]
+            return torch.nn.Softmax(dim=dimension)
+
         def create_dropout_layer(params : list):
             layer_dropout_prob = params[0]
             return torch.nn.Dropout( p=layer_dropout_prob )
@@ -65,6 +77,12 @@ class TkModel(torch.nn.Module):
                 return create_deconv_layer( layer_descriptor[layer_type] )
             if layer_type == 'LReLU':
                 return create_lrelu_layer( layer_descriptor[layer_type] )
+            if layer_type == 'PReLU':
+                return create_prelu_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Sigmoid':
+                return create_sigmoid_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Softmax':
+                return create_softmax_layer( layer_descriptor[layer_type] )
             if layer_type == 'Drop':
                 return create_dropout_layer( layer_descriptor[layer_type] )
             if layer_type == 'Flatten':

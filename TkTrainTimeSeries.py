@@ -377,14 +377,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
-        TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_output_series", y, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_target_series", target, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
+        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_output_series", y, 0)
+        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_target_series", target, 0)
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
-        TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
 
         y_accuracy = ts_accuracy( y, target ).detach()
         y_accuracy = y_accuracy.mean()

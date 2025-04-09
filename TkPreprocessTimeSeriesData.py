@@ -161,6 +161,8 @@ class TkTimeSeriesDataPreprocessor():
 
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
+        num_invalid_samples = 0
+
         for i in range( start_range, end_range ):
 
             ts_input = [None] * self._prior_steps_count
@@ -182,11 +184,11 @@ class TkTimeSeriesDataPreprocessor():
                 ts_input[j].append( ts_sample_price )
 
                 ts_sample_orderbook_volume = orderbook_volume[k]
-                ts_sample_orderbook_volume = ( ts_sample_orderbook_volume / ts_base_orderbook_volume - 1.0 ) if ( ts_base_orderbook_volume > 0 ) else 0.0
+                ts_sample_orderbook_volume = ( ts_sample_orderbook_volume / ts_base_orderbook_volume - 1.0 ) * 100 if ( ts_base_orderbook_volume > 0 ) else 0.0
                 ts_input[j].append( ts_sample_orderbook_volume )
 
                 ts_sample_last_trades_volume = last_trades_volume[k]
-                ts_sample_last_trades_volume = ( ts_sample_last_trades_volume / ts_base_last_trades_volume - 1.0 ) if ( ts_base_last_trades_volume > 0 ) else 0.0
+                ts_sample_last_trades_volume = ( ts_sample_last_trades_volume / ts_base_last_trades_volume - 1.0 ) * 100 if ( ts_base_last_trades_volume > 0 ) else 0.0
                 ts_input[j].append( ts_sample_last_trades_volume )
 
             ts_input = list( itertools.chain.from_iterable(ts_input) )
@@ -196,35 +198,38 @@ class TkTimeSeriesDataPreprocessor():
             for j in range( 1, self._future_steps_count ):
                 last_trades_sample = raw_samples[(i+j+1)*2+1]
                 ts_target_volume = TkStatistics.accumulate_trades_distribution( ts_target_distribution, ts_target_descriptor, ts_target_volume, last_trades_sample, ts_base_price)
+
             if ts_target_volume > 0:
                 ts_target_distribution *= 1.0 / ts_target_volume
 
-            ts_target = ts_target_distribution.tolist()
+                ts_target = ts_target_distribution.tolist()
 
-            verbalize = True
-            if is_test_data_source:
-                self._test_index.append( self._test_data_offset )
-                TkIO.write_to_file( self._test_data_stream, ts_input )
-                TkIO.write_to_file( self._test_data_stream, ts_target )
-                self._test_data_offset = self._test_data_stream.tell()
-            else:
-                ts_target_modes = TkStatistics.get_distribution_modes( ts_target_distribution, ts_target_descriptor, self._priority_mode_count )
-                ts_target_mean = TkStatistics.get_distribution_mean( ts_target_distribution, ts_target_descriptor )
-                is_priority_sample = any( abs(ts_target_mode[1]) > self._priority_mode_threshold for ts_target_mode in ts_target_modes) or abs(ts_target_mean) > self._priority_mean_threshold
-                if is_priority_sample:
-                    self._priority_table.append( len(self._training_index) )
+                verbalize = True
+                if is_test_data_source:
+                    self._test_index.append( self._test_data_offset )
+                    TkIO.write_to_file( self._test_data_stream, ts_input )
+                    TkIO.write_to_file( self._test_data_stream, ts_target )
+                    self._test_data_offset = self._test_data_stream.tell()
                 else:
-                    self._regular_table.append( len(self._training_index) )
-                self._training_index.append( self._training_data_offset )
-                TkIO.write_to_file( self._training_data_stream, ts_input )
-                TkIO.write_to_file( self._training_data_stream, ts_target )
-                self._training_data_offset = self._training_data_stream.tell()
-                verbalize = is_priority_sample
+                    ts_target_modes = TkStatistics.get_distribution_modes( ts_target_distribution, ts_target_descriptor, self._priority_mode_count )
+                    ts_target_mean = TkStatistics.get_distribution_mean( ts_target_distribution, ts_target_descriptor )
+                    is_priority_sample = any( abs(ts_target_mode[1]) > self._priority_mode_threshold for ts_target_mode in ts_target_modes) or abs(ts_target_mean) > self._priority_mean_threshold
+                    if is_priority_sample:
+                        self._priority_table.append( len(self._training_index) )
+                    else:
+                        self._regular_table.append( len(self._training_index) )
+                    self._training_index.append( self._training_data_offset )
+                    TkIO.write_to_file( self._training_data_stream, ts_input )
+                    TkIO.write_to_file( self._training_data_stream, ts_target )
+                    self._training_data_offset = self._training_data_stream.tell()
+                    verbalize = is_priority_sample
 
-            if len(callback_indices) > 0 and i >= callback_indices[0] and verbalize:
-                del callback_indices[0]
-                if render_callback != None:
-                    render_callback( ts_input, ts_target )
+                if len(callback_indices) > 0 and i >= callback_indices[0] and verbalize:
+                    del callback_indices[0]
+                    if render_callback != None:
+                        render_callback( ts_input, ts_target )
+            else:
+                num_invalid_samples = num_invalid_samples + 1
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -249,6 +254,12 @@ def group_by_ticker(filenames:list):
         ticker = ticker_from_filename(filename)
         date = date_from_filename(filename)
         result[ticker].append( (date, filename) )
+
+    for key in result:
+        files = result[key]
+        files = sorted( files, key=lambda x: x[0] )
+        result[key] = files
+
     return result
 
 #------------------------------------------------------------------------------------------------------------------------    
