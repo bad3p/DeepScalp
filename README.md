@@ -48,6 +48,8 @@ An example of the gathered tading data:
 * With trained autoencoder models we can prepare training data for time series prediction model using TkPreprocessTimeSeriesData.py.
 * Upon completion of preprocessing data, it is all ready for launching TkTrainTimeSeries.py and training of the forecasting model. The training script will display feedback regarding the training process as well, it is just take significantly more time than training of the autoencoders.
 
-![chrome_AJeMXIAgXf](https://github.com/user-attachments/assets/895c73d1-ae47-4a5a-95c4-8529690ecfa5)
+![The time series model trained and reinforced with novel data.](https://github.com/user-attachments/assets/a8341555-1969-49cb-8616-db911d7e23bf)
 
+# Using trading bot
 
+Coming soon.
