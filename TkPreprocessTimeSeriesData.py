@@ -49,6 +49,7 @@ class TkTimeSeriesDataPreprocessor():
         self._orderbook_autoencoder = TkOrderbookAutoencoder(_cfg)
         self._orderbook_autoencoder.to(self._cuda)
         self._orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
+        self._orderbook_autoencoder.eval()
 
         last_trades_model_path =  join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['LastTradesAutoencoderModelFileName'] )
 
@@ -58,6 +59,7 @@ class TkTimeSeriesDataPreprocessor():
         self._last_trades_autoencoder = TkLastTradesAutoencoder(_cfg)
         self._last_trades_autoencoder.to(self._cuda)
         self._last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))        
+        self._last_trades_autoencoder.eval()
 
         self._orderbook_width = int(_cfg['Autoencoders']['OrderBookWidth'])
         self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])

@@ -23,6 +23,9 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
         self._reparametrization_layer = torch.nn.Linear(self._code_layer_size, self._hidden_layer_size)
 
+    def code_layer_size(self):
+        return self._code_layer_size
+
     def code(self):
         return self._code
 

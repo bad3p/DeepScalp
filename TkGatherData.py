@@ -7,6 +7,7 @@ import numpy as np
 import configparser
 import json
 import multiprocessing
+import multiprocessing.connection as mpc
 from os.path import join
 from datetime import date, datetime, timedelta
 from tinkoff.invest.constants import INVEST_GRPC_API
@@ -29,7 +30,7 @@ from TkModules.TkPersistentQueue import TkPersistentQueue
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int):
+def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, ipc:bool):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -52,6 +53,15 @@ def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:st
                 TkIO.append_at_path( path, order_book )
                 TkIO.append_at_path( path, last_trades )
                 print(ticker, "gathered.")
+                if ipc:
+                    ipcAddress = config['IPC']['Address']
+                    ipcPort = int(config['IPC']['Port'])
+                    ipcAuthKey = bytes( config['IPC']['AuthKey'], 'ascii' )
+                    try:
+                        with mpc.Client( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as conn:
+                            conn.send(filename)
+                    except ConnectionError:
+                        print("IPC failed.")
             else:
                 print(ticker, "trading is suspended.")
 
@@ -73,6 +83,8 @@ def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:st
 #------------------------------------------------------------------------------------------------------------------------
 
 if __name__ ==  '__main__':
+
+    ipc = ( '-ipc' in sys.argv )
 
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )
@@ -100,7 +112,7 @@ if __name__ ==  '__main__':
 
         if not ( ticker in ignore_tickers ):
 
-            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes))
+            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes, ipc))
             process.daemon = True
             process.start()
 
