@@ -6,6 +6,7 @@ import pickle
 import numpy as np
 import configparser
 import json
+import threading
 import multiprocessing
 import multiprocessing.connection as mpc
 from os.path import join
@@ -30,7 +31,7 @@ from TkModules.TkPersistentQueue import TkPersistentQueue
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, ipc:bool):
+def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -52,16 +53,7 @@ def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:st
                 last_trades = share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED )
                 TkIO.append_at_path( path, order_book )
                 TkIO.append_at_path( path, last_trades )
-                print(ticker, "gathered.")
-                if ipc:
-                    ipcAddress = config['IPC']['Address']
-                    ipcPort = int(config['IPC']['Port'])
-                    ipcAuthKey = bytes( config['IPC']['AuthKey'], 'ascii' )
-                    try:
-                        with mpc.Client( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as conn:
-                            conn.send(filename)
-                    except ConnectionError:
-                        print("IPC failed.")
+                print(ticker, "gathered.")                
             else:
                 print(ticker, "trading is suspended.")
 
@@ -89,6 +81,32 @@ if __name__ ==  '__main__':
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )
 
+    ipcMessageQueue = []
+
+    def ipc_thread_func():
+        global ipcMessageQueue
+        global config
+        print("IPC thread started.")
+        ipcAddress = config['IPC']['Address']
+        ipcPort = int(config['IPC']['Port'])
+        ipcAuthKey = bytes( config['IPC']['AuthKey'], 'ascii' )
+        while True:
+            try:
+                with mpc.Client( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as conn:
+                    while len(ipcMessageQueue) > 0:
+                        message = ipcMessageQueue[0]
+                        del ipcMessageQueue[0]
+                        conn.send(message)
+            except ConnectionError:
+                print("Reconnecting...")
+                ipcMessageQueue.clear()
+
+    ipc_thread = None
+    if ipc:        
+        ipc_thread = threading.Thread( target=ipc_thread_func )
+        ipc_thread.daemon = True
+        ipc_thread.start()
+
     data_path = config['Paths']['DataPath']
     gather_data_queue_filename = config['Paths']['GatherDataQueueFileName']
     orderbook_file_extension = config['Paths']['OrderbookFileExtension']
@@ -112,7 +130,7 @@ if __name__ ==  '__main__':
 
         if not ( ticker in ignore_tickers ):
 
-            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes, ipc))
+            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes))
             process.daemon = True
             process.start()
 
@@ -121,10 +139,17 @@ if __name__ ==  '__main__':
                 if time.time() - start_time > max_iteration_time:
                     print( 'Gathering process exceeds maximal timeout, will be terminated' )
                     break
-                time.sleep(1.0)
+                time.sleep(0.01)
 
             if process.exitcode == None or process.exitcode > 0:
                 break
+            else:
+                end_time = time.time()
+                print( 'Gathering time: ', (end_time-start_time) )
+                if ipc:
+                    today = date.today()
+                    filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + orderbook_file_extension
+                    ipcMessageQueue.append(filename)
 
         queue.push(ticker)
         queue.flush()

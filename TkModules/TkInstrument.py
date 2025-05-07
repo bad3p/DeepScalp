@@ -69,6 +69,9 @@ class TkInstrument():
 
     def uid(self):        
         return self._instrument.uid
+    
+    def ticker(self):
+        return self._ticker
 
     def figi(self):
         if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:

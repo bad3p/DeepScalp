@@ -74,7 +74,7 @@ class TkTimeSeriesDataPreprocessor():
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
 
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
-        self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsount'])
+        self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
         self._target_width = int(_cfg['TimeSeries']['TargetWidth'])
         self._target_discretization = float(_cfg['TimeSeries']['TargetDiscretization'])
         self._priority_mode_count = int(_cfg['TimeSeries']['PriorityModeCount'])
