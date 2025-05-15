@@ -52,6 +52,13 @@ An example of the gathered tading data:
 
 ![The time series model trained and reinforced with novel data.](https://github.com/user-attachments/assets/a8341555-1969-49cb-8616-db911d7e23bf)
 
-# Using trading bot
+# Using forecasting service
 
-Coming soon.
+In trading mode it is required to run both:
+* TkDataGatherLoop.bat - to gather realtime trading data
+* and TkForecastingService.py - to predict the price movement based on the gathered realtime trading data
+
+Depending on the model parameters TkForecastingService.py would need for the trading data to accumulate for some time before starting predicting price movement.
+
+https://github.com/user-attachments/assets/a25c5d02-5546-4b14-b827-2fd714ebbd98
+
