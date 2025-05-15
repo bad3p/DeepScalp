@@ -10,6 +10,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * https://tinkoff.github.io/invest-python/
 * https://pypi.org/project/dearpygui/
 * https://pypi.org/project/joblib/
+* https://pypi.org/project/win10toast/
 * https://pytorch.org/get-started/locally/
 
 # Installation
@@ -18,6 +19,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * pip install tinkoff-investments
 * pip install dearpygui
 * pip install joblib
+* pip install win10toast
 * pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Access token

@@ -49,6 +49,7 @@ class TkTimeSeriesDataPreprocessor():
         self._orderbook_autoencoder = TkOrderbookAutoencoder(_cfg)
         self._orderbook_autoencoder.to(self._cuda)
         self._orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
+        self._orderbook_autoencoder.eval()
 
         last_trades_model_path =  join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['LastTradesAutoencoderModelFileName'] )
 
@@ -58,6 +59,7 @@ class TkTimeSeriesDataPreprocessor():
         self._last_trades_autoencoder = TkLastTradesAutoencoder(_cfg)
         self._last_trades_autoencoder.to(self._cuda)
         self._last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))        
+        self._last_trades_autoencoder.eval()
 
         self._orderbook_width = int(_cfg['Autoencoders']['OrderBookWidth'])
         self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
@@ -72,7 +74,7 @@ class TkTimeSeriesDataPreprocessor():
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
 
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
-        self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsount'])
+        self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
         self._target_width = int(_cfg['TimeSeries']['TargetWidth'])
         self._target_discretization = float(_cfg['TimeSeries']['TargetDiscretization'])
         self._priority_mode_count = int(_cfg['TimeSeries']['PriorityModeCount'])
