@@ -15,6 +15,7 @@ from os.path import isfile, join
 from datetime import date, datetime, timezone
 from dateutil import parser
 from timeit import default_timer
+from win10toast import ToastNotifier
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
@@ -352,16 +353,17 @@ def ipc_thread_func():
     print('IPC thread started')
     eofCounter = 0
     creCounter = 0
-    while True:    
-        with mpc.Listener( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as listener:
-            with listener.accept() as conn:
-                try:
-                    message = conn.recv()
-                    ipcMessageQueue.append( message )
-                except EOFError:                
-                    eofCounter = eofCounter + 1
-                except ConnectionResetError:
-                    creCounter = creCounter + 1
+    while True:
+        try:
+            with mpc.Listener( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as listener:
+                with listener.accept() as conn:
+                    try:
+                        message = conn.recv()
+                        ipcMessageQueue.append( message )
+                    except EOFError:                
+                        eofCounter = eofCounter + 1
+        except ConnectionResetError:
+            creCounter = creCounter + 1
                 
 
 ipc_thread = threading.Thread( target=ipc_thread_func )
@@ -561,6 +563,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     main_window = dpg.add_window(tag="primary_window", label="Forecasting service")
     main_panel = TkMainPanel("primary_window", prior_steps_count)
+    toast = ToastNotifier()
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -587,10 +590,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 output = list( itertools.chain.from_iterable( output.tolist() ) )
                 main_panel.setForecast( output, output_distribution_labels )
 
-                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, num_modes = 3, mode_threshold = 0.75, mean_threshold = 0.75)
+                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, num_modes = 4, mode_threshold = 0.75, mean_threshold = 0.75)
 
                 if is_profitable:
                     TkForecastPanel.update(instrument, output, output_distribution_labels, 3, profit)
+                    if not toast.notification_active():
+                        toastMessage = instrument.ticker() + ' +' + str(profit) + '%'
+                        toast.show_toast( instrument.ticker(), toastMessage, duration = 10, threaded = True)
+                        print( toastMessage )
                 else:
                     TkForecastPanel.discard(instrument)
 
