@@ -51,6 +51,8 @@ An example of the gathered tading data:
 * Upon completion of preprocessing data, it is all ready for launching TkTrainTimeSeries.py and training of the forecasting model. The training script will display feedback regarding the training process as well, it is just take significantly more time than training of the autoencoders.
 
 ![The time series model trained and reinforced with novel data.](https://github.com/user-attachments/assets/a8341555-1969-49cb-8616-db911d7e23bf)
+![The time series model trained and reinforced with novel data.](https://github.com/user-attachments/assets/b2d6351d-895e-400e-9182-e490e0b793a6)
+
 
 # Using forecasting service
 
