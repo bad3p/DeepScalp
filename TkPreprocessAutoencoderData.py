@@ -42,6 +42,7 @@ class TkAutoencoderDataPreprocessor():
         self._orderbook_sample_similarity = float(config['Autoencoders']['OrderBookSampleSimilarity'])
         self._last_trades_sample_similarity = float(config['Autoencoders']['LastTradesSampleSimilarity'])
         self._test_data_ratio = float(config['Autoencoders']['TestDataRatio'])
+        self._future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
 
         self._data_path = config['Paths']['DataPath']
         self._orderbook_index_filename = config['Paths']['OrderBookIndexFileName']
@@ -124,6 +125,7 @@ class TkAutoencoderDataPreprocessor():
                 self._normalized_orderbook_samples.append(distribution)
                 self._orderbook_lsh.index(distribution)
 
+            # last trades sample
             last_trades_sample = raw_samples[i*2+1]
             distribution, descriptor, volume = TkStatistics.trades_distribution( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
             if volume > 0:
@@ -132,6 +134,18 @@ class TkAutoencoderDataPreprocessor():
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                 self._normalized_last_trades_samples.append(distribution)
                 self._last_trades_lsh.index(distribution)
+
+            # accumulated last trades sample (time series output)
+            if i + self._future_steps_count < raw_sample_count / 2:
+                for j in range( 1, self._future_steps_count ):
+                    last_trades_sample = raw_samples[(i+j+1)*2+1]
+                    volume = TkStatistics.accumulate_trades_distribution( distribution, descriptor, volume, last_trades_sample, pivot_price)
+                if volume > 0:
+                    distribution *= 1.0 / volume
+                lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
+                if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
+                    self._normalized_last_trades_samples.append(distribution)
+                    self._last_trades_lsh.index(distribution)
 
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
