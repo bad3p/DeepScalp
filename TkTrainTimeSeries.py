@@ -33,6 +33,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
+from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 
 #------------------------------------------------------------------------------------------------------------------------
@@ -61,9 +62,10 @@ class TkTimeSeriesDataLoader():
         self._training_index = index_content[2]
         self._test_index = index_content[3]
 
+        priority_sample_count = len(self._priority_table) 
         regular_sample_count = len(self._regular_table)
         test_sample_count = len(self._test_index)
-        print( '\nRegular samples:', regular_sample_count, ', Test samples:', test_sample_count)
+        print( '\nPriority samples:', priority_sample_count, 'Regular samples:', regular_sample_count, ', Test samples:', test_sample_count)
         regular_epoch_size = int(regular_sample_count/(self._training_batch_size-self._priority_batch_size))
         print( 'Regular epoch size:', regular_epoch_size )
         test_epoch_size = int(test_sample_count/regular_epoch_size)
@@ -73,7 +75,8 @@ class TkTimeSeriesDataLoader():
         self._test_data_stream = open( join(self._data_path, self._time_series_test_data_filename), 'rb+')
 
         self._input_samples = None
-        self._target_samples = None
+        self._target_code_samples = None
+        self._target_true_samples = None
         self._loading_thread = None
 
     def close(self):
@@ -108,14 +111,16 @@ class TkTimeSeriesDataLoader():
     def get_training_sample(self, idx : int):
         self._training_data_stream.seek( self._training_index[idx], 0 )
         input_sample = TkIO.read_from_file( self._training_data_stream )
-        target_sample = TkIO.read_from_file( self._training_data_stream )
-        return input_sample, target_sample
+        target_code_sample = TkIO.read_from_file( self._training_data_stream )
+        target_true_sample = TkIO.read_from_file( self._training_data_stream )
+        return input_sample, target_code_sample, target_true_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
         input_sample = TkIO.read_from_file( self._test_data_stream )
-        target_sample = TkIO.read_from_file( self._test_data_stream )
-        return input_sample, target_sample
+        target_code_sample = TkIO.read_from_file( self._test_data_stream )
+        target_true_sample = TkIO.read_from_file( self._test_data_stream )
+        return input_sample, target_code_sample, target_true_sample
 
     def start_load_training_data(self):
         if self._loading_thread != None:
@@ -123,12 +128,14 @@ class TkTimeSeriesDataLoader():
 
         def load_training_data_thread():
             self._input_samples = [None] * self._training_batch_size
-            self._target_samples = [None] * self._training_batch_size
+            self._target_code_samples = [None] * self._training_batch_size
+            self._target_true_samples = [None] * self._training_batch_size
             indices = self.get_training_indices()
             for batch_id in range(self._training_batch_size):
-                input_sample, target_sample = self.get_training_sample( indices[batch_id] )
+                input_sample, target_code_sample, target_true_sample = self.get_training_sample( indices[batch_id] )
                 self._input_samples[batch_id] = input_sample
-                self._target_samples[batch_id] = target_sample
+                self._target_code_samples[batch_id] = target_code_sample
+                self._target_true_samples[batch_id] = target_true_sample
 
         self._loading_thread = threading.Thread( target=load_training_data_thread )
         self._loading_thread.start()
@@ -139,14 +146,16 @@ class TkTimeSeriesDataLoader():
 
         def load_test_data_thread():
             self._input_samples = [None] * self._test_batch_size
-            self._target_samples = [None] * self._test_batch_size
+            self._target_code_samples = [None] * self._test_batch_size
+            self._target_true_samples = [None] * self._test_batch_size
             for batch_id in range(self._test_batch_size):
-                input_sample, target_sample = self.get_test_sample( self._test_sample_id )
+                input_sample, target_code_sample, target_true_sample = self.get_test_sample( self._test_sample_id )
                 self._test_sample_id = self._test_sample_id + 1
                 if self._test_sample_id >= len(self._test_index):
                     self._test_sample_id = 0
                 self._input_samples[batch_id] = input_sample
-                self._target_samples[batch_id] = target_sample
+                self._target_code_samples[batch_id] = target_code_sample
+                self._target_true_samples[batch_id] = target_true_sample
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
         self._loading_thread.start()
@@ -156,7 +165,7 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is not active!')
         self._loading_thread.join()
         self._loading_thread = None
-        return self._input_samples, self._target_samples           
+        return self._input_samples, self._target_code_samples, self._target_true_samples
          
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -171,10 +180,12 @@ data_path = config['Paths']['DataPath']
 ts_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesModelFileName'] )
 ts_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesOptimizerFileName'] )
 ts_history_path = join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesTrainingHistoryFileName'] )
+lta_model_path = join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderModelFileName'] )
 
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
 input_width = int(config['TimeSeries']['InputWidth'])
-target_width = int(config['TimeSeries']['TargetWidth'])
+target_code_width = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+target_true_width = int(config['Autoencoders']['LastTradesWidth'])
 input_slices = json.loads(config['TimeSeries']['InputSlices'])
 display_slice = int(config['TimeSeries']['DisplaySlice'])
 training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
@@ -184,6 +195,11 @@ weight_decay = float(config['TimeSeries']['WeightDecay'])
 history_size = int( config['TimeSeries']['HistorySize'] )
 cooldown = float( config['TimeSeries']['Cooldown'] )
 
+lta_model = TkLastTradesAutoencoder(config)
+lta_model.to(cuda)
+lta_model.load_state_dict(torch.load(lta_model_path))        
+lta_model.eval()
+
 ts_model = TkTimeSeriesForecaster(config)
 ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
@@ -191,8 +207,8 @@ if os.path.isfile(ts_model_path):
 ts_optimizer = torch.optim.RAdam( ts_model.parameters(), lr=learning_rate, weight_decay=weight_decay )
 if os.path.isfile(ts_optimizer_path):
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = torch.nn.BCELoss()
-ts_accuracy = torch.nn.BCELoss()
+ts_loss = torch.nn.MSELoss()
+ts_accuracy = torch.nn.KLDivLoss(reduction = "batchmean", log_target=False)
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
 data_loader = TkTimeSeriesDataLoader(
@@ -205,7 +221,7 @@ data_loader = TkTimeSeriesDataLoader(
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
-    dpg.create_viewport(title='Time series training', width=1972, height=936)
+    dpg.create_viewport(title='Time series training', width=2392, height=936)
     dpg.setup_dearpygui()
 
     with dpg.window(tag="primary_window", label="Training"):
@@ -228,25 +244,39 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_lstm_"+ui_tag )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_lstm_"+ui_tag )
                     dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="LSTM", parent="x_axis_lstm_"+ui_tag, tag=ui_tag+"_lstm_series" )
-                with dpg.plot(label="Output", width=384, height=256):
+                with dpg.plot(label="Code", width=384, height=256):
                     dpg.add_plot_legend()
-                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_output_"+ui_tag )
-                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_output_"+ui_tag )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_output_"+ui_tag, tag=ui_tag+"_output_series" )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_output_"+ui_tag, tag=ui_tag+"_target_series" )
+                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_code_"+ui_tag )
+                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_code_"+ui_tag )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_code_"+ui_tag, tag=ui_tag+"_code_output_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_code_"+ui_tag, tag=ui_tag+"_code_target_series" )
+                with dpg.plot(label="True", width=384, height=256):
+                    dpg.add_plot_legend()
+                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_true_"+ui_tag )
+                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_true_"+ui_tag )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_output_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_target_series" )
         with dpg.group(horizontal=True):
             with dpg.plot(label="Training", width=512, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_training" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_training" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_training", tag="loss_series" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_training", tag="accuracy_series" )
             with dpg.plot(label="Training per epoch", width=512, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_training_epoch" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_training_epoch" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_training_epoch", tag="loss_series_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_training_epoch", tag="accuracy_series_epoch" )
+            with dpg.plot(label="Accuracy", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_accuracy", tag="accuracy_series" )
+            with dpg.plot(label="Accuracy per epoch", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_accuracy_epoch", tag="accuracy_series_epoch" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -259,26 +289,34 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         show_priority_sample = not show_priority_sample
 
-        input_samples, target_samples = data_loader.complete_loading()
+        input_samples, target_code_samples, target_true_samples = data_loader.complete_loading()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( training_batch_size, prior_steps_count * input_width) )
         input = input.to(cuda)
 
-        target = torch.Tensor( list( itertools.chain.from_iterable(target_samples) ) )
-        target = torch.reshape( target, ( training_batch_size, target_width ) )
-        target = target.to(cuda)
+        target_code = torch.Tensor( list( itertools.chain.from_iterable(target_code_samples) ) )
+        target_code = torch.reshape( target_code, ( training_batch_size, target_code_width ) )
+        target_code = target_code.to(cuda)
+
+        target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
+        target_true = torch.reshape( target_true, ( training_batch_size, target_true_width ) )
+        target_true = target_true.to(cuda)
 
         data_loader.start_load_test_data()
 
         y = ts_model.forward( input )
 
+        z = lta_model.decode( y )
+
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_output_training", "y_axis_output_training", "training_output_series", y, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_output_training", "y_axis_output_training", "training_target_series", target, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_code_training", "y_axis_code_training", "training_code_output_series", y, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_code_training", "y_axis_code_training", "training_code_target_series", target_code, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
 
-        y_loss = ts_loss( y, target )
+        y_loss = ts_loss( y, target_code )
         y_loss = y_loss.mean()
         ts_optimizer.zero_grad()
         y_loss.backward()
@@ -295,47 +333,55 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        input_samples, target_samples = data_loader.complete_loading()
+        input_samples, target_code_samples, target_true_samples = data_loader.complete_loading()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( test_batch_size, prior_steps_count * input_width) )
         input = input.to(cuda)
 
-        target = torch.Tensor( list( itertools.chain.from_iterable(target_samples) ) )
-        target = torch.reshape( target, ( test_batch_size, target_width ) )
-        target = target.to(cuda)
+        target_code = torch.Tensor( list( itertools.chain.from_iterable(target_code_samples) ) )
+        target_code = torch.reshape( target_code, ( test_batch_size, target_code_width ) )
+        target_code = target_code.to(cuda)
 
-        data_loader.start_load_training_data()
+        target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
+        target_true = torch.reshape( target_true, ( test_batch_size, 1, target_true_width ) )
+        target_true = target_true.to(cuda)
+
+        data_loader.start_load_training_data() 
 
         ts_model.train(False)
         y = ts_model.forward( input )
         ts_model.train(True)
 
+        z = lta_model.decode( y )
+
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_output_series", y, 0)
-        TkUI.set_series_from_tensor("x_axis_output_test", "y_axis_output_test", "test_target_series", target, 0)
+        TkUI.set_series_from_tensor("x_axis_code_test", "y_axis_code_test", "test_code_output_series", y, 0)
+        TkUI.set_series_from_tensor("x_axis_code_test", "y_axis_code_test", "test_code_target_series", target_code, 0)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_target_series", target_true, display_batch_id)        
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
-
-        y_accuracy = ts_accuracy( y, target ).detach()
-        y_accuracy = y_accuracy.mean()
-        y_accuracy_val = y_accuracy.item()
+        
+        z_accuracy = ts_accuracy( z, target_true ).detach()
+        z_accuracy = z_accuracy.mean()
+        z_accuracy_val = z_accuracy.item()
 
         mlp_input = ts_model.mlp_input()
         TkUI.set_series_from_tensor("x_axis_lstm_test", "y_axis_lstm_test", "test_lstm_series", mlp_input, display_batch_id)
 
         dpg.render_dearpygui_frame()
 
-        ts_training_history.log(data_loader.priority_sample_id(), data_loader.regular_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy)
+        ts_training_history.log(data_loader.priority_sample_id(), data_loader.regular_sample_id(), data_loader.test_sample_id(), y_loss_val, z_accuracy_val)
 
         TkUI.set_series("x_axis_training", "y_axis_training", "loss_series", ts_training_history.loss_history())
         TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history())
-        TkUI.set_series("x_axis_training", "y_axis_training", "accuracy_series", ts_training_history.accuracy_history())
-        TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history())
+        TkUI.set_series("x_axis_accuracy", "y_axis_accuracy", "accuracy_series", ts_training_history.accuracy_history())
+        TkUI.set_series("x_axis_accuracy_epoch", "y_axis_accuracy_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history())
 
         cooldownRemaining = cooldown
         cooldownStep = 1.0 / 30.0

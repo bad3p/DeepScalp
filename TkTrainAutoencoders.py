@@ -48,8 +48,7 @@ class TkAutoencoderDataLoader():
         self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName']
         self._last_trades_test_data_filename = _cfg['Paths']['LastTradesTestDataFileName']
         
-        self._training_batch_size = int(_cfg['Autoencoders']['TrainingBatchSize'])
-        self._test_batch_size = int(_cfg['Autoencoders']['TestBatchSize'])
+        self._max_training_batch_size = int(_cfg['Autoencoders']['MaxTrainingBatchSize'])        
 
         orderbook_index_content = TkIO.read_at_path( join(self._data_path, self._orderbook_index_filename) )
         self._orderbook_training_index = orderbook_index_content[0]
@@ -67,6 +66,27 @@ class TkAutoencoderDataLoader():
         self._last_trades_training_data_stream = open( join(self._data_path, self._last_trades_training_data_filename), 'rb+')
         self._last_trades_test_data_stream = open( join(self._data_path, self._last_trades_test_data_filename), 'rb+')
 
+        self._epoch_size = 1
+        self._orderbook_training_batch_size = 1
+        self._orderbook_test_batch_size = 1
+        self._last_trades_training_batch_size = 1
+        self._last_trades_test_batch_size = 1
+
+        # compute balanced batch sizes
+
+        if  len(self._orderbook_training_index) > len(self._last_trades_training_index) :
+            self._orderbook_training_batch_size = self._max_training_batch_size
+            self._epoch_size = int(len(self._orderbook_training_index) / self._max_training_batch_size)
+            self._orderbook_test_batch_size = int(len(self._orderbook_test_index) / self._epoch_size)
+            self._last_trades_training_batch_size = int(len(self._last_trades_training_index) / self._epoch_size)
+            self._last_trades_test_batch_size = int(len(self._last_trades_test_index) / self._epoch_size)
+        else:
+            self._last_trades_training_batch_size = self._max_training_batch_size
+            self._epoch_size = int(len(self._last_trades_training_index) / self._max_training_batch_size)
+            self._orderbook_training_batch_size = int(len(self._orderbook_training_index) / self._epoch_size)
+            self._orderbook_test_batch_size = int(len(self._orderbook_test_index) / self._epoch_size)
+            self._last_trades_test_batch_size = int(len(self._last_trades_test_index) / self._epoch_size)
+
         self._orderbook_samples = None
         self._last_trades_samples = None
         self._loading_thread = None
@@ -76,6 +96,21 @@ class TkAutoencoderDataLoader():
         self._orderbook_test_data_stream.close()
         self._last_trades_training_data_stream.close()
         self._last_trades_test_data_stream.close()
+
+    def epoch_size(self):
+        return self._epoch_size
+
+    def orderbook_training_batch_size(self):
+        return self._orderbook_training_batch_size
+    
+    def orderbook_test_batch_size(self):
+        return self._orderbook_test_batch_size
+    
+    def last_trades_training_batch_size(self):
+        return self._last_trades_training_batch_size
+    
+    def last_trades_test_batch_size(self):
+        return self._last_trades_test_batch_size
 
     def orderbook_training_sample_id(self):
         return self._orderbook_training_sample_id
@@ -135,10 +170,12 @@ class TkAutoencoderDataLoader():
             raise RuntimeError('Loading thread is active!')
 
         def load_training_data_thread():
-            self._orderbook_samples = [None] * self._training_batch_size
-            self._last_trades_samples = [None] * self._training_batch_size
-            for batch_id in range(self._training_batch_size):
+            self._orderbook_samples = [None] * self._orderbook_training_batch_size
+            for batch_id in range(self._orderbook_training_batch_size):
                 self._orderbook_samples[batch_id] = self.get_orderbook_training_sample()
+
+            self._last_trades_samples = [None] * self._last_trades_training_batch_size
+            for batch_id in range(self._last_trades_training_batch_size):
                 self._last_trades_samples[batch_id] = self.get_last_trades_training_sample()
 
         self._loading_thread = threading.Thread( target=load_training_data_thread )
@@ -149,10 +186,12 @@ class TkAutoencoderDataLoader():
             raise RuntimeError('Loading thread is active!')
 
         def load_test_data_thread():
-            self._orderbook_samples = [None] * self._test_batch_size
-            self._last_trades_samples = [None] * self._test_batch_size
-            for batch_id in range(self._test_batch_size):
+            self._orderbook_samples = [None] * self._orderbook_test_batch_size
+            for batch_id in range(self._orderbook_test_batch_size):
                 self._orderbook_samples[batch_id] = self.get_orderbook_test_sample()
+
+            self._last_trades_samples = [None] * self._last_trades_test_batch_size
+            for batch_id in range(self._last_trades_test_batch_size):
                 self._last_trades_samples[batch_id] = self.get_last_trades_test_sample()
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
@@ -182,21 +221,21 @@ last_trades_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['
 last_trades_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderOptimizerFileName'] )
 last_trades_history_path = join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderTrainingHistoryFileName'] )
 
-training_batch_size = int(config['Autoencoders']['TrainingBatchSize'])
-test_batch_size = int(config['Autoencoders']['TestBatchSize'])
 orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 orderbook_code_layer_size = int(config['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
 last_trades_code_layer_size = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
-learning_rate = float(config['Autoencoders']['LearningRate'])
-weight_decay = float(config['Autoencoders']['WeightDecay'])
+orderbook_autoencoder_learning_rate = float(config['Autoencoders']['OrderbookAutoencoderLearningRate'])
+orderbook_autoencoder_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderWeightDecay'])
+last_trades_autoencoder_learning_rate = float(config['Autoencoders']['LastTradesAutoencoderLearningRate'])
+last_trades_autoencoder_weight_decay = float(config['Autoencoders']['LastTradesAutoencoderWeightDecay'])
 history_size = int( config['Autoencoders']['HistorySize'] )
 
 orderbook_autoencoder = TkOrderbookAutoencoder(config)
 orderbook_autoencoder.to(cuda)
 if os.path.isfile(orderbook_model_path):
     orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
-orderbook_optimizer = torch.optim.RAdam( orderbook_autoencoder.parameters(), lr=learning_rate, weight_decay=weight_decay )
+orderbook_optimizer = torch.optim.RAdam( orderbook_autoencoder.parameters(), lr=orderbook_autoencoder_learning_rate, weight_decay=orderbook_autoencoder_weight_decay )
 if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
 orderbook_loss = torch.nn.BCELoss()
@@ -207,7 +246,7 @@ last_trades_autoencoder = TkLastTradesAutoencoder(config)
 last_trades_autoencoder.to(cuda)
 if os.path.isfile(last_trades_model_path):
     last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
-last_trades_optimizer = torch.optim.RAdam( last_trades_autoencoder.parameters(), lr=learning_rate, weight_decay=weight_decay )
+last_trades_optimizer = torch.optim.RAdam( last_trades_autoencoder.parameters(), lr=last_trades_autoencoder_learning_rate, weight_decay=last_trades_autoencoder_weight_decay )
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
 last_trades_loss = torch.nn.BCELoss()
@@ -298,11 +337,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         orderbook_samples, last_trades_samples = data_loader.complete_loading()
 
         orderbook_input = torch.Tensor( list( itertools.chain.from_iterable(orderbook_samples) ) )
-        orderbook_input = torch.reshape( orderbook_input, ( training_batch_size, 1, orderbook_width) )
+        orderbook_input = torch.reshape( orderbook_input, ( data_loader.orderbook_training_batch_size(), 1, orderbook_width) )
         orderbook_input = orderbook_input.to(cuda)
 
         last_trades_input = torch.Tensor( list( itertools.chain.from_iterable(last_trades_samples) ) )
-        last_trades_input = torch.reshape( last_trades_input, ( training_batch_size, 1, last_trades_width) )
+        last_trades_input = torch.reshape( last_trades_input, ( data_loader.last_trades_training_batch_size(), 1, last_trades_width) )
         last_trades_input = last_trades_input.to(cuda)
 
         data_loader.start_load_test_data()
@@ -339,11 +378,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         orderbook_samples, last_trades_samples = data_loader.complete_loading()
 
         orderbook_input = torch.Tensor( list( itertools.chain.from_iterable(orderbook_samples) ) )
-        orderbook_input = torch.reshape( orderbook_input, ( test_batch_size, 1, orderbook_width) )
+        orderbook_input = torch.reshape( orderbook_input, ( data_loader.orderbook_test_batch_size(), 1, orderbook_width) )
         orderbook_input = orderbook_input.to(cuda)
 
         last_trades_input = torch.Tensor( list( itertools.chain.from_iterable(last_trades_samples) ) )
-        last_trades_input = torch.reshape( last_trades_input, ( test_batch_size, 1, last_trades_width) )
+        last_trades_input = torch.reshape( last_trades_input, ( data_loader.last_trades_test_batch_size(), 1, last_trades_width) )
         last_trades_input = last_trades_input.to(cuda)
 
         data_loader.start_load_training_data()
