@@ -196,6 +196,8 @@ class TkStatistics():
     @staticmethod
     def generate_distribution(distribution : np.ndarray, scheme : list, bias : float):
         cumulative_distribution_weight = 0
+        for i in range(len(distribution)):
+            cumulative_distribution_weight = cumulative_distribution_weight + distribution[i]
         for i in range(len(scheme)):
             sample_weight = scheme[i] * (1.0 + random.uniform(-bias,bias))
             idx = random.randint(0, distribution.size-1)
@@ -204,6 +206,30 @@ class TkStatistics():
         
         distribution *= 1.0 / cumulative_distribution_weight
 
+    #------------------------------------------------------------------------------------------------------------------------
+    # Generates clustered discrete distribution based on the given scheme
+    # * the scheme is a list of mandatory modes that should form the distribution
+    # * bias term determines how much magnitudes of modes could deviate from the scheme value
+    # * the clustering is around random bin index and mimics normal distribution with given variance
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def generate_clustered_distribution(distribution : np.ndarray, scheme : list, bias : float, variance : float):
+        cumulative_distribution_weight = 0
+        for i in range(len(distribution)):
+            cumulative_distribution_weight = cumulative_distribution_weight + distribution[i]
+
+        pivot_idx = random.randint(0, distribution.size-1)
+        range_idx = int( distribution.size * random.uniform(0,variance) )
+
+        for i in range(len(scheme)):
+            sample_weight = scheme[i] * (1.0 + random.uniform(-bias,bias))
+            idx = int(random.gauss(pivot_idx, range_idx))
+            idx = min( max( 0, idx ), distribution.size-1 )
+            distribution[idx] = distribution[idx] + sample_weight
+            cumulative_distribution_weight = cumulative_distribution_weight + sample_weight
+        
+        distribution *= 1.0 / cumulative_distribution_weight        
 
     #------------------------------------------------------------------------------------------------------------------------
     # Return modes of the given discrete distribution
@@ -212,8 +238,8 @@ class TkStatistics():
     @staticmethod
     def get_distribution_modes(distribution : np.ndarray, descriptor : list, num_modes : int):
         result = []
-        for i in range(1, len(distribution)):
-            mode = ( distribution[i], 0.5 * (descriptor[i][0] + descriptor[i][1]) )            
+        for i in range(0, len(distribution)):
+            mode = ( distribution[i], 0.5 * (descriptor[i][0] + descriptor[i][1]) )
             if mode[0] > 0:
                 for j in range(0, len(result)):
                     if result[j][0] < mode[0]:
@@ -224,7 +250,23 @@ class TkStatistics():
                     result.append(mode)
                 if len(result) > num_modes:
                     result.pop()
-        return result        
+        return result
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Return nogative and positive "tails" of the given distribution
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_distribution_tails(distribution : np.ndarray, descriptor : list, epsilon : float):
+        left_tail = 0.0
+        right_tail = 0.0
+        for i in range(0, len(distribution)):
+            if distribution[i] > epsilon:
+                p = 0.5 * (descriptor[i][0] + descriptor[i][1])
+                left_tail = min(left_tail, p)
+                right_tail = max(right_tail, p)
+            
+        return left_tail, right_tail
 
     #------------------------------------------------------------------------------------------------------------------------
     # Return mean of the given discrete distribution
