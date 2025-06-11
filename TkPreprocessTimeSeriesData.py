@@ -75,9 +75,8 @@ class TkTimeSeriesDataPreprocessor():
 
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
         self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
-        self._priority_mode_count = int(_cfg['TimeSeries']['PriorityModeCount'])
-        self._priority_mode_threshold = float(_cfg['TimeSeries']['PriorityModeThreshold'])
-        self._priority_mean_threshold = float(_cfg['TimeSeries']['PriorityMeanThreshold'])
+        self._priority_tail_epsilon = float(_cfg['TimeSeries']['PriorityTailEpsilon'])
+        self._priority_tail_threshold = float(_cfg['TimeSeries']['PriorityTailThreshold'])
 
         self._priority_table = []
         self._regular_table = []
@@ -246,10 +245,9 @@ class TkTimeSeriesDataPreprocessor():
                     TkIO.write_to_file( self._test_data_stream, ts_target )
                     self._test_data_offset = self._test_data_stream.tell()
                 else:
-                    ts_target_left_tail, ts_target_right_tail = TkStatistics.get_distribution_tails( ts_target_distribution, ts_target_descriptor )
-                    ts_target_mean = TkStatistics.get_distribution_mean( ts_target_distribution, ts_target_descriptor )
-                    max_distribution_price = 0.5 * (ts_target_descriptor[-1][0] + ts_target_descriptor[-1][1])
-                    is_priority_sample = ( ts_target_left_tail <= -min(self._priority_mode_threshold, max_distribution_price) ) or ( ts_target_right_tail >= min(self._priority_mode_threshold, max_distribution_price) ) or (abs(ts_target_mean) >= self._priority_mean_threshold)
+                    ts_target_left_tail, ts_target_right_tail = TkStatistics.get_distribution_tails( ts_target_distribution, ts_target_descriptor, self._priority_tail_epsilon )
+                    ts_threshold_price = self._priority_tail_threshold * 0.5 * (ts_target_descriptor[-1][0] + ts_target_descriptor[-1][1])
+                    is_priority_sample = ( ts_target_left_tail <= -ts_threshold_price ) or ( ts_target_right_tail >= ts_threshold_price )
                     if is_priority_sample:
                         self._priority_table.append( len(self._training_index) )
                     else:

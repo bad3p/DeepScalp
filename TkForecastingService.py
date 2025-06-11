@@ -191,12 +191,9 @@ class TkMainPanel():
 
 class TkForecastPanel():
 
-    DefaultLabels = [j for j in range(0, 32)]
-    DefaultSeries = [0.0 for j in range(0, 32)]
-
     _plotThemeTags = None
 
-    def __init__(self, windowTag:str, instrument:TkInstrument, forecastHistorySize:int):
+    def __init__(self, windowTag:str, instrument:TkInstrument, forecastHistorySize:int, labels:list):
 
         self._windowTag = windowTag
         self._instrument = instrument
@@ -239,7 +236,7 @@ class TkForecastPanel():
             self._seriesTags.append(seriesTag)
             self._series.append(None)
             j = forecastHistorySize - i - 1
-            dpg.add_line_series( TkForecastPanel.DefaultLabels, TkForecastPanel.DefaultSeries, label='T-' + str(j), parent=self._xAxisTag, tag=seriesTag )
+            dpg.add_line_series( labels, [0.0 for j in range(0, len(labels))], label='T-' + str(j), parent=self._xAxisTag, tag=seriesTag )
             dpg.bind_item_theme(seriesTag, TkForecastPanel._plotThemeTags[i])
 
         self._infoGroupTag = str(uuid.uuid1())
@@ -289,7 +286,7 @@ class TkForecastPanel():
     def update(instrument : TkInstrument, series:list , labels:list, forecastHistorySize:int, profit:float):
         panel = TkForecastPanel.find( instrument )
         if panel == None:
-            panel = TkForecastPanel("primary_window", instrument, forecastHistorySize)
+            panel = TkForecastPanel("primary_window", instrument, forecastHistorySize, labels)
             TkForecastPanel._panels.append( panel )
             
         panel.setSeries( series, labels )
@@ -327,15 +324,6 @@ min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor
 
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
 input_width = int(config['TimeSeries']['InputWidth'])
-target_width = int(config['TimeSeries']['TargetWidth'])
-target_discretization = float(config['TimeSeries']['TargetDiscretization'])
-input_slices = json.loads(config['TimeSeries']['InputSlices'])
-display_slice = int(config['TimeSeries']['DisplaySlice'])
-training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
-test_batch_size = int(config['TimeSeries']['TestBatchSize'])
-learning_rate = float(config['TimeSeries']['LearningRate'])
-weight_decay = float(config['TimeSeries']['WeightDecay'])
-history_size = int( config['TimeSeries']['HistorySize'] )
 
 ipcAddress = config['IPC']['Address']
 ipcPort = int(config['IPC']['Port'])
@@ -489,7 +477,7 @@ def preprocess_samples(instrument:TkInstrument, samples:list, orderbook_width:in
 # Runs TkTimeSeriesForecaster model
 #------------------------------------------------------------------------------------------------------------------------
 
-def forecast(input:list, prior_steps_count:int, input_width:int, model:TkTimeSeriesForecaster):
+def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_width:int, ts_model:TkTimeSeriesForecaster, lt_model:TkLastTradesAutoencoder):
 
     global cuda
 
@@ -497,8 +485,10 @@ def forecast(input:list, prior_steps_count:int, input_width:int, model:TkTimeSer
     input = torch.reshape( input, ( 1, prior_steps_count * input_width) )
     input = input.to(cuda)
 
-    output = model.forward( input )
-    return output 
+    ts_output = ts_model.forward( input )
+    lt_output = lt_model.decode( ts_output )
+    lt_output = torch.reshape( lt_output, ( 1, last_trades_width ) )
+    return lt_output
 
 #------------------------------------------------------------------------------------------------------------------------
 # Forecast profitability
@@ -543,17 +533,11 @@ last_trades_autoencoder.to(cuda)
 last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
 last_trades_autoencoder.eval()
 
-print('Loading timew series forecaster...')
+print('Loading time series forecaster...')
 time_series_forecaster = TkTimeSeriesForecaster(config)
 time_series_forecaster.to(cuda)
 time_series_forecaster.load_state_dict(torch.load(ts_model_path))
 time_series_forecaster.eval()
-
-output_distribution_descriptor = TkStatistics.distribution_descriptor( target_discretization, int(target_width / 2) )
-output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
-
-TkForecastPanel.DefaultLabels = output_distribution_labels
-TkForecastPanel.DefaultSeries = [0.0 for j in range(0, len(output_distribution_labels))]
 
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
@@ -577,14 +561,21 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             instrument = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
             
             samples = load_samples( join( data_path, filename), prior_steps_count )
+
             if samples != None:
+
+                last_price = quotation_to_float( samples[-1][0].last_price )
+                min_price_increment = quotation_to_float(instrument.min_price_increment())
+                distribution_incremental_value = (min_price_increment_factor * min_price_increment) / last_price * 100
+                output_distribution_descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(last_trades_width / 2) )
+                output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
 
                 t0 = default_timer()
                 input = preprocess_samples( instrument, samples, orderbook_width, last_trades_width, min_price_increment_factor, orderbook_autoencoder, last_trades_autoencoder, main_panel)
                 preprocess_samples_time = default_timer() - t0
 
                 t0 = default_timer()
-                output = forecast(input, prior_steps_count, input_width, time_series_forecaster)
+                output = forecast(input, prior_steps_count, input_width, last_trades_width, time_series_forecaster, last_trades_autoencoder)
                 forecast_time = default_timer() - t0
 
                 output = list( itertools.chain.from_iterable( output.tolist() ) )

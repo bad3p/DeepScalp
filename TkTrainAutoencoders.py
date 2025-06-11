@@ -76,16 +76,16 @@ class TkAutoencoderDataLoader():
 
         if  len(self._orderbook_training_index) > len(self._last_trades_training_index) :
             self._orderbook_training_batch_size = self._max_training_batch_size
-            self._epoch_size = int(len(self._orderbook_training_index) / self._max_training_batch_size)
-            self._orderbook_test_batch_size = int(len(self._orderbook_test_index) / self._epoch_size)
-            self._last_trades_training_batch_size = int(len(self._last_trades_training_index) / self._epoch_size)
-            self._last_trades_test_batch_size = int(len(self._last_trades_test_index) / self._epoch_size)
+            self._epoch_size = int(round(len(self._orderbook_training_index) / self._max_training_batch_size))
+            self._orderbook_test_batch_size = max(1,int(round(len(self._orderbook_test_index) / self._epoch_size)))
+            self._last_trades_training_batch_size = max(1,int(round(len(self._last_trades_training_index) / self._epoch_size)))
+            self._last_trades_test_batch_size = max(1,int(round(len(self._last_trades_test_index) / self._epoch_size)))
         else:
             self._last_trades_training_batch_size = self._max_training_batch_size
-            self._epoch_size = int(len(self._last_trades_training_index) / self._max_training_batch_size)
-            self._orderbook_training_batch_size = int(len(self._orderbook_training_index) / self._epoch_size)
-            self._orderbook_test_batch_size = int(len(self._orderbook_test_index) / self._epoch_size)
-            self._last_trades_test_batch_size = int(len(self._last_trades_test_index) / self._epoch_size)
+            self._epoch_size = int(round(len(self._last_trades_training_index) / self._max_training_batch_size))
+            self._orderbook_training_batch_size = max(1,int(round(len(self._orderbook_training_index) / self._epoch_size)))
+            self._orderbook_test_batch_size = max(1,int(round(len(self._orderbook_test_index) / self._epoch_size)))
+            self._last_trades_test_batch_size = max(1,int(round(len(self._last_trades_test_index) / self._epoch_size)))
 
         self._orderbook_samples = None
         self._last_trades_samples = None

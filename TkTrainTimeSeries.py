@@ -271,12 +271,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_accuracy", tag="accuracy_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="KL-Div", parent="x_axis_accuracy", tag="accuracy_series" )
             with dpg.plot(label="Accuracy per epoch", width=512, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy_epoch" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_accuracy_epoch", tag="accuracy_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="KL-Div", parent="x_axis_accuracy_epoch", tag="accuracy_series_epoch" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
