@@ -280,3 +280,42 @@ class TkStatistics():
             bin_weight = distribution[i]        
             mean += avg_bin_price * bin_weight
         return mean
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Return "tail means" of the given distribution
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_distribution_tail_means(distribution : list, descriptor : list):
+
+        mean = 0.0
+        for i in range(len(distribution)):
+            avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
+            binWeight = distribution[i]
+            mean += avgBinPrice * binWeight
+
+        right_mean = 0.0
+        right_bin_weight = 0.0
+        left_mean = 0.0
+        left_bin_weight = 0.0
+        for i in range(len(distribution)):
+            avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
+            binWeight = distribution[i]
+            if avgBinPrice < mean:
+                left_mean += avgBinPrice * binWeight
+                left_bin_weight += binWeight
+            elif avgBinPrice > mean:
+                right_mean += avgBinPrice * binWeight
+                right_bin_weight += binWeight
+
+        if left_bin_weight > 0.0:
+            left_mean *= 1.0 / left_bin_weight
+        else:
+            left_mean = mean
+
+        if right_bin_weight > 0.0:
+            right_mean *= 1.0 / right_bin_weight
+        else:
+            right_mean = mean
+    
+        return left_mean, right_mean

@@ -192,32 +192,59 @@ class TkMainPanel():
 class TkForecastPanel():
 
     _plotThemeTags = None
+    _priceMinMaxThemeTag = None
+    _priceAvgThemeTag = None
+    _forecastMinMaxThemeTags = None
+    _forecastAvgThemeTags = None
 
-    def __init__(self, windowTag:str, instrument:TkInstrument, forecastHistorySize:int, labels:list):
+    @staticmethod
+    def blendColor(plotColor0 : tuple, plotColor1 : tuple, t:float):
+        return tuple( int(plotColor0[i] * (1.0-t) + plotColor1[i] * t) for i in range(len(plotColor0)) )
+
+    @staticmethod
+    def createLineSeriesPlotTheme(plotColor : tuple):
+        plotThemeTag = str(uuid.uuid1())
+        dpg.add_theme( tag = plotThemeTag )
+        plotThemeComponentTag = str(uuid.uuid1())
+        dpg.add_theme_component(dpg.mvLineSeries, tag=plotThemeComponentTag, parent=plotThemeTag)
+        dpg.add_theme_color(dpg.mvPlotCol_Line, plotColor, category=dpg.mvThemeCat_Plots, parent=plotThemeComponentTag)
+        return plotThemeTag
+
+    def __init__(self, windowTag:str, instrument:TkInstrument, forecastHistorySize:int, futureStepsCount:int, descriptor:list, labels:list):
 
         self._windowTag = windowTag
         self._instrument = instrument
         self._forecastHistorySize = forecastHistorySize
+        self._futureStepsCount = futureStepsCount
+        self._descriptor = descriptor
+        self._step = 0
 
         if( TkForecastPanel._plotThemeTags == None):
             plotColor0 = (31,63,255)
             plotColor1 = (255,63,31)
-            TkForecastPanel._plotThemeTags = []
+            plotColor3 = (23,47,191)
+            plotColor4 = (191,47,23)
+
+            TkForecastPanel._plotThemeTags = []            
             for i in range(forecastHistorySize):
-                plotThemeTag = str(uuid.uuid1())
-                dpg.add_theme(tag=plotThemeTag)
-                plotThemeComponentTag = str(uuid.uuid1())
-                dpg.add_theme_component(dpg.mvLineSeries, tag=plotThemeComponentTag, parent=plotThemeTag)
-
                 t = float(i) / float(forecastHistorySize)
-                plotColor = ( 
-                    int(plotColor0[0] * (1.0-t) + plotColor1[0] * t),
-                    int(plotColor0[1] * (1.0-t) + plotColor1[1] * t),
-                    int(plotColor0[2] * (1.0-t) + plotColor1[2] * t)
-                )
-
-                dpg.add_theme_color(dpg.mvPlotCol_Line, plotColor, category=dpg.mvThemeCat_Plots, parent=plotThemeComponentTag)
+                plotColor = TkForecastPanel.blendColor(plotColor0, plotColor1, t)
+                plotThemeTag = TkForecastPanel.createLineSeriesPlotTheme( plotColor )
                 TkForecastPanel._plotThemeTags.append(plotThemeTag)
+
+            TkForecastPanel._priceAvgThemeTag = TkForecastPanel.createLineSeriesPlotTheme( (255,183,7) )
+            TkForecastPanel._priceMinMaxThemeTag = TkForecastPanel.createLineSeriesPlotTheme( (127,91,3) )
+
+            TkForecastPanel._forecastMinMaxThemeTags = []
+            TkForecastPanel._forecastAvgThemeTags = []
+            for i in range(futureStepsCount):
+                t = float(i) / float(futureStepsCount)
+                plotColor = TkForecastPanel.blendColor(plotColor0, plotColor1, t)
+                plotThemeTag = TkForecastPanel.createLineSeriesPlotTheme( plotColor )
+                TkForecastPanel._forecastAvgThemeTags.append(plotThemeTag)
+                plotColor = TkForecastPanel.blendColor(plotColor3, plotColor4, t)
+                plotThemeTag = TkForecastPanel.createLineSeriesPlotTheme( plotColor )
+                TkForecastPanel._forecastMinMaxThemeTags.append(plotThemeTag)
 
         self._groupTag = str(uuid.uuid1())
         self._group = dpg.add_group(horizontal=True, tag=self._groupTag, parent=self._windowTag)
@@ -239,6 +266,60 @@ class TkForecastPanel():
             dpg.add_line_series( labels, [0.0 for j in range(0, len(labels))], label='T-' + str(j), parent=self._xAxisTag, tag=seriesTag )
             dpg.bind_item_theme(seriesTag, TkForecastPanel._plotThemeTags[i])
 
+        self._pricePlotGroupTag = str(uuid.uuid1())
+        self._pricePlotGroup = dpg.add_group(horizontal=True, tag=self._pricePlotGroupTag, parent=self._groupTag)
+
+        self._pricePlotTag = str(uuid.uuid1())
+        self._pricePlot = dpg.add_plot( label=instrument.ticker(), width=1024, height=256, tag=self._pricePlotTag, parent=self._pricePlotGroup)
+
+        dpg.add_plot_legend(parent=self._pricePlot)
+        self._priceXAxisTag = str(uuid.uuid1())
+        dpg.add_plot_axis(dpg.mvXAxis, tag=self._priceXAxisTag, parent=self._pricePlot)
+        self._priceYAxisTag = str(uuid.uuid1())
+        dpg.add_plot_axis(dpg.mvYAxis, tag=self._priceYAxisTag, parent=self._pricePlot)
+
+        self._priceMinSeriesTag = str(uuid.uuid1())
+        self._priceMaxSeriesTag = str(uuid.uuid1())
+        self._priceAvgSeriesTag = str(uuid.uuid1())
+        self._priceMinSeries = [0]
+        self._priceMaxSeries = [0]
+        self._priceAvgSeries = [0]
+        self._priceLabels = [0]
+
+        dpg.add_line_series( x=self._priceLabels, y=self._priceMinSeries, label='P.Min',  parent=self._priceXAxisTag, tag=self._priceMinSeriesTag )
+        dpg.add_line_series( x=self._priceLabels, y=self._priceMaxSeries, label='P.Max',  parent=self._priceXAxisTag, tag=self._priceMaxSeriesTag )
+        dpg.add_line_series( x=self._priceLabels, y=self._priceAvgSeries, label='P.Avg', parent=self._priceXAxisTag, tag=self._priceAvgSeriesTag )
+        dpg.bind_item_theme( self._priceMinSeriesTag, TkForecastPanel._priceMinMaxThemeTag)
+        dpg.bind_item_theme( self._priceMaxSeriesTag, TkForecastPanel._priceMinMaxThemeTag)
+        dpg.bind_item_theme( self._priceAvgSeriesTag, TkForecastPanel._priceAvgThemeTag)
+
+        self._forecastMinSeriesTags = []
+        self._forecastMaxSeriesTags = []
+        self._forecastAvgSeriesTags = []
+        self._forecastMinSeries = []
+        self._forecastMaxSeries = []
+        self._forecastAvgSeries = []
+        self._forecastLabels = []
+
+        for i in range(futureStepsCount):
+            forecastMinSeriesTag = str(uuid.uuid1())
+            forecastMaxSeriesTag = str(uuid.uuid1())
+            forecastAvgSeriesTag = str(uuid.uuid1())
+            self._forecastMinSeriesTags.append(forecastMinSeriesTag)
+            self._forecastMaxSeriesTags.append(forecastMaxSeriesTag)
+            self._forecastAvgSeriesTags.append(forecastAvgSeriesTag)
+            self._forecastMinSeries.append([0])
+            self._forecastMaxSeries.append([0])
+            self._forecastAvgSeries.append([0])
+            self._forecastLabels.append([0])
+            j = futureStepsCount - i - 1
+            dpg.add_line_series( x=self._forecastLabels[-1], y=self._forecastMinSeries[-1], label='F.Min T-'+ str(j), parent=self._priceXAxisTag, tag=forecastMinSeriesTag )
+            dpg.add_line_series( x=self._forecastLabels[-1], y=self._forecastMaxSeries[-1], label='F.Max T-'+ str(j), parent=self._priceXAxisTag, tag=forecastMaxSeriesTag )
+            dpg.add_line_series( x=self._forecastLabels[-1], y=self._forecastAvgSeries[-1], label='F.Avg T-'+ str(j), parent=self._priceXAxisTag, tag=forecastAvgSeriesTag )
+            dpg.bind_item_theme( forecastMinSeriesTag, TkForecastPanel._forecastMinMaxThemeTags[i])
+            dpg.bind_item_theme( forecastMaxSeriesTag, TkForecastPanel._forecastMinMaxThemeTags[i])
+            dpg.bind_item_theme( forecastAvgSeriesTag, TkForecastPanel._forecastAvgThemeTags[i])
+
         self._infoGroupTag = str(uuid.uuid1())
         self._infoGroup = dpg.add_group(horizontal=True, tag=self._infoGroupTag, parent=self._groupTag)
 
@@ -252,13 +333,16 @@ class TkForecastPanel():
         dpg.delete_item(self._groupTag)
 
     def moveBeforeItem(self, item):
-        dpg.move_item( item=self._groupTag, before=item._groupTag )       
+        dpg.move_item( item=self._groupTag, before=item._groupTag )
 
-    def setSeries(self, series : list, labels : list):
+    def setSeries(self, pivotPrice : float, priceSeries : list, priceDescriptor : list, forecastSeries : list, labels : list):
+
+        # distributions
+
         for i in range(self._forecastHistorySize-1):
             self._series[i] = self._series[i+1]
 
-        self._series[-1] = series
+        self._series[-1] = forecastSeries
 
         for i in range(self._forecastHistorySize):
             j = self._forecastHistorySize-i-1
@@ -269,6 +353,69 @@ class TkForecastPanel():
 
         dpg.fit_axis_data( self._xAxisTag )
         dpg.fit_axis_data( self._yAxisTag )
+
+        # prices
+
+        mean = TkStatistics.get_distribution_mean( priceSeries, priceDescriptor )
+        left_mean, right_mean = TkStatistics.get_distribution_tail_means( priceSeries, priceDescriptor )
+
+        mean = pivotPrice + mean * pivotPrice / 100.0
+        left_mean = pivotPrice + left_mean * pivotPrice / 100.0
+        right_mean = pivotPrice + right_mean * pivotPrice / 100.0
+
+        if self._step > 0:
+            self._priceMinSeries.append(left_mean)
+            self._priceMaxSeries.append(right_mean)
+            self._priceAvgSeries.append(mean)
+        else:
+            self._priceMinSeries[-1] = left_mean
+            self._priceMaxSeries[-1] = right_mean
+            self._priceAvgSeries[-1] = mean
+
+        dpg.set_value( self._priceMinSeriesTag, [self._priceLabels, self._priceMinSeries])
+        dpg.set_value( self._priceMaxSeriesTag, [self._priceLabels, self._priceMaxSeries])
+        dpg.set_value( self._priceAvgSeriesTag, [self._priceLabels, self._priceAvgSeries])
+        dpg.fit_axis_data( self._priceXAxisTag )
+        dpg.fit_axis_data( self._priceYAxisTag )
+
+        self._priceLabels.append( self._step + 1 )
+
+        # forecast prices
+
+        mean = TkStatistics.get_distribution_mean( forecastSeries, self._descriptor )
+        left_mean, right_mean = TkStatistics.get_distribution_tail_means( forecastSeries, self._descriptor )
+
+        mean = pivotPrice + mean * pivotPrice / 100.0
+        left_mean = pivotPrice + left_mean * pivotPrice / 100.0
+        right_mean = pivotPrice + right_mean * pivotPrice / 100.0
+
+        sliceIdx = self._step % self._futureStepsCount
+
+        if len(self._forecastMinSeries[sliceIdx]) == 1:
+            self._forecastMinSeries[sliceIdx][0] = left_mean
+
+        if len(self._forecastMaxSeries[sliceIdx]) == 1:
+            self._forecastMaxSeries[sliceIdx][0] = right_mean
+
+        if len(self._forecastAvgSeries[sliceIdx]) == 1:
+            self._forecastAvgSeries[sliceIdx][0] = mean
+
+        for i in range(self._futureStepsCount):
+            self._forecastLabels[sliceIdx].append( self._step + 1 + i )
+            self._forecastMinSeries[sliceIdx].append( left_mean )
+            self._forecastMaxSeries[sliceIdx].append( right_mean )
+            self._forecastAvgSeries[sliceIdx].append( mean )
+
+        dpg.set_value( self._forecastMinSeriesTags[sliceIdx], [self._forecastLabels[sliceIdx], self._forecastMinSeries[sliceIdx]])
+        dpg.set_value( self._forecastMaxSeriesTags[sliceIdx], [self._forecastLabels[sliceIdx], self._forecastMaxSeries[sliceIdx]])
+        dpg.set_value( self._forecastAvgSeriesTags[sliceIdx], [self._forecastLabels[sliceIdx], self._forecastAvgSeries[sliceIdx]])
+            
+        dpg.fit_axis_data( self._xAxisTag )
+        dpg.fit_axis_data( self._yAxisTag )
+        dpg.fit_axis_data( self._priceXAxisTag )
+        dpg.fit_axis_data( self._priceYAxisTag )
+
+        self._step = self._step + 1
 
     def setProfit(self, value):
         dpg.set_value( self._profitabilityLabelTag, str(value) )        
@@ -283,13 +430,14 @@ class TkForecastPanel():
         return None        
     
     @staticmethod
-    def update(instrument : TkInstrument, series:list , labels:list, forecastHistorySize:int, profit:float):
+    def update(instrument:TkInstrument, pivotPrice:float, priceSeries:list, priceDescriptor:list, forecastSeries:list, forecastDescriptor:list, forecastLabels:list, forecastHistorySize:int, futureStepsCount:int, profit:float):        
         panel = TkForecastPanel.find( instrument )
         if panel == None:
-            panel = TkForecastPanel("primary_window", instrument, forecastHistorySize, labels)
+            panel = TkForecastPanel("primary_window", instrument, forecastHistorySize, futureStepsCount, forecastDescriptor, forecastLabels)
             TkForecastPanel._panels.append( panel )
-            
-        panel.setSeries( series, labels )
+
+        panel.setSeries(pivotPrice, priceSeries, priceDescriptor, forecastSeries, forecastLabels)
+
         panel.setProfit( profit )
 
         if len( TkForecastPanel._panels ) > 1:
@@ -323,7 +471,13 @@ last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
 
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
+future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
 input_width = int(config['TimeSeries']['InputWidth'])
+
+profitability = float(config['ForecastingService']['Profitability'])
+discard_if_non_profitable = ( config['ForecastingService']['DiscardIfNonProfitable'] == 'True' )
+event_notification = ( config['ForecastingService']['EventNotification'] == 'True' )
+forecast_history_size = int(config['ForecastingService']['ForecastHistorySize'])
 
 ipcAddress = config['IPC']['Address']
 ipcPort = int(config['IPC']['Port'])
@@ -493,29 +647,19 @@ def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_wid
 #------------------------------------------------------------------------------------------------------------------------
 # Forecast profitability
 # Returns desicion flag (True/False) and estimated profit in percents
+# 
+# Ignores short sells
+# Supposes that only positive direction of price movement is profitable.
 #------------------------------------------------------------------------------------------------------------------------
 
-def forecast_profitability( price_distribution : list , distribution_descriptor : list, num_modes : int, mode_threshold : float, mean_threshold : float ):
-
-    # ignore short sells
-    # suppose that only positive directions of price movement is profitable
-
-    mean = 0.0
-    for i in range(len(price_distribution)):
-        avgBinPrice = 0.5 *( distribution_descriptor[i][0] + distribution_descriptor[i][1] )
-        binWeight = price_distribution[i]        
-        mean += avgBinPrice * binWeight
+def forecast_profitability( price_distribution : list , distribution_descriptor : list, profitability_threshold : float ):
     
-    if mean > mean_threshold:
-        return True, mean
+    left_mean, right_mean = TkStatistics.get_distribution_tail_means( price_distribution, distribution_descriptor )
     
-    modes = TkStatistics.get_distribution_modes( price_distribution, distribution_descriptor, num_modes )
-
-    for i in range(num_modes):
-        if modes[i][1] > mode_threshold:
-            return True, modes[i][1]
-
-    return False, 0   
+    if right_mean > profitability_threshold:
+        return True, right_mean
+    else:
+        return False, 0.0
 
 #------------------------------------------------------------------------------------------------------------------------
 # Main loop
@@ -564,8 +708,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
             if samples != None:
 
-                last_price = quotation_to_float( samples[-1][0].last_price )
                 min_price_increment = quotation_to_float(instrument.min_price_increment())
+                _, _, _, last_price = TkStatistics.orderbook_distribution( samples[-1][0], orderbook_width, min_price_increment * min_price_increment_factor )
+
+                last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( samples[-1][1], last_price, last_trades_width, min_price_increment * min_price_increment_factor)
+
+                if last_trades_volume > 0:
+                    last_trades *= 1.0/last_trades_volume
+                
                 distribution_incremental_value = (min_price_increment_factor * min_price_increment) / last_price * 100
                 output_distribution_descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(last_trades_width / 2) )
                 output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
@@ -581,16 +731,19 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 output = list( itertools.chain.from_iterable( output.tolist() ) )
                 main_panel.setForecast( output, output_distribution_labels )
 
-                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, num_modes = 4, mode_threshold = 0.75, mean_threshold = 0.75)
+                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, profitability_threshold=profitability)
 
                 if is_profitable:
-                    TkForecastPanel.update(instrument, output, output_distribution_labels, 3, profit)
-                    if not toast.notification_active():
+                    TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)
+                    if event_notification and not toast.notification_active():
                         toastMessage = instrument.ticker() + ' +' + str(profit) + '%'
                         toast.show_toast( instrument.ticker(), toastMessage, duration = 10, threaded = True)
                         print( toastMessage )
                 else:
-                    TkForecastPanel.discard(instrument)
+                    if discard_if_non_profitable:
+                        TkForecastPanel.discard(instrument)
+                    else:
+                        TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)
 
                 main_panel.setTicker( filename + " / " + ticker + " / " + instrument.figi() + ", prep: " + str(preprocess_samples_time) + " forecast: " + str(forecast_time) )
 
