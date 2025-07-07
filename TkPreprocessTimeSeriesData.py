@@ -51,7 +51,7 @@ class TkTimeSeriesDataPreprocessor():
         self._orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
         self._orderbook_autoencoder.eval()
 
-        last_trades_model_path =  join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['LastTradesAutoencoderModelFileName'] )
+        last_trades_model_path = join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['LastTradesAutoencoderModelFileName'] )
 
         if not os.path.isfile(last_trades_model_path):
             raise RuntimeError('Last trades autoencoder model is missing!')
@@ -75,11 +75,8 @@ class TkTimeSeriesDataPreprocessor():
 
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
         self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
-        self._target_width = int(_cfg['TimeSeries']['TargetWidth'])
-        self._target_discretization = float(_cfg['TimeSeries']['TargetDiscretization'])
-        self._priority_mode_count = int(_cfg['TimeSeries']['PriorityModeCount'])
-        self._priority_mode_threshold = float(_cfg['TimeSeries']['PriorityModeThreshold'])
-        self._priority_mean_threshold = float(_cfg['TimeSeries']['PriorityMeanThreshold'])
+        self._priority_tail_epsilon = float(_cfg['TimeSeries']['PriorityTailEpsilon'])
+        self._priority_tail_threshold = float(_cfg['TimeSeries']['PriorityTailThreshold'])
 
         self._priority_table = []
         self._regular_table = []
@@ -119,6 +116,8 @@ class TkTimeSeriesDataPreprocessor():
         if raw_sample_count < self._prior_steps_count + self._future_steps_count:
             print( 'Not enough sample count: ', raw_sample_count )
             return
+
+        # encode orderbook & last trades
 
         price = [0.0] * raw_sample_count
         orderbook_volume = [0] * raw_sample_count
@@ -161,6 +160,42 @@ class TkTimeSeriesDataPreprocessor():
         end_range = raw_sample_count - self._future_steps_count - 1
         range_len = end_range - start_range
 
+        # encode future trades distribution
+
+        future_trades = [None] * (end_range)
+        future_trades_descriptor = [None] * (end_range)
+        future_trades_volume = [None] * (end_range)
+
+        for i in range( start_range, end_range ):
+            ts_base_price = price[i]
+            last_trades_sample = raw_samples[(i+1)*2+1]
+
+            ts_target_distribution, ts_target_descriptor, ts_target_volume = TkStatistics.trades_distribution( last_trades_sample, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
+
+            for j in range( 1, self._future_steps_count ):
+                last_trades_sample = raw_samples[(i+j+1)*2+1]
+                ts_target_volume = TkStatistics.accumulate_trades_distribution( ts_target_distribution, ts_target_descriptor, ts_target_volume, last_trades_sample, ts_base_price)
+
+            if ts_target_volume > 0:
+                ts_target_distribution *= 1.0 / ts_target_volume
+
+            future_trades_descriptor[i] = ts_target_descriptor
+            future_trades_volume[i] = ts_target_volume
+            future_trades[i] = ts_target_distribution
+
+        future_trades_input = [future_trades[i] for i in range(start_range, end_range)]
+        future_trades_input = torch.Tensor( np.concatenate( future_trades_input ) )
+        future_trades_input = torch.reshape( future_trades_input, ( (end_range-start_range), 1, self._last_trades_width ) )
+        future_trades_input = future_trades_input.cuda()
+        future_trades_code = self._last_trades_autoencoder.encode(future_trades_input)
+        future_trades_code = torch.reshape( future_trades_code, ( (end_range-start_range), self._last_trades_autoencoder_code_layer_size ) )
+        future_trades_code = future_trades_code.tolist()
+
+        for i in range( start_range ):
+            future_trades_code.insert( 0, None )
+
+        # combine data samples
+
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
         num_invalid_samples = 0
@@ -195,33 +230,31 @@ class TkTimeSeriesDataPreprocessor():
 
             ts_input = list( itertools.chain.from_iterable(ts_input) )
 
-            last_trades_sample = raw_samples[(i+1)*2+1]
-            ts_target_distribution, ts_target_descriptor, ts_target_volume = TkStatistics.trades_distribution( last_trades_sample, ts_base_price, self._target_width, ts_base_price / 100 * self._target_discretization )
-            for j in range( 1, self._future_steps_count ):
-                last_trades_sample = raw_samples[(i+j+1)*2+1]
-                ts_target_volume = TkStatistics.accumulate_trades_distribution( ts_target_distribution, ts_target_descriptor, ts_target_volume, last_trades_sample, ts_base_price)
+            # ignore sample if volume of future trades is zero
 
-            if ts_target_volume > 0:
-                ts_target_distribution *= 1.0 / ts_target_volume
+            if future_trades_volume[i] > 0:
 
-                ts_target = ts_target_distribution.tolist()
+                ts_target_code = future_trades_code[i].copy()
+                ts_target = future_trades[i].tolist()
 
                 verbalize = True
                 if is_test_data_source:
                     self._test_index.append( self._test_data_offset )
                     TkIO.write_to_file( self._test_data_stream, ts_input )
+                    TkIO.write_to_file( self._test_data_stream, ts_target_code )
                     TkIO.write_to_file( self._test_data_stream, ts_target )
                     self._test_data_offset = self._test_data_stream.tell()
                 else:
-                    ts_target_modes = TkStatistics.get_distribution_modes( ts_target_distribution, ts_target_descriptor, self._priority_mode_count )
-                    ts_target_mean = TkStatistics.get_distribution_mean( ts_target_distribution, ts_target_descriptor )
-                    is_priority_sample = any( abs(ts_target_mode[1]) > self._priority_mode_threshold for ts_target_mode in ts_target_modes) or abs(ts_target_mean) > self._priority_mean_threshold
+                    ts_target_left_tail, ts_target_right_tail = TkStatistics.get_distribution_tails( ts_target_distribution, ts_target_descriptor, self._priority_tail_epsilon )
+                    ts_threshold_price = self._priority_tail_threshold * 0.5 * (ts_target_descriptor[-1][0] + ts_target_descriptor[-1][1])
+                    is_priority_sample = ( ts_target_left_tail <= -ts_threshold_price ) or ( ts_target_right_tail >= ts_threshold_price )
                     if is_priority_sample:
                         self._priority_table.append( len(self._training_index) )
                     else:
                         self._regular_table.append( len(self._training_index) )
                     self._training_index.append( self._training_data_offset )
                     TkIO.write_to_file( self._training_data_stream, ts_input )
+                    TkIO.write_to_file( self._training_data_stream, ts_target_code )
                     TkIO.write_to_file( self._training_data_stream, ts_target )
                     self._training_data_offset = self._training_data_stream.tell()
                     verbalize = is_priority_sample
@@ -327,7 +360,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
 
         num_data_sources = len(files_by_ticker[ticker])
-        num_test_data_sources = min(1, int( num_data_sources * test_data_ratio ))
+        num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
         num_training_data_sources = num_data_sources - num_test_data_sources
 
         for i in range(num_data_sources):
@@ -353,8 +386,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             num_training_samples = preprocessor.num_training_samples()
             num_regular_samples = preprocessor.num_regular_samples()
             num_priority_samples = preprocessor.num_priority_samples()
+            num_test_samples = preprocessor.num_test_samples()
             dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
-            dpg.set_value("samples_processed", str(num_training_samples)+"/"+str(num_regular_samples)+"/"+str(num_priority_samples))
+            dpg.set_value("samples_processed", str(num_training_samples)+"/"+str(num_regular_samples)+"/"+str(num_priority_samples)+"/"+str(num_test_samples))
 
             dpg.render_dearpygui_frame()
             if not dpg.is_dearpygui_running():

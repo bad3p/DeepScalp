@@ -18,7 +18,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._cfg = _cfg
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount']) 
         self._input_width = int(_cfg['TimeSeries']['InputWidth']) 
-        self._target_width = int(_cfg['TimeSeries']['TargetWidth']) 
+        self._target_code_width = int(_cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._lstm_specification = json.loads(_cfg['TimeSeries']['LSTM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
@@ -68,7 +68,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         y = torch.reshape( self._mlp_input_tensors, (batch_size, self._mlp_input_size) )
         y = self._mlp.forward( y )
-        y = torch.reshape( y, ( batch_size, self._target_width) )
-        y = self._soft_max( y )
+        y = torch.reshape( y, ( batch_size, self._target_code_width) )
 
         return y
