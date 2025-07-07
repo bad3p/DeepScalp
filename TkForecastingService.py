@@ -10,6 +10,7 @@ import random
 import math
 import torch
 import uuid
+import bisect
 from os import listdir
 from os.path import isfile, join
 from datetime import date, datetime, timezone
@@ -357,7 +358,7 @@ class TkForecastPanel():
         # prices
 
         mean = TkStatistics.get_distribution_mean( priceSeries, priceDescriptor )
-        left_mean, right_mean = TkStatistics.get_distribution_tail_means( priceSeries, priceDescriptor )
+        left_mean, right_mean = TkStatistics.get_distribution_tails( priceSeries, priceDescriptor, 0.001 )
 
         mean = pivotPrice + mean * pivotPrice / 100.0
         left_mean = pivotPrice + left_mean * pivotPrice / 100.0
@@ -383,7 +384,7 @@ class TkForecastPanel():
         # forecast prices
 
         mean = TkStatistics.get_distribution_mean( forecastSeries, self._descriptor )
-        left_mean, right_mean = TkStatistics.get_distribution_tail_means( forecastSeries, self._descriptor )
+        left_mean, right_mean = TkStatistics.get_distribution_tails( forecastSeries, self._descriptor, 0.001 )
 
         mean = pivotPrice + mean * pivotPrice / 100.0
         left_mean = pivotPrice + left_mean * pivotPrice / 100.0
@@ -420,6 +421,66 @@ class TkForecastPanel():
     def setProfit(self, value):
         dpg.set_value( self._profitabilityLabelTag, str(value) )        
 
+    def getForecastScore(self):
+
+        def getPriceAtStep(step:int):
+            labelIdx = bisect.bisect_left( self._priceLabels, step )
+            if labelIdx == 0:
+                return None, None, None
+            else:
+                if labelIdx < len(self._priceMinSeries):
+                    priceMin = self._priceMinSeries[labelIdx]
+                    priceMax = self._priceMaxSeries[labelIdx]
+                    priceAvg = self._priceAvgSeries[labelIdx]
+                    return priceMin, priceMax, priceAvg
+                else:
+                    return None,None,None
+
+        minScore = 0.0
+        maxScore = 0.0
+        avgScore = 0.0
+        norm = 0
+
+        for slice in range(self._futureStepsCount):
+            if len(self._forecastLabels[slice]) > 0:
+                for label in range( int(len(self._forecastLabels[slice]) / 4) ):
+                    step0 = self._forecastLabels[slice][label]
+                    step1 = step0 + self._futureStepsCount
+                    forecastMin = self._forecastMinSeries[slice][label]
+                    forecastMax = self._forecastMaxSeries[slice][label]
+                    forecastAvg = self._forecastAvgSeries[slice][label]
+                
+                    priceMin = None
+                    priceMax = None
+                    priceAvg = None
+                    lnorm = 0
+                
+                    for step in range(step0, step1):
+                        pmin, pmax, pavg = getPriceAtStep(step)
+                        if pmin != None:
+                            if priceMin != None:
+                                priceMin = min( pmin, priceMin )
+                                priceMax = max( pmax, priceMax)
+                                priceAvg = priceAvg + pavg
+                            else:
+                                priceMin = pmin
+                                priceMax = pmax
+                                priceAvg = pavg
+                            lnorm = lnorm + 1
+
+                    priceAvg = priceAvg / lnorm if lnorm > 0 else priceAvg
+
+                    if priceMin != None:
+                        minScore = minScore + abs( priceMin - forecastMin ) / priceAvg
+                        maxScore = maxScore + abs( priceMax - forecastMax ) / priceAvg
+                        avgScore = avgScore + abs( priceAvg - forecastAvg ) / priceAvg
+                        norm = norm + 1
+        result = 0.0
+        if norm > 0:
+            result = (minScore + maxScore + avgScore) / norm
+                        
+        return result
+
     _panels = []
 
     @staticmethod
@@ -428,6 +489,15 @@ class TkForecastPanel():
             if TkForecastPanel._panels[i]._instrument.ticker() == instrument.ticker():
                 return TkForecastPanel._panels[i]
         return None        
+    
+    @staticmethod
+    def getTotalForecastScore():
+        result = 0
+        norm = 0
+        for i in range(len(TkForecastPanel._panels)):
+            result = result + TkForecastPanel._panels[i].getForecastScore()
+            norm = norm + 1
+        return result / norm if norm > 0 else result
     
     @staticmethod
     def update(instrument:TkInstrument, pivotPrice:float, priceSeries:list, priceDescriptor:list, forecastSeries:list, forecastDescriptor:list, forecastLabels:list, forecastHistorySize:int, futureStepsCount:int, profit:float):        
@@ -745,11 +815,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     else:
                         TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)
 
-                main_panel.setTicker( filename + " / " + ticker + " / " + instrument.figi() + ", prep: " + str(preprocess_samples_time) + " forecast: " + str(forecast_time) )
+                score = TkForecastPanel.getTotalForecastScore()
+                main_panel.setTicker( filename + " / " + ticker + " / " + instrument.figi() + " / score : " + str(score) )
 
             else:
 
-                main_panel.setTicker( filename + " / " + ticker + " / " + instrument.figi() )
+                score = TkForecastPanel.getTotalForecastScore()
+                main_panel.setTicker( filename + " / " + ticker + " / " + instrument.figi() + " / score : " + str(score) )
 
         dpg.render_dearpygui_frame()
         

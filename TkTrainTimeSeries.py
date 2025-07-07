@@ -250,12 +250,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_code_"+ui_tag )
                     dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_code_"+ui_tag, tag=ui_tag+"_code_output_series" )
                     dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_code_"+ui_tag, tag=ui_tag+"_code_target_series" )
-                with dpg.plot(label="True", width=384, height=256):
+                with dpg.plot(label="Output", width=384, height=256):
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_true_"+ui_tag )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_true_"+ui_tag )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_output_series" )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_target_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Decoded output", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_decoded_output_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Decoded target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_decoded_target_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="True target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_target_series" )
         with dpg.group(horizontal=True):
             with dpg.plot(label="Training", width=512, height=256):
                 dpg.add_plot_legend()
@@ -308,12 +309,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         y = ts_model.forward( input )
 
         z = lta_model.decode( y )
+        z_target = lta_model.decode( target_code )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_code_training", "y_axis_code_training", "training_code_output_series", y, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_code_training", "y_axis_code_training", "training_code_target_series", target_code, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", z_target, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
 
         y_loss = ts_loss( y, target_code )
@@ -354,12 +357,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         ts_model.train(True)
 
         z = lta_model.decode( y )
+        z_target = lta_model.decode( target_code )
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
         TkUI.set_series_from_tensor("x_axis_code_test", "y_axis_code_test", "test_code_output_series", y, 0)
         TkUI.set_series_from_tensor("x_axis_code_test", "y_axis_code_test", "test_code_target_series", target_code, 0)
-        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", z, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", z_target, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_target_series", target_true, display_batch_id)        
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
@@ -367,7 +372,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
         
-        z_accuracy = ts_accuracy( z, target_true ).detach()
+        z_accuracy = ts_accuracy( z, z_target ).detach()
         z_accuracy = z_accuracy.mean()
         z_accuracy_val = z_accuracy.item()
 
