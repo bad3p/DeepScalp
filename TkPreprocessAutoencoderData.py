@@ -35,23 +35,24 @@ from LSHash import LSHash
 class TkAutoencoderDataPreprocessor():
 
     def __init__(self, _cfg : configparser.ConfigParser):
-        self._orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
-        self._last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
-        self._min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
-        self._lshash_size = int(config['Autoencoders']['LSHashSize'])
-        self._orderbook_sample_similarity = float(config['Autoencoders']['OrderBookSampleSimilarity'])
-        self._last_trades_sample_similarity = float(config['Autoencoders']['LastTradesSampleSimilarity'])
-        self._test_data_ratio = float(config['Autoencoders']['TestDataRatio'])
-        self._future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
+        self._orderbook_width = int(_cfg['Autoencoders']['OrderBookWidth'])
+        self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
+        self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])
+        self._lshash_size = int(_cfg['Autoencoders']['LSHashSize'])
+        self._orderbook_sample_similarity = float(_cfg['Autoencoders']['OrderBookSampleSimilarity'])
+        self._last_trades_sample_similarity = float(_cfg['Autoencoders']['LastTradesSampleSimilarity'])
+        self._synthetic_orderbook_sample_similarity = float(_cfg['Autoencoders']['SyntheticOrderBookSampleSimilarity'])
+        self._synthetic_last_trades_sample_similarity = float(_cfg['Autoencoders']['SyntheticLastTradesSampleSimilarity'])
+        self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
 
-        self._data_path = config['Paths']['DataPath']
-        self._orderbook_index_filename = config['Paths']['OrderBookIndexFileName']
-        self._orderbook_training_data_filename = config['Paths']['OrderBookTrainingDataFileName']
-        self._orderbook_test_data_filename = config['Paths']['OrderBookTestDataFileName']
+        self._data_path = _cfg['Paths']['DataPath']
+        self._orderbook_index_filename = _cfg['Paths']['OrderBookIndexFileName']
+        self._orderbook_training_data_filename = _cfg['Paths']['OrderBookTrainingDataFileName']
+        self._orderbook_test_data_filename = _cfg['Paths']['OrderBookTestDataFileName']
 
-        self._last_trades_index_filename = config['Paths']['LastTradesIndexFileName']
-        self._last_trades_training_data_filename = config['Paths']['LastTradesTrainingDataFileName']
-        self._last_trades_test_data_filename = config['Paths']['LastTradesTestDataFileName']
+        self._last_trades_index_filename = _cfg['Paths']['LastTradesIndexFileName']
+        self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName']
+        self._last_trades_test_data_filename = _cfg['Paths']['LastTradesTestDataFileName']
 
         self._orderbook_training_index = []
         self._orderbook_test_index = []
@@ -73,27 +74,22 @@ class TkAutoencoderDataPreprocessor():
         self._orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
         self._last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
+    def clear_lsh(self):
+        self._orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
+        self._last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
+
     def num_orderbook_samples(self):
         return len(self._orderbook_training_index) + len(self._orderbook_test_index)
 
     def num_last_trades_samples(self):
         return len(self._last_trades_training_index) + len(self._last_trades_test_index)
 
-    def write_samples(self,samples, training_index, test_index, training_offset, test_offset, training_stream, test_stream):
-
-        first_test_idx = int( len(samples) * (1.0 -self._test_data_ratio ) )
-
-        for i in range(len(samples)):
-            isTestSample = i > first_test_idx
-            if isTestSample:
-                test_index.append(test_offset)
-                TkIO.write_to_file(test_stream, samples[i])
-                test_offset = test_stream.tell()
-            else:
-                training_index.append(training_offset)
-                TkIO.write_to_file(training_stream, samples[i])
-                training_offset = training_stream.tell()
-        return training_offset, test_offset        
+    def write_samples(self, samples, index, offset, stream):
+        for i in range(len(samples)):            
+            index.append(offset)
+            TkIO.write_to_file(stream, samples[i])
+            offset = stream.tell()            
+        return offset
 
     def flush(self):
         TkIO.write_at_path( join(self._data_path, self._orderbook_index_filename), self._orderbook_training_index )
@@ -104,8 +100,8 @@ class TkAutoencoderDataPreprocessor():
         self._orderbook_test_data_stream.close()
         self._last_trades_training_data_stream.close()
         self._last_trades_test_data_stream.close()
-        
-    def add_samples(self, share : TkInstrument, raw_samples : list, render_callback):
+
+    def add_samples(self, share : TkInstrument, raw_samples : list, training_category : bool, render_callback):
 
         min_price_increment = quotation_to_float( share.min_price_increment() )
         raw_sample_count = int( len(raw_samples) / 2 ) # orderbook, last_trades
@@ -152,30 +148,111 @@ class TkAutoencoderDataPreprocessor():
                 if render_callback != None:
                     render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
 
-        self._orderbook_training_data_offset, self._orderbook_test_data_offset = self.write_samples( 
-            self._normalized_orderbook_samples,
-            self._orderbook_training_index, 
-            self._orderbook_test_index, 
-            self._orderbook_training_data_offset, 
-            self._orderbook_test_data_offset, 
-            self._orderbook_training_data_stream,
-            self._orderbook_test_data_stream,
-        )
+        if training_category:                    
+            self._orderbook_training_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_training_index, 
+                self._orderbook_training_data_offset, 
+                self._orderbook_training_data_stream
+            )
+            self._last_trades_training_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_training_index, 
+                self._last_trades_training_data_offset, 
+                self._last_trades_training_data_stream
+            )
+        else:
+            self._orderbook_test_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_test_index, 
+                self._orderbook_test_data_offset, 
+                self._orderbook_test_data_stream
+            )
+            self._last_trades_test_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_test_index, 
+                self._last_trades_test_data_offset, 
+                self._last_trades_test_data_stream
+            )
 
-        self._last_trades_training_data_offset, self._last_trades_test_data_offset = self.write_samples(
-            self._normalized_last_trades_samples, 
-            self._last_trades_training_index, 
-            self._last_trades_test_index, 
-            self._last_trades_training_data_offset, 
-            self._last_trades_test_data_offset, 
-            self._last_trades_training_data_stream,
-            self._last_trades_test_data_stream
-        )
+    def add_preprocessed_samples(self, orderbook_samples : list, last_trades_samples : list, training_category : bool, render_callback):
 
-    def generate_synthetic_samples(self, render_callback):
+        self._normalized_orderbook_samples = []
+        self._normalized_last_trades_samples = []
+
+        callback_indices = [int(i / 100.0 * len(orderbook_samples)) for i in range(1,100)]
+
+        for i in range(len(orderbook_samples)):
+            distribution = orderbook_samples[i]            
+            lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
+                self._normalized_orderbook_samples.append(distribution)
+                self._orderbook_lsh.index(distribution)
+            if len(callback_indices) > 0 and i >= callback_indices[0]:
+                del callback_indices[0]
+                if render_callback != None:
+                    render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+
+        callback_indices = [int(i / 100.0 * len(last_trades_samples)) for i in range(1,100)]
+
+        for i in range(len(last_trades_samples)):
+            distribution = last_trades_samples[i]            
+            lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
+                self._normalized_last_trades_samples.append(distribution)
+                self._last_trades_lsh.index(distribution)
+            if len(callback_indices) > 0 and i >= callback_indices[0]:
+                del callback_indices[0]
+                if render_callback != None:
+                    render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+
+        if training_category:                    
+            self._orderbook_training_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_training_index, 
+                self._orderbook_training_data_offset, 
+                self._orderbook_training_data_stream
+            )
+            self._last_trades_training_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_training_index, 
+                self._last_trades_training_data_offset, 
+                self._last_trades_training_data_stream
+            )
+        else:
+            self._orderbook_test_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_test_index, 
+                self._orderbook_test_data_offset, 
+                self._orderbook_test_data_stream
+            )
+            self._last_trades_test_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_test_index, 
+                self._last_trades_test_data_offset, 
+                self._last_trades_test_data_stream
+            )
+
+    def generate_synthetic_samples(self, training_category : bool, render_callback):
 
         synthetic_sample_ratio = float(config['Autoencoders']['SyntheticSampleRatio'])
-        num_samples = int( synthetic_sample_ratio * max( self.num_orderbook_samples(), self.num_last_trades_samples() ) )
+
+        if synthetic_sample_ratio <= 0.0:
+            return
+
+        num_orderbook_training_samples = len(self._orderbook_training_index)
+        num_orderbook_test_samples = len(self._orderbook_test_index)
+        num_last_trades_training_samples = len(self._last_trades_training_index)
+        num_last_trades_test_samples = len(self._last_trades_test_index)
+
+        num_samples = 0
+
+        if training_category:
+            num_samples = int( synthetic_sample_ratio * max( num_orderbook_training_samples, num_last_trades_training_samples ) )
+        else:
+            num_samples = int( synthetic_sample_ratio * max( num_orderbook_test_samples, num_last_trades_test_samples ) )
+            if num_samples == 0:
+                num_samples = int( synthetic_sample_ratio * max( num_orderbook_training_samples, num_last_trades_training_samples ) )
 
         synthetic_orderbook_scheme = json.loads(config['Autoencoders']['SyntheticOrderbookScheme'])
         if not type(synthetic_orderbook_scheme) is list:
@@ -204,7 +281,7 @@ class TkAutoencoderDataPreprocessor():
             TkStatistics.generate_distribution( distribution, orderbook_scheme, synthetic_sample_bias )
             TkStatistics.to_cumulative_distribution(distribution)
             lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
-            if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._synthetic_orderbook_sample_similarity:
                 self._normalized_orderbook_samples.append(distribution)
                 self._orderbook_lsh.index(distribution)
             else:
@@ -214,7 +291,7 @@ class TkAutoencoderDataPreprocessor():
             distribution = np.zeros( self._last_trades_width, dtype=float)
             TkStatistics.generate_clustered_distribution( distribution, last_trades_scheme, synthetic_sample_bias, synthetic_last_trades_sample_max_variance )
             lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
-            if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._synthetic_last_trades_sample_similarity:
                 self._normalized_last_trades_samples.append(distribution)
                 self._last_trades_lsh.index(distribution)
             else:
@@ -230,26 +307,35 @@ class TkAutoencoderDataPreprocessor():
         if render_callback != None:
             render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
 
-        self._orderbook_training_data_offset, self._orderbook_test_data_offset = self.write_samples( 
-            self._normalized_orderbook_samples,
-            self._orderbook_training_index, 
-            self._orderbook_test_index, 
-            self._orderbook_training_data_offset, 
-            self._orderbook_test_data_offset, 
-            self._orderbook_training_data_stream,
-            self._orderbook_test_data_stream,
-        )
+        if training_category:
+            self._orderbook_training_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_training_index, 
+                self._orderbook_training_data_offset, 
+                self._orderbook_training_data_stream
+            )
+            self._last_trades_training_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_training_index, 
+                self._last_trades_training_data_offset, 
+                self._last_trades_training_data_stream
+            )
+        else:
+            self._orderbook_test_data_offset = self.write_samples( 
+                self._normalized_orderbook_samples,
+                self._orderbook_test_index, 
+                self._orderbook_test_data_offset, 
+                self._orderbook_test_data_stream
+            )
+            self._last_trades_test_data_offset = self.write_samples(
+                self._normalized_last_trades_samples, 
+                self._last_trades_test_index, 
+                self._last_trades_test_data_offset, 
+                self._last_trades_test_data_stream
+            )
 
-        self._last_trades_training_data_offset, self._last_trades_test_data_offset = self.write_samples(
-            self._normalized_last_trades_samples, 
-            self._last_trades_training_index, 
-            self._last_trades_test_index, 
-            self._last_trades_training_data_offset, 
-            self._last_trades_test_data_offset, 
-            self._last_trades_training_data_stream,
-            self._last_trades_test_data_stream
-        )
-
+#------------------------------------------------------------------------------------------------------------------------
+# Main loop
 #------------------------------------------------------------------------------------------------------------------------
 
 TOKEN = os.environ["TK_TOKEN"]
@@ -259,13 +345,13 @@ config.read( 'TkConfig.ini' )
 
 data_path = config['Paths']['DataPath']
 data_extension = config['Paths']['OrderbookFileExtension']
+test_data_ratio = float(config['Autoencoders']['TestDataRatio'])
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
-random.shuffle(data_files)
-
-# data_files = data_files[:100] # slice the rest in test purpose
-
 print( 'Data files found:', len(data_files) )
+
+files_by_ticker = TkInstrument.group_by_ticker(data_files)
+print( 'Tickers found:', len(files_by_ticker) )
 
 preprocessor = TkAutoencoderDataPreprocessor( config )
 
@@ -313,44 +399,61 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     total_samples = 0
     files_processed = 0
     start_time = time.time()
-    for filename in data_files:
-        
-        dpg.set_value("filename", filename)
 
-        dpg.render_dearpygui_frame()
-        if not dpg.is_dearpygui_running():
-            break
+    for ticker in files_by_ticker:
 
-        ticker = filename[ 0: filename.find("_") ]
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
-        raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-        preprocessor.add_samples(share, raw_samples, render_samples)
+        num_data_sources = len(files_by_ticker[ticker])
+        num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
+        num_training_data_sources = num_data_sources - num_test_data_sources
 
-        total_samples = total_samples + int( len( raw_samples ) / 2 )
-        files_processed = files_processed + 1
+        for i in range(num_data_sources):
+            date_and_filename = files_by_ticker[ticker][i]
+            date = date_and_filename[0]
+            filename = date_and_filename[1]
+            is_test_data_source = i+1 >= num_training_data_sources
+        
+            dpg.set_value("filename", filename)
 
-        dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
-        dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
-        dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
+            dpg.render_dearpygui_frame()
+            if not dpg.is_dearpygui_running():
+                break
 
-        dpg.render_dearpygui_frame()
-        if not dpg.is_dearpygui_running():
-            break
+            raw_samples = TkIO.read_at_path( join( data_path, filename) )
+
+            preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
+
+            total_samples = total_samples + int( len( raw_samples ) / 2 )
+            files_processed = files_processed + 1
+
+            dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
+            dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
+            dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
+
+            dpg.render_dearpygui_frame()
+            if not dpg.is_dearpygui_running():
+                break
+
+    preprocessor.clear_lsh()
 
     end_time = time.time()
     print('Elapsed time:',end_time-start_time)
 
-    dpg.set_value("filename", 'Generating synthetic samples...')
-    dpg.render_dearpygui_frame()
-    
-    preprocessor.generate_synthetic_samples( render_samples )
-    dpg.render_dearpygui_frame()
+    if dpg.is_dearpygui_running():
 
-    dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
-    dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
-    dpg.set_value("filename", '...all is done!')
-    dpg.render_dearpygui_frame()
+        dpg.set_value("filename", 'Generating synthetic samples...')
+        dpg.render_dearpygui_frame()
+    
+        preprocessor.generate_synthetic_samples( True, render_samples )
+        preprocessor.clear_lsh()
+        preprocessor.generate_synthetic_samples( False, render_samples )
+        dpg.render_dearpygui_frame()
+
+        dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
+        dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
+        dpg.set_value("filename", '...all is done!')
+        dpg.render_dearpygui_frame()
 
     preprocessor.flush()
 

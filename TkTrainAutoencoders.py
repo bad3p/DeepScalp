@@ -87,6 +87,10 @@ class TkAutoencoderDataLoader():
             self._orderbook_test_batch_size = max(1,int(round(len(self._orderbook_test_index) / self._epoch_size)))
             self._last_trades_test_batch_size = max(1,int(round(len(self._last_trades_test_index) / self._epoch_size)))
 
+        print("Epoch_size:", self._epoch_size )
+        print("Orderbook training batch size:", self._orderbook_training_batch_size)
+        print("Last trades training batch size:", self._last_trades_training_batch_size)
+
         self._orderbook_samples = None
         self._last_trades_samples = None
         self._loading_thread = None
@@ -221,10 +225,13 @@ last_trades_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['
 last_trades_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderOptimizerFileName'] )
 last_trades_history_path = join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderTrainingHistoryFileName'] )
 
+cooldown = float(config['Autoencoders']['Cooldown'])
 orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 orderbook_code_layer_size = int(config['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
 last_trades_code_layer_size = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+orderbook_autoencoder_beta = float(config['Autoencoders']['OrderbookAutoencoderBeta'])
+last_trades_autoencoder_beta = float(config['Autoencoders']['LastTradesAutoencoderBeta'])
 orderbook_autoencoder_learning_rate = float(config['Autoencoders']['OrderbookAutoencoderLearningRate'])
 orderbook_autoencoder_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderWeightDecay'])
 last_trades_autoencoder_learning_rate = float(config['Autoencoders']['LastTradesAutoencoderLearningRate'])
@@ -358,7 +365,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
         y_KLD = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
-        y_loss = orderbook_loss( y, orderbook_input ) + y_KLD
+        y_loss = orderbook_loss( y, orderbook_input ) + y_KLD * orderbook_autoencoder_beta
         y_loss = y_loss.mean()
         orderbook_optimizer.zero_grad()
         y_loss.backward()
@@ -366,7 +373,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         y_loss_val = y_loss.item()
 
         z_KLD = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_loss = last_trades_loss( z, last_trades_input ) + z_KLD
+        z_loss = last_trades_loss( z, last_trades_input ) + z_KLD * last_trades_autoencoder_beta
         z_loss = z_loss.mean()
         last_trades_optimizer.zero_grad()
         z_loss.backward()
@@ -411,7 +418,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         z_accuracy = z_accuracy.mean()
         z_accuracy_val = z_accuracy.item()
 
-        dpg.render_dearpygui_frame()
+        dpg.render_dearpygui_frame()        
 
         orderbook_training_history.log(data_loader.orderbook_training_sample_id(), data_loader.orderbook_test_sample_id(), y_loss_val, y_accuracy_val)
         last_trades_training_history.log(data_loader.last_trades_training_sample_id(), data_loader.last_trades_test_sample_id(), z_loss_val, z_accuracy_val)
@@ -427,6 +434,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series("x_axis_last_trades_training_epoch", "y_axis_last_trades_training_epoch", "last_trades_accuracy_series_epoch", last_trades_training_history.epoch_accuracy_history())
 
         dpg.render_dearpygui_frame()
+
+        cooldownRemaining = cooldown
+        cooldownStep = 1.0 / 30.0
+        while dpg.is_dearpygui_running() and cooldownRemaining > 0.0:
+            time.sleep(cooldownStep)
+            cooldownRemaining -= cooldownStep
+            dpg.render_dearpygui_frame()
         
 
     dpg.destroy_context()

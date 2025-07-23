@@ -1,4 +1,6 @@
 import configparser
+from datetime import date, datetime, timezone, timedelta
+from collections import defaultdict
 from configparser import ConfigParser
 from tinkoff.invest import Client
 from tinkoff.invest import InstrumentIdType
@@ -125,3 +127,41 @@ class TkInstrument():
         assetsWithInstruments = [asset for asset in getAssetsResponse.assets if len(asset.instruments) > 1 ]
         filteredAssets = [asset for asset in assetsWithInstruments if asset.instruments[0].instrument_kind == instrument_kind and asset.instruments[0].class_code == class_code]        
         return [asset.instruments[0].ticker for asset in filteredAssets]        
+
+    #------------------------------------------------------------------------------------------------------------------------    
+    # File helpers
+    # Orderbook file name convention: TICKER_Month_Day_Year_Anchor.obs
+    # Anchor = {Day|Evening}
+    #------------------------------------------------------------------------------------------------------------------------    
+
+    @staticmethod
+    def date_from_filename(filename:str): 
+        date_str = filename[ filename.find("_") + 1: ]
+        date_str = date_str[ 0 : date_str.find(".") ]
+        date_anchor = date_str[ date_str.rfind("_") + 1: ]
+        date_str = date_str[ 0 : date_str.rfind("_") ]
+        result = datetime.strptime( date_str,'%B_%d_%Y' )
+        if date_anchor == 'Evening':
+            result = result + timedelta(hours=19)
+        else:
+            result = result + timedelta(hours=10)
+        return result
+
+    @staticmethod
+    def ticker_from_filename(filename:str):
+        return filename[ 0: filename.find("_") ]
+
+    @staticmethod
+    def group_by_ticker(filenames:list):
+        result = defaultdict(list)
+        for filename in filenames:
+            ticker = TkInstrument.ticker_from_filename(filename)
+            date = TkInstrument.date_from_filename(filename)
+            result[ticker].append( (date, filename) )
+
+        for key in result:
+            files = result[key]
+            files = sorted( files, key=lambda x: x[0] )
+            result[key] = files
+
+        return result

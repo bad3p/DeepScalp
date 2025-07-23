@@ -37,6 +37,9 @@ class TkModel(torch.nn.Module):
         def create_lrelu_layer(params : list):
             layer_leakage = params[0]
             return torch.nn.LeakyReLU(layer_leakage)
+        
+        def create_tanh_layer(params : list):
+            return torch.nn.Tanh()
 
         def create_prelu_layer(params : list):
             channels = params[0]
@@ -77,6 +80,8 @@ class TkModel(torch.nn.Module):
                 return create_deconv_layer( layer_descriptor[layer_type] )
             if layer_type == 'LReLU':
                 return create_lrelu_layer( layer_descriptor[layer_type] )
+            if layer_type == 'TanH':
+                return create_tanh_layer( layer_descriptor[layer_type] )
             if layer_type == 'PReLU':
                 return create_prelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'Sigmoid':
