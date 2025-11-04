@@ -126,7 +126,7 @@ class TkTimeSeriesDataLoader():
         if self._loading_thread != None:
             raise RuntimeError('Loading thread is active!')
 
-        def load_training_data_thread():
+        def load_training_data_thread():            
             self._input_samples = [None] * self._training_batch_size
             self._target_code_samples = [None] * self._training_batch_size
             self._target_true_samples = [None] * self._training_batch_size
@@ -136,6 +136,7 @@ class TkTimeSeriesDataLoader():
                 self._input_samples[batch_id] = input_sample
                 self._target_code_samples[batch_id] = target_code_sample
                 self._target_true_samples[batch_id] = target_true_sample
+            
 
         self._loading_thread = threading.Thread( target=load_training_data_thread )
         self._loading_thread.start()
@@ -207,8 +208,8 @@ if os.path.isfile(ts_model_path):
 ts_optimizer = torch.optim.RAdam( ts_model.parameters(), lr=learning_rate, weight_decay=weight_decay )
 if os.path.isfile(ts_optimizer_path):
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = torch.nn.MSELoss()
-ts_accuracy = torch.nn.KLDivLoss(reduction = "batchmean", log_target=False)
+ts_loss = torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction="none") # 
+ts_accuracy = torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction = "none") # ts_accuracy = torch.nn.KLDivLoss(reduction = "batchmean", log_target=False)
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
 data_loader = TkTimeSeriesDataLoader(
@@ -372,7 +373,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
         
-        z_accuracy = ts_accuracy( z, z_target ).detach()
+        #z_accuracy = ts_accuracy( z, z_target ).detach()
+        z_accuracy = ts_accuracy( y, target_code ).detach()
         z_accuracy = z_accuracy.mean()
         z_accuracy_val = z_accuracy.item()
 

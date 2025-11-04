@@ -545,42 +545,72 @@ future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
 input_width = int(config['TimeSeries']['InputWidth'])
 
 profitability = float(config['ForecastingService']['Profitability'])
+tail_mean_order = int(config['ForecastingService']['TailMeanOrder'])
 discard_if_non_profitable = ( config['ForecastingService']['DiscardIfNonProfitable'] == 'True' )
 event_notification = ( config['ForecastingService']['EventNotification'] == 'True' )
 forecast_history_size = int(config['ForecastingService']['ForecastHistorySize'])
 
-ipcAddress = config['IPC']['Address']
-ipcPort = int(config['IPC']['Port'])
-ipcAuthKey = bytes( config['IPC']['AuthKey'], 'ascii' )
-
 #------------------------------------------------------------------------------------------------------------------------
-# IPC Thread
+# IPC Threads
 # Queues the name of freshly updated data file got from TkGatherData.py process
 #------------------------------------------------------------------------------------------------------------------------
 
-ipcMessageQueue = []
+ipc_input_message_queue = []
+ipc_output_message_queue = []
 
-def ipc_thread_func():
-    global ipcMessageQueue
-    print('IPC thread started')
+def ipc_input_thread_func():
+    global ipc_input_message_queue
+    global config
+
+    print('IPC input thread started')
+    
+    ipc_input_address = config['IPC']['ForecastingServiceAddress']
+    ipc_input_port = int(config['IPC']['ForecastingServicePort'])
+    ipc_input_auth_key = bytes( config['IPC']['ForecastingServiceAuthKey'], 'ascii' )
+    
     eofCounter = 0
     creCounter = 0
+
     while True:
         try:
-            with mpc.Listener( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as listener:
+            with mpc.Listener( (ipc_input_address, ipc_input_port), authkey=ipc_input_auth_key ) as listener:
                 with listener.accept() as conn:
                     try:
                         message = conn.recv()
-                        ipcMessageQueue.append( message )
+                        ipc_input_message_queue.append( message )
                     except EOFError:                
                         eofCounter = eofCounter + 1
         except ConnectionResetError:
             creCounter = creCounter + 1
-                
 
-ipc_thread = threading.Thread( target=ipc_thread_func )
-ipc_thread.daemon = True
-ipc_thread.start()
+def ipc_output_thread_func():
+    global ipc_output_message_queue
+    global config
+
+    print('IPC output thread started')
+    
+    ipc_output_address = config['IPC']['TradingServiceAddress']
+    ipc_output_port = int(config['IPC']['TradingServicePort'])
+    ipc_output_auth_key = bytes( config['IPC']['TradingServiceAuthKey'], 'ascii' )
+
+    while True:
+        try:
+            with mpc.Client( (ipc_output_address, ipc_output_port), authkey=ipc_output_auth_key ) as conn:
+                while len(ipc_output_message_queue) > 0:
+                    message = ipc_output_message_queue[0]
+                    del ipc_output_message_queue[0]
+                    conn.send(message)
+        except ConnectionError:
+            print("Reconnecting output thread...")
+            ipc_output_message_queue.clear()
+
+ipc_input_thread = threading.Thread( target=ipc_input_thread_func )
+ipc_input_thread.daemon = True
+ipc_input_thread.start()
+
+ipc_output_thread = threading.Thread( target=ipc_output_thread_func )
+ipc_output_thread.daemon = True
+ipc_output_thread.start()
 
 #------------------------------------------------------------------------------------------------------------------------
 # Load samples from the given path
@@ -722,9 +752,9 @@ def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_wid
 # Supposes that only positive direction of price movement is profitable.
 #------------------------------------------------------------------------------------------------------------------------
 
-def forecast_profitability( price_distribution : list , distribution_descriptor : list, profitability_threshold : float ):
-    
-    left_mean, right_mean = TkStatistics.get_distribution_tail_means( price_distribution, distribution_descriptor )
+def forecast_profitability( price_distribution : list , distribution_descriptor : list, profitability_threshold : float, tail_mean_order:int ):
+
+    left_mean, right_mean = TkStatistics.get_distribution_tail_means( price_distribution, distribution_descriptor, tail_mean_order )
     
     if right_mean > profitability_threshold:
         return True, right_mean
@@ -768,9 +798,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     while dpg.is_dearpygui_running():
         
-        if len(ipcMessageQueue) > 0:
-            filename = ipcMessageQueue[0]
-            del ipcMessageQueue[0]
+        if len(ipc_input_message_queue) > 0:
+            filename = ipc_input_message_queue[0]
+            del ipc_input_message_queue[0]
             ticker = filename[ 0: filename.find("_") ]
             instrument = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
             
@@ -801,10 +831,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 output = list( itertools.chain.from_iterable( output.tolist() ) )
                 main_panel.setForecast( output, output_distribution_labels )
 
-                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, profitability_threshold=profitability)
+                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, profitability_threshold=profitability, tail_mean_order=tail_mean_order )
 
                 if is_profitable:
-                    TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)
+                    # Multiple forecasts in a row
+                    if TkForecastPanel.find(instrument) != None:
+                        ipc_output_message_queue.append( (instrument.ticker(), profit) )
+                    TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)                    
                     if event_notification and not toast.notification_active():
                         toastMessage = instrument.ticker() + ' +' + str(profit) + '%'
                         toast.show_toast( instrument.ticker(), toastMessage, duration = 10, threaded = True)

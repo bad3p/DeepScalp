@@ -45,7 +45,7 @@ class TkAutoencoderDataLoader():
         self._orderbook_test_data_filename = _cfg['Paths']['OrderBookTestDataFileName']
 
         self._last_trades_index_filename = _cfg['Paths']['LastTradesIndexFileName']
-        self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName']
+        self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName'] 
         self._last_trades_test_data_filename = _cfg['Paths']['LastTradesTestDataFileName']
         
         self._max_training_batch_size = int(_cfg['Autoencoders']['MaxTrainingBatchSize'])        
@@ -58,6 +58,9 @@ class TkAutoencoderDataLoader():
         self._orderbook_training_data_stream = open( join(self._data_path, self._orderbook_training_data_filename), 'rb+')
         self._orderbook_test_data_stream = open( join(self._data_path, self._orderbook_test_data_filename), 'rb+')
 
+        random.shuffle(self._orderbook_training_index)
+        random.shuffle(self._orderbook_test_index)
+
         last_trades_index_content = TkIO.read_at_path( join(self._data_path, self._last_trades_index_filename) )
         self._last_trades_training_index = last_trades_index_content[0]
         self._last_trades_test_index = last_trades_index_content[1]
@@ -65,6 +68,9 @@ class TkAutoencoderDataLoader():
         self._last_trades_test_sample_id = _last_trades_test_sample_id
         self._last_trades_training_data_stream = open( join(self._data_path, self._last_trades_training_data_filename), 'rb+')
         self._last_trades_test_data_stream = open( join(self._data_path, self._last_trades_test_data_filename), 'rb+')
+
+        random.shuffle(self._last_trades_training_index)
+        random.shuffle(self._last_trades_test_index)
 
         self._epoch_size = 1
         self._orderbook_training_batch_size = 1
@@ -89,7 +95,9 @@ class TkAutoencoderDataLoader():
 
         print("Epoch_size:", self._epoch_size )
         print("Orderbook training batch size:", self._orderbook_training_batch_size)
+        print("Orderbook test batch size:", self._orderbook_test_batch_size)
         print("Last trades training batch size:", self._last_trades_training_batch_size)
+        print("Last trades test batch size:", self._last_trades_test_batch_size)
 
         self._orderbook_samples = None
         self._last_trades_samples = None
@@ -246,18 +254,16 @@ orderbook_optimizer = torch.optim.RAdam( orderbook_autoencoder.parameters(), lr=
 if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
 orderbook_loss = torch.nn.BCELoss()
-orderbook_accuracy = torch.nn.BCELoss()
 orderbook_training_history = TkAutoencoderTrainingHistory(orderbook_history_path, history_size)
 
 last_trades_autoencoder = TkLastTradesAutoencoder(config)
 last_trades_autoencoder.to(cuda)
-if os.path.isfile(last_trades_model_path):
+if os.path.isfile(last_trades_model_path):   
     last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
 last_trades_optimizer = torch.optim.RAdam( last_trades_autoencoder.parameters(), lr=last_trades_autoencoder_learning_rate, weight_decay=last_trades_autoencoder_weight_decay )
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
 last_trades_loss = torch.nn.BCELoss()
-last_trades_accuracy = torch.nn.BCELoss()
 last_trades_training_history = TkAutoencoderTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(
@@ -271,7 +277,7 @@ data_loader = TkAutoencoderDataLoader(
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
-    dpg.create_viewport(title='Autoencoder training', width=1644, height=1102)
+    dpg.create_viewport(title='Autoencoder training', width=2108, height=1102)
     dpg.setup_dearpygui()
 
     with dpg.window(tag="primary_window", label="Preprocess data"):
@@ -308,31 +314,55 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_output" )
                 dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Last trades output", parent="x_axis_last_trades_output", tag="last_trades_output_series" )
         with dpg.group(horizontal=True):
-            with dpg.plot(label="Orderbook training", width=512, height=256):
+            with dpg.plot(label="Orderbook reconstruction", width=512, height=256):
                 dpg.add_plot_legend()
-                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_training" )
-                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_training" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_training", tag="orderbook_loss_series" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_training", tag="orderbook_accuracy_series" )
-            with dpg.plot(label="Orderbook training per epoch", width=512, height=256):
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_recon" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_recon" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_recon", tag="orderbook_recon_loss_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_recon", tag="orderbook_recon_accuracy_series" )
+            with dpg.plot(label="Orderbook reconstruction per epoch", width=512, height=256):
                 dpg.add_plot_legend()
-                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_training_epoch" )
-                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_training_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_training_epoch", tag="orderbook_loss_series_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_training_epoch", tag="orderbook_accuracy_series_epoch" )
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_recon_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_recon_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_recon_epoch", tag="orderbook_recon_loss_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_recon_epoch", tag="orderbook_recon_accuracy_series_epoch" )
+            with dpg.plot(label="Orderbook KLD", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_kld" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_kld" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_kld", tag="orderbook_kld_loss_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_kld", tag="orderbook_kld_accuracy_series" )
+            with dpg.plot(label="Orderbook KLD per epoch", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook_kld_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook_kld_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_orderbook_kld_epoch", tag="orderbook_kld_loss_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_orderbook_kld_epoch", tag="orderbook_kld_accuracy_series_epoch" )
         with dpg.group(horizontal=True):
-            with dpg.plot(label="Last trades training", width=512, height=256):
+            with dpg.plot(label="Last trades reconstruction", width=512, height=256):
                 dpg.add_plot_legend()
-                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_training" )
-                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_training" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_training", tag="last_trades_loss_series" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_training", tag="last_trades_accuracy_series" )
-            with dpg.plot(label="Last trades training per epoch", width=512, height=256):
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_recon" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_recon" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_recon", tag="last_trades_recon_loss_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_recon", tag="last_trades_recon_accuracy_series" )
+            with dpg.plot(label="Last trades reconstruction per epoch", width=512, height=256):
                 dpg.add_plot_legend()
-                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_training_epoch" )
-                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_training_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_training_epoch", tag="last_trades_loss_series_epoch" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_training_epoch", tag="last_trades_accuracy_series_epoch" )
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_recon_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_recon_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_recon_epoch", tag="last_trades_recon_loss_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_recon_epoch", tag="last_trades_recon_accuracy_series_epoch" )
+            with dpg.plot(label="Last trades KLD", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_kld" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_kld" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_kld", tag="last_trades_kld_loss_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_kld", tag="last_trades_kld_accuracy_series" )
+            with dpg.plot(label="Last trades KLD per epoch", width=512, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades_kld_epoch" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_last_trades_kld_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Loss", parent="x_axis_last_trades_kld_epoch", tag="last_trades_kld_loss_series_epoch" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Accuracy", parent="x_axis_last_trades_kld_epoch", tag="last_trades_kld_accuracy_series_epoch" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -355,6 +385,10 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         y, y_mean, y_logvar = orderbook_autoencoder.forward( orderbook_input )
         z, z_mean, z_logvar = last_trades_autoencoder.forward( last_trades_input )
+        y.clamp( 0, 1 )
+        z.clamp( 0, 1 )
+        y_logvar.clamp( -10, 10 )
+        z_logvar.clamp( -10, 10 )
 
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
@@ -364,21 +398,26 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
-        y_KLD = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
-        y_loss = orderbook_loss( y, orderbook_input ) + y_KLD * orderbook_autoencoder_beta
+        y_KLD_loss = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
+
+        y_recon_loss = orderbook_loss( y, orderbook_input )        
+        y_loss = y_recon_loss + y_KLD_loss * orderbook_autoencoder_beta
         y_loss = y_loss.mean()
         orderbook_optimizer.zero_grad()
         y_loss.backward()
-        orderbook_optimizer.step()
-        y_loss_val = y_loss.item()
+        orderbook_optimizer.step()        
+        y_KLD_loss_val = y_KLD_loss.mean().item()
+        y_recon_loss_val = y_recon_loss.mean().item()
 
-        z_KLD = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_loss = last_trades_loss( z, last_trades_input ) + z_KLD * last_trades_autoencoder_beta
+        z_KLD_loss = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
+        z_recon_loss = last_trades_loss( z, last_trades_input )        
+        z_loss = z_recon_loss + z_KLD_loss * last_trades_autoencoder_beta
         z_loss = z_loss.mean()
         last_trades_optimizer.zero_grad()
         z_loss.backward()
         last_trades_optimizer.step()
-        z_loss_val = z_loss.item()
+        z_KLD_loss_val = z_KLD_loss.mean().item()
+        z_recon_loss_val = z_recon_loss.mean().item()
 
         dpg.render_dearpygui_frame()
 
@@ -402,6 +441,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         z, z_mean, z_logvar = last_trades_autoencoder.forward( last_trades_input )
         last_trades_autoencoder.train(True)
 
+        y.clamp( 0, 1 )
+        z.clamp( 0, 1 )
+        y_logvar.clamp( -10, 10 )
+        z_logvar.clamp( -10, 10 )
+
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_orderbook_output", "y_axis_orderbook_output","orderbook_output_series",y,0)
@@ -410,28 +454,42 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
         TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
-        y_accuracy = orderbook_accuracy( y, orderbook_input )
-        y_accuracy = y_accuracy.mean()
-        y_accuracy_val = y_accuracy.item()
+        y_KLD_accuracy = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
+        y_recon_accuracy = orderbook_loss( y, orderbook_input )        
+        y_KLD_accuracy_val = y_KLD_accuracy.mean().item()
+        y_recon_accuracy_val = y_recon_accuracy.mean().item()
 
-        z_accuracy = last_trades_accuracy( z, last_trades_input )
-        z_accuracy = z_accuracy.mean()
-        z_accuracy_val = z_accuracy.item()
+        z_KLD_accuracy = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
+        z_recon_accuracy = last_trades_loss( z, last_trades_input )
+        z_KLD_accuracy_val = z_KLD_accuracy.mean().item()
+        z_recon_accuracy_val = z_recon_accuracy.mean().item()
 
         dpg.render_dearpygui_frame()        
 
-        orderbook_training_history.log(data_loader.orderbook_training_sample_id(), data_loader.orderbook_test_sample_id(), y_loss_val, y_accuracy_val)
-        last_trades_training_history.log(data_loader.last_trades_training_sample_id(), data_loader.last_trades_test_sample_id(), z_loss_val, z_accuracy_val)
+        orderbook_training_history.log( data_loader.orderbook_training_sample_id(), data_loader.orderbook_test_sample_id(), y_recon_loss_val, y_recon_accuracy_val, y_KLD_loss_val, y_KLD_accuracy_val)
+        last_trades_training_history.log(data_loader.last_trades_training_sample_id(), data_loader.last_trades_test_sample_id(), z_recon_loss_val, z_recon_accuracy_val, z_KLD_loss_val, z_KLD_accuracy_val )
 
-        TkUI.set_series("x_axis_orderbook_training", "y_axis_orderbook_training", "orderbook_loss_series", orderbook_training_history.loss_history())
-        TkUI.set_series("x_axis_orderbook_training_epoch", "y_axis_orderbook_training_epoch", "orderbook_loss_series_epoch", orderbook_training_history.epoch_loss_history())
-        TkUI.set_series("x_axis_orderbook_training", "y_axis_orderbook_training", "orderbook_accuracy_series", orderbook_training_history.accuracy_history())
-        TkUI.set_series("x_axis_orderbook_training_epoch", "y_axis_orderbook_training_epoch", "orderbook_accuracy_series_epoch", orderbook_training_history.epoch_accuracy_history())
+        TkUI.set_series("x_axis_orderbook_recon", "y_axis_orderbook_recon", "orderbook_recon_loss_series", orderbook_training_history.recon_loss_history())
+        TkUI.set_series("x_axis_orderbook_recon_epoch", "y_axis_orderbook_recon_epoch", "orderbook_recon_loss_series_epoch", orderbook_training_history.epoch_recon_loss_history())
+        TkUI.set_series("x_axis_orderbook_recon", "y_axis_orderbook_recon", "orderbook_recon_accuracy_series", orderbook_training_history.recon_accuracy_history())
+        TkUI.set_series("x_axis_orderbook_recon_epoch", "y_axis_orderbook_recon_epoch", "orderbook_recon_accuracy_series_epoch", orderbook_training_history.epoch_recon_accuracy_history())
 
-        TkUI.set_series("x_axis_last_trades_training", "y_axis_last_trades_training", "last_trades_loss_series", last_trades_training_history.loss_history())
-        TkUI.set_series("x_axis_last_trades_training_epoch", "y_axis_last_trades_training_epoch", "last_trades_loss_series_epoch", last_trades_training_history.epoch_loss_history())
-        TkUI.set_series("x_axis_last_trades_training", "y_axis_last_trades_training", "last_trades_accuracy_series", last_trades_training_history.accuracy_history())
-        TkUI.set_series("x_axis_last_trades_training_epoch", "y_axis_last_trades_training_epoch", "last_trades_accuracy_series_epoch", last_trades_training_history.epoch_accuracy_history())
+        TkUI.set_series("x_axis_last_trades_recon", "y_axis_last_trades_recon", "last_trades_recon_loss_series", last_trades_training_history.recon_loss_history())
+        TkUI.set_series("x_axis_last_trades_recon_epoch", "y_axis_last_trades_recon_epoch", "last_trades_recon_loss_series_epoch", last_trades_training_history.epoch_recon_loss_history())
+        TkUI.set_series("x_axis_last_trades_recon", "y_axis_last_trades_recon", "last_trades_recon_accuracy_series", last_trades_training_history.recon_accuracy_history())
+        TkUI.set_series("x_axis_last_trades_recon_epoch", "y_axis_last_trades_recon_epoch", "last_trades_recon_accuracy_series_epoch", last_trades_training_history.epoch_recon_accuracy_history())
+
+        #KL
+
+        TkUI.set_series("x_axis_orderbook_kld", "y_axis_orderbook_kld", "orderbook_kld_loss_series", orderbook_training_history.kld_loss_history())
+        TkUI.set_series("x_axis_orderbook_kld_epoch", "y_axis_orderbook_kld_epoch", "orderbook_kld_loss_series_epoch", orderbook_training_history.epoch_kld_loss_history())
+        TkUI.set_series("x_axis_orderbook_kld", "y_axis_orderbook_kld", "orderbook_kld_accuracy_series", orderbook_training_history.kld_accuracy_history())
+        TkUI.set_series("x_axis_orderbook_kld_epoch", "y_axis_orderbook_kld_epoch", "orderbook_kld_accuracy_series_epoch", orderbook_training_history.epoch_kld_accuracy_history())
+
+        TkUI.set_series("x_axis_last_trades_kld", "y_axis_last_trades_kld", "last_trades_kld_loss_series", last_trades_training_history.kld_loss_history())
+        TkUI.set_series("x_axis_last_trades_kld_epoch", "y_axis_last_trades_kld_epoch", "last_trades_kld_loss_series_epoch", last_trades_training_history.epoch_kld_loss_history())
+        TkUI.set_series("x_axis_last_trades_kld", "y_axis_last_trades_kld", "last_trades_kld_accuracy_series", last_trades_training_history.kld_accuracy_history())
+        TkUI.set_series("x_axis_last_trades_kld_epoch", "y_axis_last_trades_kld_epoch", "last_trades_kld_accuracy_series_epoch", last_trades_training_history.epoch_kld_accuracy_history())
 
         dpg.render_dearpygui_frame()
 

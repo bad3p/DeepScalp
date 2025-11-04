@@ -283,10 +283,12 @@ class TkStatistics():
     
     #------------------------------------------------------------------------------------------------------------------------
     # Return "tail means" of the given distribution
+    # Let's suppose the "central mean" of a set of values is equal to its true mean.
+    # Then the "right tail mean" of 1nd order is a mean of values from a given set which are larger than the "central mean".
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def get_distribution_tail_means(distribution : list, descriptor : list):
+    def get_distribution_tail_means(distribution : list, descriptor : list, order: int):
 
         mean = 0.0
         for i in range(len(distribution)):
@@ -294,10 +296,14 @@ class TkStatistics():
             binWeight = distribution[i]
             mean += avgBinPrice * binWeight
 
+        if order == 0:
+            return float(mean), float(mean)
+
         right_mean = 0.0
         right_bin_weight = 0.0
         left_mean = 0.0
         left_bin_weight = 0.0
+
         for i in range(len(distribution)):
             avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
             binWeight = distribution[i]
@@ -317,5 +323,40 @@ class TkStatistics():
             right_mean *= 1.0 / right_bin_weight
         else:
             right_mean = mean
-    
-        return left_mean, right_mean
+
+        if order == 1:
+            return float(left_mean), float(right_mean)
+        
+        leftmost_mean = left_mean
+        leftmost_bin_weight = 0.0
+        rightmost_mean = right_mean
+        rightmost_bin_weight = 0.0
+
+        for i in range(order-1):
+
+            leftmost_mean = 0.0
+            leftmost_bin_weight = 0.0
+            rightmost_mean = 0.0
+            rightmost_bin_weight = 0.0
+            
+            for i in range(len(distribution)):
+                avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
+                binWeight = distribution[i]
+                if avgBinPrice < left_mean:
+                    leftmost_mean += avgBinPrice * binWeight
+                    leftmost_bin_weight += binWeight
+                elif avgBinPrice > right_mean:
+                    rightmost_mean += avgBinPrice * binWeight
+                    rightmost_bin_weight += binWeight
+
+            if leftmost_bin_weight > 0.0:
+                leftmost_mean *= 1.0 / leftmost_bin_weight
+            else:
+                leftmost_mean = left_mean
+
+            if rightmost_bin_weight > 0.0:
+                rightmost_mean *= 1.0 / rightmost_bin_weight
+            else:
+                rightmost_mean = right_mean
+
+        return float(leftmost_mean), float(rightmost_mean)

@@ -14,7 +14,7 @@ from dateutil import parser
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed    
 from tinkoff.invest.constants import INVEST_GRPC_API
 from tinkoff.invest import Client
 from tinkoff.invest import InstrumentType
@@ -53,6 +53,12 @@ class TkAutoencoderDataPreprocessor():
         self._last_trades_index_filename = _cfg['Paths']['LastTradesIndexFileName']
         self._last_trades_training_data_filename = _cfg['Paths']['LastTradesTrainingDataFileName']
         self._last_trades_test_data_filename = _cfg['Paths']['LastTradesTestDataFileName']
+
+        if ( os.path.isfile(join(self._data_path, self._orderbook_training_data_filename)) or
+              os.path.isfile(join(self._data_path, self._orderbook_test_data_filename)) or
+              os.path.isfile(join(self._data_path, self._last_trades_training_data_filename)) or
+              os.path.isfile(join(self._data_path, self._last_trades_test_data_filename)) ):
+            raise RuntimeError('Preprocessed data already exists! Delete it manually.')
 
         self._orderbook_training_index = []
         self._orderbook_test_index = []
@@ -101,7 +107,9 @@ class TkAutoencoderDataPreprocessor():
         self._last_trades_training_data_stream.close()
         self._last_trades_test_data_stream.close()
 
-    def add_samples(self, share : TkInstrument, raw_samples : list, training_category : bool, render_callback):
+    def add_samples(self, share : TkInstrument, raw_samples : list, training_category : bool, render_callback):        
+
+        start_time = time.time()
 
         min_price_increment = quotation_to_float( share.min_price_increment() )
         raw_sample_count = int( len(raw_samples) / 2 ) # orderbook, last_trades
@@ -109,27 +117,30 @@ class TkAutoencoderDataPreprocessor():
         self._normalized_orderbook_samples = []
         self._normalized_last_trades_samples = []
 
-        callback_indices = [int(i / 100.0 * raw_sample_count) for i in range(1,100)]
+        callback_indices = [int(i / 10.0 * raw_sample_count) for i in range(1,100)]
+
+        local_orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
+        local_last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
         for i in range(raw_sample_count):
             orderbook_sample = raw_samples[i*2]
             distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor ) 
             if volume > 0:
                 distribution *= 1.0 / volume
-            lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
+            lsh_query = local_orderbook_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
                 self._normalized_orderbook_samples.append(distribution)
-                self._orderbook_lsh.index(distribution)
+                local_orderbook_lsh.index(distribution)
 
             # last trades sample
             last_trades_sample = raw_samples[i*2+1]
             distribution, descriptor, volume = TkStatistics.trades_distribution( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
             if volume > 0:
                 distribution *= 1.0 / volume
-            lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
+            lsh_query = local_last_trades_lsh.query( distribution, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                 self._normalized_last_trades_samples.append(distribution)
-                self._last_trades_lsh.index(distribution)
+                local_last_trades_lsh.index(distribution)
 
             # accumulated last trades sample (time series output)
             if i + self._future_steps_count < raw_sample_count / 2:
@@ -138,15 +149,35 @@ class TkAutoencoderDataPreprocessor():
                     volume = TkStatistics.accumulate_trades_distribution( distribution, descriptor, volume, last_trades_sample, pivot_price)
                 if volume > 0:
                     distribution *= 1.0 / volume
-                lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
+                lsh_query = local_last_trades_lsh.query( distribution, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                     self._normalized_last_trades_samples.append(distribution)
-                    self._last_trades_lsh.index(distribution)
+                    local_last_trades_lsh.index(distribution)
 
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
                 if render_callback != None:
                     render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+
+        for i in reversed(range(len(self._normalized_orderbook_samples))):
+            lsh_query = self._orderbook_lsh.query( self._normalized_orderbook_samples[i], num_results=1 )
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
+                self._orderbook_lsh.index(self._normalized_orderbook_samples[i])
+            else:
+                del self._normalized_orderbook_samples[i]
+
+        if render_callback != None:
+            render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+
+        for i in reversed(range(len(self._normalized_last_trades_samples))):
+            lsh_query = self._last_trades_lsh.query( self._normalized_last_trades_samples[i], num_results=1 )
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
+                self._last_trades_lsh.index(self._normalized_last_trades_samples[i])
+            else:
+                del self._normalized_last_trades_samples[i]
+
+        if render_callback != None:
+            render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
 
         if training_category:                    
             self._orderbook_training_data_offset = self.write_samples( 
@@ -174,6 +205,10 @@ class TkAutoencoderDataPreprocessor():
                 self._last_trades_test_data_offset, 
                 self._last_trades_test_data_stream
             )
+
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        return raw_sample_count / elapsed_time
 
     def add_preprocessed_samples(self, orderbook_samples : list, last_trades_samples : list, training_category : bool, render_callback):
 
@@ -372,8 +407,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             dpg.add_text( default_value="Last trades samples: " )
             dpg.add_text( tag="last_trades_samples", default_value="0/0", color=[255, 254, 255])
         with dpg.group(horizontal=True):
+            dpg.add_text( default_value="Samples per second: " )
+            dpg.add_text( tag="samples_per_second", default_value="0/0", color=[255, 254, 255])
+        with dpg.group(horizontal=True):
             dpg.add_text( default_value="Filename: " )
-            dpg.add_text( tag="filename", default_value="", color=[255, 254, 255])
+            dpg.add_text( tag="filename", default_value="", color=[255, 254, 255])        
         with dpg.group(horizontal=True):
             with dpg.plot(label="Orderbook", width=512, height=256):
                 dpg.add_plot_legend()
@@ -400,6 +438,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     files_processed = 0
     start_time = time.time()
 
+    cumulative_samples_per_second = 0
+    samples_per_second_norm = 0
+
     for ticker in files_by_ticker:
 
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
@@ -422,7 +463,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-            preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
+            samples_per_second = preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
+            cumulative_samples_per_second = cumulative_samples_per_second + samples_per_second
+            samples_per_second_norm = samples_per_second_norm + 1
 
             total_samples = total_samples + int( len( raw_samples ) / 2 )
             files_processed = files_processed + 1
@@ -430,12 +473,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
             dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
             dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )
+            dpg.set_value("samples_per_second", str( cumulative_samples_per_second/samples_per_second_norm ) )
 
             dpg.render_dearpygui_frame()
             if not dpg.is_dearpygui_running():
                 break
 
-    preprocessor.clear_lsh()
+            preprocessor.clear_lsh()
 
     end_time = time.time()
     print('Elapsed time:',end_time-start_time)
@@ -445,8 +489,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         dpg.set_value("filename", 'Generating synthetic samples...')
         dpg.render_dearpygui_frame()
     
-        preprocessor.generate_synthetic_samples( True, render_samples )
-        preprocessor.clear_lsh()
+        preprocessor.generate_synthetic_samples( True, render_samples )        
         preprocessor.generate_synthetic_samples( False, render_samples )
         dpg.render_dearpygui_frame()
 
@@ -461,3 +504,5 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         dpg.render_dearpygui_frame()
 
     dpg.destroy_context()
+
+    print( "Samples per second: ", str( cumulative_samples_per_second/samples_per_second_norm ) )

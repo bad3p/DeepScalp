@@ -1,0 +1,7 @@
+
+ [x] Consider the bias in orderbook samples (centered at the lowest ask price) in the algorithm generating synthetic samples.
+ [x] Remove obsolete PriorityModeCount
+ [x] Refactor selection of priority samples by using relative distribution tail values rather than absolute ones
+ [x] In TkTImeSeriesForecasterTraining - change legend 'Accuracy' to 'KL-Div'
+ [ ] Make price history input in time series model to be discrete and use min_price_step of a share as a discretization value.
+ [ ] Rename PriorityTailThreshold to PriorityTailMeanThreshold

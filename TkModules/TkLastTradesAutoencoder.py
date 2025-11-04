@@ -36,11 +36,8 @@ class TkLastTradesAutoencoder(torch.nn.Module):
     
     def decode(self, input):
         batch_size = input.shape[0]
-        mean = input * ( 1.0 / self._code_scale )
-        logvar = torch.zeros(batch_size, self._code_layer_size).to(input.device)
-        epsilon = torch.randn_like(logvar).to(input.device)
-        z = mean + logvar * epsilon
-        z = self._reparametrization_layer(z)
+        mean = input * ( 1.0 / self._code_scale )        
+        z = self._reparametrization_layer( mean )
         z = self._decoder( z )
         return z
 
@@ -50,7 +47,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         self._code = torch.cat( (self._mean, self._logvar), dim=1 )
 
         epsilon = torch.randn_like(self._logvar).to(y.device)  
-        z = self._mean + self._logvar * epsilon
+        z = self._mean + torch.exp(0.5 * self._logvar) * epsilon
         z = self._reparametrization_layer(z)
         z = self._decoder( z )
         

@@ -78,6 +78,10 @@ class TkTimeSeriesDataPreprocessor():
         self._priority_tail_epsilon = float(_cfg['TimeSeries']['PriorityTailEpsilon'])
         self._priority_tail_threshold = float(_cfg['TimeSeries']['PriorityTailThreshold'])
 
+        if ( os.path.isfile( join(self._data_path, self._time_series_training_data_filename)) or
+             os.path.isfile( join(self._data_path, self._time_series_test_data_filename)) ):
+            raise RuntimeError('Preprocessed data already exists! Delete it manually.')
+
         self._priority_table = []
         self._regular_table = []
         self._training_index = []
@@ -162,18 +166,18 @@ class TkTimeSeriesDataPreprocessor():
 
         # encode future trades distribution
 
-        future_trades = [None] * (end_range)
-        future_trades_descriptor = [None] * (end_range)
-        future_trades_volume = [None] * (end_range)
+        future_trades = [None] * (raw_sample_count)
+        future_trades_descriptor = [None] * (raw_sample_count)
+        future_trades_volume = [None] * (raw_sample_count)
 
-        for i in range( start_range, end_range ):
+        for i in range( start_range, end_range+1 ):
             ts_base_price = price[i]
             last_trades_sample = raw_samples[(i+1)*2+1]
 
             ts_target_distribution, ts_target_descriptor, ts_target_volume = TkStatistics.trades_distribution( last_trades_sample, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
 
-            for j in range( 1, self._future_steps_count ):
-                last_trades_sample = raw_samples[(i+j+1)*2+1]
+            for j in range( 1, self._future_steps_count+1 ):
+                last_trades_sample = raw_samples[(i+j)*2+1]
                 ts_target_volume = TkStatistics.accumulate_trades_distribution( ts_target_distribution, ts_target_descriptor, ts_target_volume, last_trades_sample, ts_base_price)
 
             if ts_target_volume > 0:
@@ -183,12 +187,12 @@ class TkTimeSeriesDataPreprocessor():
             future_trades_volume[i] = ts_target_volume
             future_trades[i] = ts_target_distribution
 
-        future_trades_input = [future_trades[i] for i in range(start_range, end_range)]
+        future_trades_input = [future_trades[i] for i in range(start_range, end_range+1)]
         future_trades_input = torch.Tensor( np.concatenate( future_trades_input ) )
-        future_trades_input = torch.reshape( future_trades_input, ( (end_range-start_range), 1, self._last_trades_width ) )
+        future_trades_input = torch.reshape( future_trades_input, ( (end_range+1-start_range), 1, self._last_trades_width ) )
         future_trades_input = future_trades_input.cuda()
         future_trades_code = self._last_trades_autoencoder.encode(future_trades_input)
-        future_trades_code = torch.reshape( future_trades_code, ( (end_range-start_range), self._last_trades_autoencoder_code_layer_size ) )
+        future_trades_code = torch.reshape( future_trades_code, ( (end_range+1-start_range), self._last_trades_autoencoder_code_layer_size ) )
         future_trades_code = future_trades_code.tolist()
 
         for i in range( start_range ):
@@ -200,7 +204,7 @@ class TkTimeSeriesDataPreprocessor():
 
         num_invalid_samples = 0
 
-        for i in range( start_range, end_range ):
+        for i in range( start_range, end_range+1 ):
 
             ts_input = [None] * self._prior_steps_count
             ts_base_price = price[i]
@@ -217,7 +221,7 @@ class TkTimeSeriesDataPreprocessor():
                 ts_input[j].extend( last_trades_code[k].copy() )
 
                 ts_sample_price = price[k]
-                ts_sample_price = ( ts_sample_price / ts_base_price - 1.0 ) * 100
+                ts_sample_price = ( ts_sample_price - ts_base_price ) / (min_price_increment * self._min_price_increment_factor) # normalized to orderbook & last trades discretization
                 ts_input[j].append( ts_sample_price )
 
                 ts_sample_orderbook_volume = orderbook_volume[k]
@@ -245,8 +249,8 @@ class TkTimeSeriesDataPreprocessor():
                     TkIO.write_to_file( self._test_data_stream, ts_target )
                     self._test_data_offset = self._test_data_stream.tell()
                 else:
-                    ts_target_left_tail, ts_target_right_tail = TkStatistics.get_distribution_tails( ts_target_distribution, ts_target_descriptor, self._priority_tail_epsilon )
-                    ts_threshold_price = self._priority_tail_threshold * 0.5 * (ts_target_descriptor[-1][0] + ts_target_descriptor[-1][1])
+                    ts_target_left_tail, ts_target_right_tail = TkStatistics.get_distribution_tail_means( ts_target_distribution, ts_target_descriptor, 2 )
+                    ts_threshold_price = self._priority_tail_threshold * (ts_target_descriptor[-1][0] + ts_target_descriptor[-1][1])
                     is_priority_sample = ( ts_target_left_tail <= -ts_threshold_price ) or ( ts_target_right_tail >= ts_threshold_price )
                     if is_priority_sample:
                         self._priority_table.append( len(self._training_index) )
@@ -376,6 +380,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             if not dpg.is_dearpygui_running():
                 break
         
+            #filename = 'ABIO_June_20_2025_Evening.obs'
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
             preprocessor.add_samples(share, raw_samples, is_test_data_source, render_samples)

@@ -40,7 +40,7 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._code = torch.cat( (self._mean, self._logvar), dim=1 )
 
         epsilon = torch.randn_like(self._logvar).to(y.device)  
-        z = self._mean + self._logvar * epsilon
+        z = self._mean + torch.exp(0.5 * self._logvar) * epsilon
         z = self._reparametrization_layer(z)
         z = self._decoder( z )
         
