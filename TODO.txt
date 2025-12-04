@@ -3,5 +3,8 @@
  [x] Remove obsolete PriorityModeCount
  [x] Refactor selection of priority samples by using relative distribution tail values rather than absolute ones
  [x] In TkTImeSeriesForecasterTraining - change legend 'Accuracy' to 'KL-Div'
- [ ] Make price history input in time series model to be discrete and use min_price_step of a share as a discretization value.
+ [x] Make price history input in time series model to be discrete and use min_price_step of a share as a discretization value.
  [ ] Rename PriorityTailThreshold to PriorityTailMeanThreshold
+ [ ] Generate orderbooks in reduced range { random(-width/2,0) ... random(0,width/2) } to improve likelihood to the real orderbooks with large min_price_step
+ [ ] TimeSeriesPreprocessor should shift the last trades samples in input history according to the pivot price
+ [ ] Try residual layers in time series prediction

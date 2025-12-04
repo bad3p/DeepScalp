@@ -40,6 +40,13 @@ class TkModel(torch.nn.Module):
         
         def create_tanh_layer(params : list):
             return torch.nn.Tanh()
+        
+        def create_elu_layer(params : list):
+            alpha = params[0]
+            return torch.nn.ELU(alpha)
+        
+        def create_gelu_layer(params : list):
+            return torch.nn.GELU()
 
         def create_prelu_layer(params : list):
             channels = params[0]
@@ -82,6 +89,10 @@ class TkModel(torch.nn.Module):
                 return create_lrelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'TanH':
                 return create_tanh_layer( layer_descriptor[layer_type] )
+            if layer_type == 'ELU':
+                return create_elu_layer( layer_descriptor[layer_type] )
+            if layer_type == 'GELU':
+                return create_gelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'PReLU':
                 return create_prelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'Sigmoid':

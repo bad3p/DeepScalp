@@ -4,6 +4,7 @@ import torch
 import json
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
+from TkModules.TkSelfAttention import TkSelfAttention
 
 # --------------------------------------------------------------------------------------------------------------
 # Time series forecasting model
@@ -38,10 +39,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         self._lstm = torch.nn.ModuleList( self._lstm )
         
-        self._mlp_input_tensors = None
+        self._lstm_output_tensors = None
 
-    def mlp_input(self):
-        return self._mlp_input_tensors
+    def lstm_output(self):
+        return self._lstm_output_tensors
 
     def input_slice(self, idx:int):
         return self._input_slice_tensors[idx]
@@ -53,7 +54,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         input = torch.reshape( input, ( batch_size, self._prior_steps_count, self._input_width) )
 
         self._input_slice_tensors = []
-        self._mlp_input_tensors = []
+        self._lstm_output_tensors = []
 
         for i in range(len(self._input_slices)):
             ch0 = self._input_slices[i][0]
@@ -61,13 +62,13 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             slice_size = ch1 - ch0
             input_slice_tensor = input[:, :, ch0:ch1]
             self._input_slice_tensors.append( input_slice_tensor )
-            self._mlp_input_tensors.append( self._lstm[i](input_slice_tensor) )
+            self._lstm_output_tensors.append( self._lstm[i](input_slice_tensor) )
         
-        self._mlp_input_tensors = tuple(self._mlp_input_tensors)
-        self._mlp_input_tensors = torch.cat( self._mlp_input_tensors, dim=1) 
+        self._lstm_output_tensors = tuple(self._lstm_output_tensors)
+        self._lstm_output_tensors = torch.cat( self._lstm_output_tensors, dim=1) 
 
-        y = torch.reshape( self._mlp_input_tensors, (batch_size, self._mlp_input_size) )
-        y = self._mlp.forward( y )
+        self._lstm_output_tensors = torch.reshape( self._lstm_output_tensors, (batch_size, self._mlp_input_size) )
+        y = self._mlp.forward( self._lstm_output_tensors )
         y = torch.reshape( y, ( batch_size, self._target_code_width) )
 
         return y
