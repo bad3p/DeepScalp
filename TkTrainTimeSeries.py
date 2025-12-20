@@ -192,7 +192,9 @@ display_slice = int(config['TimeSeries']['DisplaySlice'])
 training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
 test_batch_size = int(config['TimeSeries']['TestBatchSize'])
 learning_rate = float(config['TimeSeries']['LearningRate'])
-weight_decay = float(config['TimeSeries']['WeightDecay'])
+lstm_weight_decay = float(config['TimeSeries']['LSTMWeightDecay']) 
+tcnn_weight_decay = float(config['TimeSeries']['TCNNWeightDecay']) 
+mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
 cooldown = float( config['TimeSeries']['Cooldown'] )
 
@@ -205,7 +207,10 @@ ts_model = TkTimeSeriesForecaster(config)
 ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
-ts_optimizer = torch.optim.RAdam( ts_model.parameters(), lr=learning_rate, weight_decay=weight_decay )
+ts_optimizer = torch.optim.RAdam( 
+    ts_model.get_trainable_parameters(lstm_weight_decay,tcnn_weight_decay,mlp_weight_decay),
+    lr=learning_rate, 
+)
 if os.path.isfile(ts_optimizer_path):
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 ts_loss = torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction="none") 
@@ -257,7 +262,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_true_"+ui_tag )
                     dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Decoded output", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_decoded_output_series" )
                     dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Decoded target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_decoded_target_series" )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="True target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_target_series" )
+                    #dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="True target", parent="x_axis_true_"+ui_tag, tag=ui_tag+"_true_target_series" )
         with dpg.group(horizontal=True):
             with dpg.plot(label="Training", width=512, height=256):
                 dpg.add_plot_legend()
@@ -318,7 +323,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_code_training", "y_axis_code_training", "training_code_target_series", target_code, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", z, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", z_target, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
+        #TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
 
         y_loss = ts_loss( y, target_code )
         y_loss = y_loss.mean()
@@ -365,7 +370,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_code_test", "y_axis_code_test", "test_code_target_series", target_code, 0)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", z, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", z_target, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_target_series", target_true, display_batch_id)        
+        #TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_true_target_series", target_true, display_batch_id)        
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)

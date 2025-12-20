@@ -1,4 +1,5 @@
 
+import sys
 import os.path
 import numpy as np
 import random
@@ -48,6 +49,44 @@ class TkStatistics():
         result = negativeRanges + positiveRanges
         return result
 
+    #------------------------------------------------------------------------------------------------------------------------
+    # Returns significant range for the cumulative distribution
+    # Significant range is between minimal and maximal index of histogram beyond which the values repeat themselves
+    #------------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def cumulative_significant_range(distribution : np.ndarray, tolerance=1e-6):
+        min_index = 0
+        while min_index < distribution.size - 2 and abs( distribution[min_index] - distribution[min_index+1] ) < tolerance:
+            min_index = min_index + 1
+
+        max_index = distribution.size - 1
+        while max_index > 1 and abs( distribution[max_index] - distribution[max_index-1] ) < tolerance:
+            max_index = max_index - 1
+
+        return min_index, max_index
+
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # For the given orderbook, the method returns its absolute spread
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def orderbook_spread(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+        
+        max_bid_price = 0.0
+        if len(orderbook.bids) > 0:
+            for bid in orderbook.bids:
+                max_bid_price = max( max_bid_price, quotation_to_float( bid.price ) )                
+
+        min_ask_price = 10e10
+        if len(orderbook.asks) > 0:
+            for ask in orderbook.asks:
+                min_ask_price = min( min_ask_price, quotation_to_float( ask.price ) )
+
+        spread = ( min_ask_price - max_bid_price ) / min_price_increment
+        return int( max( 0.0, min( spread, orderbook_width) ) ) * min_price_increment
+
+    
     #------------------------------------------------------------------------------------------------------------------------
     # For the given orderbook, the method returns cumulative distrubution of order volumes,
     # * pivoted around maximal bid price / minimal ask price / last price - conditionally on availability of specific orders
@@ -194,13 +233,13 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def generate_distribution(distribution : np.ndarray, scheme : list, bias : float):
+    def generate_distribution(distribution : np.ndarray, scheme : list, bias : float, min_index : int, max_index : int):
         cumulative_distribution_weight = 0
         for i in range(len(distribution)):
             cumulative_distribution_weight = cumulative_distribution_weight + distribution[i]
         for i in range(len(scheme)):
             sample_weight = scheme[i] * (1.0 + random.uniform(-bias,bias))
-            idx = random.randint(0, distribution.size-1)
+            idx = random.randint(min_index, max_index)
             distribution[idx] = distribution[idx] + sample_weight
             cumulative_distribution_weight = cumulative_distribution_weight + sample_weight
         

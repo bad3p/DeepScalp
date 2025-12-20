@@ -32,7 +32,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkOrderbookAutoencoder import TkOrderbookAutoencoder
 from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 from TkModules.TkTrainingHistory import TkAutoencoderTrainingHistory
-from TkModules.TkSSIM import hybrid_ms_ssim_l1_loss_1d
+from TkModules.TkSSIM import hybrid_lob_multi_loss, hybrid_lob_loss, hybrid_ms_ssim_1d_gaussian_l1_loss
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -258,7 +258,7 @@ orderbook_optimizer = torch.optim.Adam( orderbook_autoencoder.parameters(), lr=o
 if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
 
-orderbook_loss = lambda x,y: hybrid_ms_ssim_l1_loss_1d(x,y,win_size=13,alpha=0.95) # torch.nn.L1Loss() # torch.nn.BCELoss()
+orderbook_loss = lambda x,y: hybrid_lob_multi_loss(x, y, alpha_1=0.55, alpha_2=0.35, beta=0.1, gamma=0.05, delta=0.001, win_size_1=11, levels_1=4, win_size_2=5, levels_2=3) # torch.nn.BCELoss() #
 orderbook_training_history = TkAutoencoderTrainingHistory(orderbook_history_path, history_size)
 
 last_trades_autoencoder = TkLastTradesAutoencoder(config)
@@ -268,7 +268,8 @@ if os.path.isfile(last_trades_model_path):
 last_trades_optimizer = torch.optim.Adam( last_trades_autoencoder.parameters(), lr=last_trades_autoencoder_learning_rate, weight_decay=last_trades_autoencoder_weight_decay )
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
-last_trades_loss = lambda x,y: hybrid_ms_ssim_l1_loss_1d(x,y,win_size=11,alpha=0.95) #torch.nn.BCELoss()
+
+last_trades_loss = lambda x,y: hybrid_ms_ssim_1d_gaussian_l1_loss(x,y,win_size=11,levels=4,alpha=0.95) # torch.nn.BCELoss() #
 last_trades_training_history = TkAutoencoderTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(

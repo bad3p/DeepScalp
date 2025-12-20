@@ -123,6 +123,9 @@ class TkAutoencoderDataPreprocessor():
         local_orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
         local_last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
+        orderbook_min_significant_index = int(self._orderbook_width / 2)
+        orderbook_max_significant_index = int(self._orderbook_width / 2)
+
         for i in range(raw_sample_count):
             orderbook_sample = raw_samples[i*2]
             distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor ) 
@@ -132,6 +135,11 @@ class TkAutoencoderDataPreprocessor():
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
                 self._normalized_orderbook_samples.append(distribution)
                 local_orderbook_lsh.index(distribution)
+
+                min_index, max_index = TkStatistics.cumulative_significant_range(distribution)
+                if min_index < max_index:
+                    orderbook_min_significant_index = min( orderbook_min_significant_index, min_index )
+                    orderbook_max_significant_index = max( orderbook_max_significant_index, max_index )
 
             # last trades sample
             last_trades_sample = raw_samples[i*2+1]
@@ -209,9 +217,9 @@ class TkAutoencoderDataPreprocessor():
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        return raw_sample_count / elapsed_time
+        return raw_sample_count / elapsed_time, orderbook_min_significant_index, orderbook_max_significant_index, len(self._normalized_orderbook_samples), len(self._normalized_last_trades_samples)
 
-    def generate_synthetic_samples(self, training_category : bool, render_callback):
+    def generate_synthetic_samples(self, training_category : bool, orderbook_min_index : int, orderbook_max_index : int, num_orderbook_samples : int, num_last_trades_samples : int, render_callback):
 
         def generate_render_callback_indices(num_samples:int):
             if num_samples < 1000:
@@ -220,18 +228,8 @@ class TkAutoencoderDataPreprocessor():
                 return [int(i / 1000.0 * num_samples) for i in range(1,1000)]
             else:
                 return [int(i / 10000.0 * num_samples) for i in range(1,10000)]
-
-        synthetic_sample_ratio = float(config['Autoencoders']['SyntheticSampleRatio'])
-
-        lsh_reset_threshold_time = 2.0
-
-        if synthetic_sample_ratio <= 0.0:
-            return
-
-        num_orderbook_training_samples = len(self._orderbook_training_index)
-        num_orderbook_test_samples = len(self._orderbook_test_index)
-        num_last_trades_training_samples = len(self._last_trades_training_index)
-        num_last_trades_test_samples = len(self._last_trades_test_index)
+        
+        lsh_reset_threshold_time = 2.0 # TODO: configure
 
         synthetic_orderbook_scheme = json.loads(config['Autoencoders']['SyntheticOrderbookScheme'])
         if not type(synthetic_orderbook_scheme) is list:
@@ -248,16 +246,7 @@ class TkAutoencoderDataPreprocessor():
         self._normalized_orderbook_samples = []
         self._normalized_last_trades_samples = []
 
-        num_samples = 0
-
-        if training_category:
-            num_samples = int( synthetic_sample_ratio * num_orderbook_training_samples )
-        else:
-            if num_orderbook_test_samples > 0:
-                num_samples = int( synthetic_sample_ratio * num_orderbook_test_samples )
-            else:
-                num_samples = int( synthetic_sample_ratio * num_orderbook_training_samples )
-
+        num_samples = num_orderbook_samples
         callback_indices = generate_render_callback_indices( num_samples )
 
         for i in range(num_samples):
@@ -268,7 +257,7 @@ class TkAutoencoderDataPreprocessor():
                 orderbook_scheme = synthetic_orderbook_scheme[random.randint(0, len(synthetic_orderbook_scheme)-1)]
                 distribution = np.zeros( self._orderbook_width, dtype=float)
                 distribution[int(self._orderbook_width/2)-2] = random.uniform(0.0, synthetic_orderbook_sample_central_bias) # center synthetic orderbook sample to the maximal ask price
-                TkStatistics.generate_distribution( distribution, orderbook_scheme, synthetic_sample_bias )
+                TkStatistics.generate_distribution( distribution, orderbook_scheme, synthetic_sample_bias, orderbook_min_index, orderbook_max_index )
                 TkStatistics.to_cumulative_distribution(distribution)
                 lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._synthetic_orderbook_sample_similarity:
@@ -284,14 +273,8 @@ class TkAutoencoderDataPreprocessor():
                 if render_callback != None:
                     render_callback( self._normalized_orderbook_samples, None )
 
-        if training_category:
-            num_samples = int( synthetic_sample_ratio * num_last_trades_training_samples )
-        else:
-            if num_orderbook_test_samples > 0:
-                num_samples = int( synthetic_sample_ratio * num_last_trades_test_samples )
-            else:
-                num_samples = int( synthetic_sample_ratio * num_last_trades_training_samples )
-
+        
+        num_samples = num_last_trades_samples        
         callback_indices = generate_render_callback_indices( num_samples )
 
         for i in range(num_samples):
@@ -358,6 +341,8 @@ config.read( 'TkConfig.ini' )
 data_path = config['Paths']['DataPath']
 data_extension = config['Paths']['OrderbookFileExtension']
 test_data_ratio = float(config['Autoencoders']['TestDataRatio'])
+orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
+synthetic_sample_ratio = float(config['Autoencoders']['SyntheticSampleRatio'])
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
 print( 'Data files found:', len(data_files) )
@@ -426,6 +411,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
         num_training_data_sources = num_data_sources - num_test_data_sources
 
+        generated_orderbook_min_index = 0
+        generated_orderbook_max_index = 0
+        num_orderbook_training_samples = 0
+        num_last_trades_training_samples = 0
+        num_orderbook_test_samples = 0
+        num_last_trades_test_samples = 0
+
         for i in range(num_data_sources):
             date_and_filename = files_by_ticker[ticker][i]
             date = date_and_filename[0]
@@ -440,7 +432,16 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-            samples_per_second = preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
+            samples_per_second, orderbook_min_index, orderbook_max_index, num_orderbook_samples, num_last_trades_samples = preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
+            generated_orderbook_min_index = generated_orderbook_min_index + orderbook_min_index
+            generated_orderbook_max_index = generated_orderbook_max_index + orderbook_max_index
+            if is_test_data_source:
+                num_orderbook_test_samples = num_orderbook_test_samples + num_orderbook_samples
+                num_last_trades_test_samples = num_last_trades_test_samples + num_last_trades_samples
+            else:
+                num_orderbook_training_samples = num_orderbook_training_samples + num_orderbook_samples
+                num_last_trades_training_samples = num_last_trades_training_samples + num_last_trades_samples
+            
             cumulative_samples_per_second = cumulative_samples_per_second + samples_per_second
             samples_per_second_norm = samples_per_second_norm + 1
 
@@ -458,21 +459,33 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             if not dpg.is_dearpygui_running():
                 break
 
+        generated_orderbook_min_index = int( generated_orderbook_min_index / num_data_sources )
+        generated_orderbook_max_index = int( generated_orderbook_max_index / num_data_sources )
+        print(ticker, generated_orderbook_min_index, generated_orderbook_max_index)        
+
+        if synthetic_sample_ratio > 0.0:
+            dpg.set_value("filename", 'Generating synthetic samples...')
+            dpg.render_dearpygui_frame()
+
+            num_orderbook_training_samples = max( 1, int( num_orderbook_training_samples * synthetic_sample_ratio ) )
+            num_last_trades_training_samples = max( 1, int( num_last_trades_training_samples * synthetic_sample_ratio ) )
+            preprocessor.generate_synthetic_samples( True, generated_orderbook_min_index, generated_orderbook_max_index, num_orderbook_training_samples, num_last_trades_training_samples, render_samples )
+            gc.collect()
+            dpg.render_dearpygui_frame()
+
+            num_orderbook_test_samples = max( 1, int( num_orderbook_test_samples * synthetic_sample_ratio ) )
+            num_last_trades_test_samples = max( 1, int( num_last_trades_test_samples * synthetic_sample_ratio ) ) 
+            preprocessor.generate_synthetic_samples( False, generated_orderbook_min_index, generated_orderbook_max_index, num_orderbook_test_samples, num_last_trades_test_samples, render_samples )
+            gc.collect()
+            dpg.render_dearpygui_frame()
+
+        if not dpg.is_dearpygui_running():
+            break
+
         preprocessor.clear_lsh()
         #break
 
     if dpg.is_dearpygui_running():
-
-        dpg.set_value("filename", 'Generating synthetic samples...')
-        dpg.render_dearpygui_frame()
-    
-        preprocessor.generate_synthetic_samples( True, render_samples )
-        gc.collect()
-        dpg.render_dearpygui_frame()
-
-        preprocessor.generate_synthetic_samples( False, render_samples )
-        gc.collect()
-        dpg.render_dearpygui_frame()
 
         dpg.set_value("orderbook_samples", str(preprocessor.num_orderbook_samples())+"/"+str(total_samples) )
         dpg.set_value("last_trades_samples", str(preprocessor.num_last_trades_samples())+"/"+str(total_samples) )

@@ -124,10 +124,11 @@ class TkTimeSeriesDataPreprocessor():
         # encode orderbook & last trades
 
         price = [0.0] * raw_sample_count
+        spread = [0.0] * raw_sample_count
         orderbook_volume = [0] * raw_sample_count
         last_trades_volume = [0] * raw_sample_count
         orderbook = [None] * raw_sample_count
-        last_trades = [None] * raw_sample_count
+        last_trades = [None] * raw_sample_count        
 
         for i in range( raw_sample_count ):
 
@@ -136,6 +137,7 @@ class TkTimeSeriesDataPreprocessor():
             if volume > 0:
                 distribution *= 1.0 / volume
             price[i] = quotation_to_float( orderbook_sample.last_price )
+            spread[i] = TkStatistics.orderbook_spread( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )
             orderbook_volume[i] = volume
             orderbook[i] = distribution
 
@@ -223,6 +225,10 @@ class TkTimeSeriesDataPreprocessor():
                 ts_sample_price = price[k]
                 ts_sample_price = ( ts_sample_price - ts_base_price ) / (min_price_increment * self._min_price_increment_factor) # normalized to orderbook & last trades discretization
                 ts_input[j].append( ts_sample_price )
+
+                ts_sample_spread = spread[k]
+                ts_sample_spread = spread[k] / (min_price_increment * self._min_price_increment_factor)
+                ts_input[j].append( ts_sample_spread )
 
                 ts_sample_orderbook_volume = orderbook_volume[k]
                 ts_sample_orderbook_volume = ( ts_sample_orderbook_volume / ts_base_orderbook_volume - 1.0 ) * 100 if ( ts_base_orderbook_volume > 0 ) else 0.0

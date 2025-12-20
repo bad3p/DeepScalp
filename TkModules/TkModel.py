@@ -2,6 +2,32 @@
 import torch
 
 #------------------------------------------------------------------------------------------------------------------------
+# Residual layer for MLP
+#------------------------------------------------------------------------------------------------------------------------
+
+class Residual(torch.nn.Module):
+    def __init__(self, idx:int, in_dim:int, out_dim:int, residual_scale:float):
+        super().__init__()
+        self._index = idx
+        self._in_dim = in_dim
+        self._out_dim = out_dim
+        self._residual_scale = residual_scale
+        self._projection = torch.nn.Linear(in_dim, out_dim)
+        self.initWeights()
+
+    def index(self):
+        return self._index
+
+    def forward(self, x_prev, x):
+        return x * self._residual_scale + self._projection(x_prev)
+    
+    def initWeights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, 0, 0.001)
+                torch.nn.init.constant_(m.bias, 0)
+
+#------------------------------------------------------------------------------------------------------------------------
 # Simple sequence of pytorch layers, constructed using given specification (list of layer descriptors).
 # Each layer descriptor is a dictionary containing the single key-value pair.
 # The key is string describing the type of layer, the value is a list describing its parameters.
@@ -12,6 +38,7 @@ import torch
 #   {"Flatten":[]},
 #   {"Linear":[in_neurons,out_neurons]},
 #   {"Unflatten":[size_x,size_y]},
+#   ...
 #------------------------------------------------------------------------------------------------------------------------
 
 class TkModel(torch.nn.Module):
@@ -76,6 +103,19 @@ class TkModel(torch.nn.Module):
             layer_in_channels = params[0]
             layer_out_channels = params[1]
             return torch.nn.Linear( layer_in_channels, layer_out_channels )
+        
+        def create_residual_layer(params:list):
+            index = params[0]
+            layer_in_channels = params[1]
+            layer_out_channels = params[2]
+            residual_scale = 1.0
+            if len(params) > 3:
+                residual_scale = params[3]
+            return Residual(index, layer_in_channels, layer_out_channels, residual_scale)
+        
+        def create_norm_layer(params:list):
+            layer_channels = params[0]
+            return torch.nn.LayerNorm( [layer_channels] )
 
         def create_layer(layer_descriptor : dict):
             if len(layer_descriptor.keys()) == 0:
@@ -107,6 +147,10 @@ class TkModel(torch.nn.Module):
                 return create_unflatten_layer( layer_descriptor[layer_type] )
             if layer_type == 'Linear':
                 return create_linear_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Residual':
+                return create_residual_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Norm':
+                return create_norm_layer( layer_descriptor[layer_type])
             else:
                 raise RuntimeError('Unknown layer type: ' + layer_type + "!")
 
@@ -134,9 +178,15 @@ class TkModel(torch.nn.Module):
 
     def forward(self, input):
 
-        y = self._layers[0]( input )
+        y = [input]
+        y.append( self._layers[0]( input ) )
 
         for layer_id in range(1, len(self._layers)):
-            y = self._layers[layer_id]( y )
+            if isinstance(self._layers[layer_id], Residual):
+                residual: Residual = self._layers[layer_id]
+                index = residual.index()
+                y.append( self._layers[layer_id]( y[index], y[-1] ) )
+            else:
+                y.append( self._layers[layer_id]( y[-1] ) )
         
-        return y
+        return y[-1]
