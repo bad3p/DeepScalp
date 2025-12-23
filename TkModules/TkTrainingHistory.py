@@ -35,6 +35,8 @@ class TkAutoencoderTrainingHistory():
             self._epoch_recon_accuracy_history = [(0.0,0,0)]
             self._epoch_kld_accuracy_history = [(0.0,0,0)]            
 
+        print( _history_path, self._epoch_recon_accuracy_history[-1], self._epoch_kld_accuracy_history[-1])
+
     def get_smooth_epoch(self,epoch_size:int):
         return len(self._epoch_recon_loss_history) - 1 + self._training_sample_id / epoch_size
 

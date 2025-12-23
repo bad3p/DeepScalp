@@ -2,7 +2,6 @@
 import torch
 import torch.nn.functional as F
 
-
 def gaussian_kernel_1d(win_size=11, sigma=1.5, channels=1, device='cpu', dtype=torch.float32):
     """Returns a 1D Gaussian convolution kernel for depthwise conv."""
     half = win_size // 2
@@ -44,7 +43,7 @@ def ssim_1d_gaussian(x, y, win_size=11, sigma=1.5, C1=0.01**2, C2=0.03**2):
     den = (mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2)
 
     ssim_map = num / (den + 1e-12)
-    return ssim_map.mean()
+    return ssim_map
 
 # --------------------------------------------------------------------------------------------------------------
 # Differentiable SSIM loss for VAE: lower = better.
@@ -150,3 +149,98 @@ def hybrid_lob_multi_loss(x, y, alpha_1=0.5, alpha_2=0.4, beta=0.1, gamma=0.05, 
     tv_loss = torch.mean(torch.abs(x[:, :, 1:] - x[:, :, :-1]))
 
     return alpha_1 * ms_ssim_loss_1 + alpha_2 * ms_ssim_loss_2 + beta * l1_loss + gamma * huber_loss + delta * tv_loss
+
+# --------------------------------------------------------------------------------------------------------------
+# Per-sample MS-SSIM
+# --------------------------------------------------------------------------------------------------------------
+
+def gaussian_window_1d(window_size, sigma, channels, device):
+    coords = torch.arange(window_size, device=device).float() - window_size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g = g / g.sum()
+    window = g.view(1, 1, -1)
+    window = window.expand(channels, 1, window_size)
+    return window
+
+
+def ssim_1d_per_channel(x, y, window, C1, C2):
+    # x, y: [B, C, L]
+    mu_x = torch.nn.functional.conv1d(x, window, padding=window.size(-1) // 2, groups=x.size(1))
+    mu_y = torch.nn.functional.conv1d(y, window, padding=window.size(-1) // 2, groups=x.size(1))
+
+    mu_x2 = mu_x.pow(2)
+    mu_y2 = mu_y.pow(2)
+    mu_xy = mu_x * mu_y
+
+    sigma_x2 = torch.nn.functional.conv1d(x * x, window, padding=window.size(-1) // 2, groups=x.size(1)) - mu_x2
+    sigma_y2 = torch.nn.functional.conv1d(y * y, window, padding=window.size(-1) // 2, groups=x.size(1)) - mu_y2
+    sigma_xy = torch.nn.functional.conv1d(x * y, window, padding=window.size(-1) // 2, groups=x.size(1)) - mu_xy
+
+    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
+               ((mu_x2 + mu_y2 + C1) * (sigma_x2 + sigma_y2 + C2))
+
+    cs_map = (2 * sigma_xy + C2) / (sigma_x2 + sigma_y2 + C2)
+
+    return ssim_map, cs_map
+
+
+class MS_SSIM_1D_Loss(torch.nn.Module):
+    def __init__(
+        self,
+        alpha=0.5, # MS-SSIM contribution
+        beta=0.3, # L1 contribution
+        gamma=0.2, # gradient loss contribution
+        window_size=11,
+        sigma=1.5,
+        data_range=1.0,
+        weights=(0.0448, 0.2856, 0.3001, 0.2363, 0.1333),        
+        K1=0.01,
+        K2=0.03,
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.window_size = window_size
+        self.sigma = sigma
+        self.data_range = data_range
+        self.weights = weights
+        self.K1 = K1
+        self.K2 = K2
+
+    def forward(self, x, y):
+        """
+        x, y: [B, C, L]
+        returns: [B]  (per-sample MS-SSIM loss)
+        """
+        B, C, L = x.shape
+        device = x.device
+
+        window = gaussian_window_1d(
+            self.window_size, self.sigma, C, device
+        )
+
+        C1 = (self.K1 * self.data_range) ** 2
+        C2 = (self.K2 * self.data_range) ** 2
+
+        msssim = torch.ones(B, device=device)
+
+        for i, weight in enumerate(self.weights):
+            ssim_map, cs_map = ssim_1d_per_channel(x, y, window, C1, C2)
+
+            # Average over channel + length → per-sample
+            ssim_val = ssim_map.mean(dim=[1, 2])
+            cs_val = cs_map.mean(dim=[1, 2])
+
+            if i == len(self.weights) - 1:
+                msssim = msssim * (ssim_val ** weight)
+            else:
+                msssim = msssim * (cs_val ** weight)
+                x = F.avg_pool1d(x, kernel_size=2, stride=2)
+                y = F.avg_pool1d(y, kernel_size=2, stride=2)
+
+        grad_x = x[:, :, 1:] - x[:, :, :-1]
+        grad_y = y[:, :, 1:] - y[:, :, :-1]
+        grad_loss = torch.abs(grad_x - grad_y).mean(dim=[1,2])
+
+        return ( 1.0 - msssim ) * self.alpha + torch.nn.functional.l1_loss(x, y) * self.beta + grad_loss * self.gamma

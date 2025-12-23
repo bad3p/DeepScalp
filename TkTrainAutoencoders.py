@@ -32,7 +32,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkOrderbookAutoencoder import TkOrderbookAutoencoder
 from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 from TkModules.TkTrainingHistory import TkAutoencoderTrainingHistory
-from TkModules.TkSSIM import hybrid_lob_multi_loss, hybrid_lob_loss, hybrid_ms_ssim_1d_gaussian_l1_loss
+from TkModules.TkSSIM import MS_SSIM_1D_Loss
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -216,7 +216,170 @@ class TkAutoencoderDataLoader():
         self._loading_thread.join()
         self._loading_thread = None
         return self._orderbook_samples, self._last_trades_samples           
-         
+
+#------------------------------------------------------------------------------------------------------------------------
+
+class TkAnnealing():
+
+    def is_enabled(self):
+        raise NotImplementedError()
+
+    def get_base_alpha(self):
+        raise NotImplementedError()
+    
+    def get_base_beta(self):
+        raise NotImplementedError()
+    
+    def get_base_learning_rate(self):
+        raise NotImplementedError()
+
+    def get_start_annealing_epoch(self):
+        raise NotImplementedError()
+    
+    def get_end_annealing_epoch(self):
+        raise NotImplementedError()
+    
+    def get_start_annealing_alpha_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_end_annealing_alpha_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_start_annealing_beta_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_end_annealing_beta_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_start_annealing_learning_rate_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_end_annealing_learning_rate_multiplier(self):
+        raise NotImplementedError()
+    
+    def get_annealed_value(self, smooth_epoch:float, base_value:float, start_epoch_multiplier:float, end_epoch_multiplier:float):
+        if smooth_epoch < self.get_start_annealing_epoch():
+            return base_value * start_epoch_multiplier
+        elif smooth_epoch > self.get_end_annealing_epoch():
+            return base_value * end_epoch_multiplier
+        else:
+            t = ( smooth_epoch - self.get_start_annealing_epoch() ) / (self.get_end_annealing_epoch() - self.get_start_annealing_epoch())
+            return base_value * ( start_epoch_multiplier * ( 1.0 - t ) + end_epoch_multiplier * t )
+        
+    def get_annealed_alpha(self, smooth_epoch:float):
+        if self.is_enabled():
+            return self.get_annealed_value( smooth_epoch, self.get_base_alpha(), self.get_start_annealing_alpha_multiplier(), self.get_end_annealing_alpha_multiplier())
+        else:
+            return self.get_base_alpha()
+    
+    def get_annealed_beta(self, smooth_epoch:float):
+        if self.is_enabled():
+            return self.get_annealed_value( smooth_epoch, self.get_base_beta(), self.get_start_annealing_beta_multiplier(), self.get_end_annealing_beta_multiplier())
+        else:
+            return self.get_base_beta()
+    
+    def get_annealed_learning_rate(self, smooth_epoch:float):
+        if self.is_enabled():
+            return self.get_annealed_value( smooth_epoch, self.get_base_learning_rate(), self.get_start_annealing_learning_rate_multiplier(), self.get_end_annealing_learning_rate_multiplier())
+        else:
+            return self.get_base_learning_rate()
+
+
+class TkOrderbookAutoencoderAnnealing(TkAnnealing):
+
+    def __init__(self, _cfg : configparser.ConfigParser):       
+        self._base_alpha = float(_cfg['Autoencoders']['OrderbookAutoencoderAlpha'])
+        self._base_beta = float(config['Autoencoders']['OrderbookAutoencoderBeta'])
+        self._base_learning_rate = float(config['Autoencoders']['OrderbookAutoencoderLearningRate'])
+        self._is_enabled = (config['Autoencoders']['OrderbookAnnealing'] == 'True')
+        self._annealing_epochs = json.loads(config['Autoencoders']['OrderbookAnnealingEpochs'])
+        self._annealing_alpha = json.loads(config['Autoencoders']['OrderbookAnnealingAlpha'])
+        self._annealing_beta = json.loads(config['Autoencoders']['OrderbookAnnealingBeta'])
+        self._annealing_learning_rate = json.loads(config['Autoencoders']['OrderbookAnnealingLearningRate'])
+
+    def is_enabled(self):
+        return self._is_enabled
+
+    def get_base_alpha(self):
+        return self._base_alpha
+    
+    def get_base_beta(self):
+        return self._base_beta
+    
+    def get_base_learning_rate(self):
+        return self._base_learning_rate
+
+    def get_start_annealing_epoch(self):
+        return self._annealing_epochs[0]
+    
+    def get_end_annealing_epoch(self):
+        return self._annealing_epochs[1]
+    
+    def get_start_annealing_alpha_multiplier(self):
+        return self._annealing_alpha[0]
+    
+    def get_end_annealing_alpha_multiplier(self):
+        return self._annealing_alpha[1]
+    
+    def get_start_annealing_beta_multiplier(self):
+        return self._annealing_beta[0]
+    
+    def get_end_annealing_beta_multiplier(self):
+        return self._annealing_beta[1]
+    
+    def get_start_annealing_learning_rate_multiplier(self):
+        return self._annealing_learning_rate[0]
+    
+    def get_end_annealing_learning_rate_multiplier(self):
+        return self._annealing_learning_rate[1]
+
+class TkLastTradesAutoencoderAnnealing(TkAnnealing):
+
+    def __init__(self, _cfg : configparser.ConfigParser):       
+        self._base_alpha = float(_cfg['Autoencoders']['LastTradesAutoencoderAlpha'])
+        self._base_beta = float(config['Autoencoders']['LastTradesAutoencoderBeta'])
+        self._base_learning_rate = float(config['Autoencoders']['LastTradesAutoencoderLearningRate'])
+        self._is_enabled = (config['Autoencoders']['LastTradesAnnealing'] == 'True')
+        self._annealing_epochs = json.loads(config['Autoencoders']['LastTradesAnnealingEpochs'])
+        self._annealing_alpha = json.loads(config['Autoencoders']['LastTradesAnnealingAlpha'])
+        self._annealing_beta = json.loads(config['Autoencoders']['LastTradesAnnealingBeta'])
+        self._annealing_learning_rate = json.loads(config['Autoencoders']['LastTradesAnnealingLearningRate'])
+
+    def is_enabled(self):
+        return self._is_enabled
+
+    def get_base_alpha(self):
+        return self._base_alpha
+    
+    def get_base_beta(self):
+        return self._base_beta
+    
+    def get_base_learning_rate(self):
+        return self._base_learning_rate
+
+    def get_start_annealing_epoch(self):
+        return self._annealing_epochs[0]
+    
+    def get_end_annealing_epoch(self):
+        return self._annealing_epochs[1]
+    
+    def get_start_annealing_alpha_multiplier(self):
+        return self._annealing_alpha[0]
+    
+    def get_end_annealing_alpha_multiplier(self):
+        return self._annealing_alpha[1]
+    
+    def get_start_annealing_beta_multiplier(self):
+        return self._annealing_beta[0]
+    
+    def get_end_annealing_beta_multiplier(self):
+        return self._annealing_beta[1]
+    
+    def get_start_annealing_learning_rate_multiplier(self):
+        return self._annealing_learning_rate[0]
+    
+    def get_end_annealing_learning_rate_multiplier(self):
+        return self._annealing_learning_rate[1]
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -242,34 +405,41 @@ orderbook_code_layer_size = int(config['Autoencoders']['OrderbookAutoencoderCode
 last_trades_code_layer_size = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
 orderbook_autoencoder_free_bits = float(config['Autoencoders']['OrderbookAutoencoderFreeBits'])
 last_trades_autoencoder_free_bits = float(config['Autoencoders']['LastTradesAutoencoderFreeBits'])
-orderbook_autoencoder_beta = float(config['Autoencoders']['OrderbookAutoencoderBeta'])
-last_trades_autoencoder_beta = float(config['Autoencoders']['LastTradesAutoencoderBeta'])
-orderbook_autoencoder_learning_rate = float(config['Autoencoders']['OrderbookAutoencoderLearningRate'])
-orderbook_autoencoder_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderWeightDecay'])
-last_trades_autoencoder_learning_rate = float(config['Autoencoders']['LastTradesAutoencoderLearningRate'])
-last_trades_autoencoder_weight_decay = float(config['Autoencoders']['LastTradesAutoencoderWeightDecay'])
+orderbook_autoencoder_conv_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderConvWeightDecay'])
+orderbook_autoencoder_dense_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderDenseWeightDecay'])
+last_trades_autoencoder_conv_weight_decay = float(config['Autoencoders']['LastTradesAutoencoderConvWeightDecay'])
+last_trades_autoencoder_dense_weight_decay = float(config['Autoencoders']['LastTradesAutoencoderConvWeightDecay'])
 history_size = int( config['Autoencoders']['HistorySize'] )
+
+orderbook_autoencoder_annealing = TkOrderbookAutoencoderAnnealing(config)
+last_trades_autoencoder_annealing = TkLastTradesAutoencoderAnnealing(config)
 
 orderbook_autoencoder = TkOrderbookAutoencoder(config)
 orderbook_autoencoder.to(cuda)
 if os.path.isfile(orderbook_model_path):
     orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
-orderbook_optimizer = torch.optim.Adam( orderbook_autoencoder.parameters(), lr=orderbook_autoencoder_learning_rate, weight_decay=orderbook_autoencoder_weight_decay )
+orderbook_optimizer = torch.optim.AdamW( 
+    orderbook_autoencoder.get_trainable_parameters(orderbook_autoencoder_conv_weight_decay, orderbook_autoencoder_dense_weight_decay),
+    lr=orderbook_autoencoder_annealing.get_base_learning_rate()
+)
 if os.path.isfile(orderbook_optimizer_path):
     orderbook_optimizer.load_state_dict(torch.load(orderbook_optimizer_path))
 
-orderbook_loss = lambda x,y: hybrid_lob_multi_loss(x, y, alpha_1=0.55, alpha_2=0.35, beta=0.1, gamma=0.05, delta=0.001, win_size_1=11, levels_1=4, win_size_2=5, levels_2=3) # torch.nn.BCELoss() #
+orderbook_loss =   MS_SSIM_1D_Loss(window_size=9) # lambda x,y: hybrid_lob_multi_loss(x, y, alpha_1=0.55, alpha_2=0.35, beta=0.1, gamma=0.05, delta=0.001, win_size_1=9, levels_1=3, win_size_2=5, levels_2=2) #  
 orderbook_training_history = TkAutoencoderTrainingHistory(orderbook_history_path, history_size)
 
 last_trades_autoencoder = TkLastTradesAutoencoder(config)
 last_trades_autoencoder.to(cuda)
 if os.path.isfile(last_trades_model_path):   
     last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
-last_trades_optimizer = torch.optim.Adam( last_trades_autoencoder.parameters(), lr=last_trades_autoencoder_learning_rate, weight_decay=last_trades_autoencoder_weight_decay )
+last_trades_optimizer = torch.optim.AdamW( 
+    last_trades_autoencoder.get_trainable_parameters(last_trades_autoencoder_conv_weight_decay, last_trades_autoencoder_dense_weight_decay),
+    lr=last_trades_autoencoder_annealing.get_base_learning_rate()
+)
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
 
-last_trades_loss = lambda x,y: hybrid_ms_ssim_1d_gaussian_l1_loss(x,y,win_size=11,levels=4,alpha=0.95) # torch.nn.BCELoss() #
+last_trades_loss = MS_SSIM_1D_Loss(window_size=7) # lambda x,y: hybrid_ssim_1d_gaussian_l1_loss(x,y,win_size=9,alpha=0.9) #  torch.nn.BCELoss(reduction="none") #
 last_trades_training_history = TkAutoencoderTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(
@@ -383,14 +553,28 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         #orderbook_smooth_epoch = orderbook_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.orderbook_training_batch_size() )
         #orderbook_autoencoder_beta = float(config['Autoencoders']['OrderbookAutoencoderBeta']) * get_epoch_schedule_weight( orderbook_smooth_epoch )
         #orderbook_autoencoder_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderWeightDecay']) * get_epoch_schedule_weight( orderbook_smooth_epoch )
-        orderbook_optimizer.param_groups[0]['weight_decay'] = orderbook_autoencoder_weight_decay
-        orderbook_optimizer.param_groups[0]['lr'] = orderbook_autoencoder_learning_rate
+        #orderbook_optimizer.param_groups[0]['weight_decay'] = orderbook_autoencoder_weight_decay
+        #orderbook_optimizer.param_groups[0]['lr'] = orderbook_autoencoder_learning_rate
 
         #last_trades_smooth_epoch = orderbook_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.last_trades_training_batch_size() )
         #last_trades_autoencoder_beta = float(config['Autoencoders']['LastTradesAutoencoderBeta']) * get_epoch_schedule_weight( last_trades_smooth_epoch )
         #last_trades_autoencoder_weight_decay = float(config['Autoencoders']['LastTradesAutoencoderWeightDecay']) * get_epoch_schedule_weight( last_trades_smooth_epoch )
-        last_trades_optimizer.param_groups[0]['weight_decay'] = last_trades_autoencoder_weight_decay
-        last_trades_optimizer.param_groups[0]['lr'] = last_trades_autoencoder_learning_rate
+        #last_trades_optimizer.param_groups[0]['weight_decay'] = last_trades_autoencoder_weight_decay
+        #last_trades_optimizer.param_groups[0]['lr'] = last_trades_autoencoder_learning_rate
+
+        orderbook_smooth_epoch = orderbook_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.orderbook_training_batch_size() )
+        orderbook_autoencoder_learning_rate = orderbook_autoencoder_annealing.get_annealed_learning_rate(orderbook_smooth_epoch)
+        orderbook_autoencoder_alpha = orderbook_autoencoder_annealing.get_annealed_alpha(orderbook_smooth_epoch)
+        orderbook_autoencoder_beta = orderbook_autoencoder_annealing.get_annealed_beta(orderbook_smooth_epoch)
+        for param_group in orderbook_optimizer.param_groups:
+            param_group['lr'] = orderbook_autoencoder_learning_rate
+
+        last_trades_smooth_epoch = last_trades_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.last_trades_training_batch_size() )
+        last_trades_autoencoder_learning_rate = last_trades_autoencoder_annealing.get_annealed_learning_rate(last_trades_smooth_epoch)
+        last_trades_autoencoder_alpha = last_trades_autoencoder_annealing.get_annealed_alpha(last_trades_smooth_epoch)
+        last_trades_autoencoder_beta = last_trades_autoencoder_annealing.get_annealed_beta(last_trades_smooth_epoch)
+        for param_group in last_trades_optimizer.param_groups:
+            param_group['lr'] = last_trades_autoencoder_learning_rate
 
         orderbook_samples, last_trades_samples = data_loader.complete_loading()
 
@@ -415,29 +599,40 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         #TkUI.set_series_from_tensor("x_axis_last_trades_code", "y_axis_last_trades_code","last_trades_code_series",last_trades_autoencoder.code(),0)
         #TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
-        #y_KLD_loss = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
-        y_KLD_loss = -0.5 * torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1)
-
-        y_KLD_loss = torch.max( y_KLD_loss, torch.tensor( orderbook_autoencoder_free_bits, device=y_KLD_loss.device))
+        y_KLD_loss = -0.5 * ( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp())        
+        y_KLD_loss = torch.clamp( y_KLD_loss, min=orderbook_autoencoder_free_bits )
+        y_KLD_loss = torch.sum( y_KLD_loss, dim=1)
 
         y_recon_loss = orderbook_loss( y, orderbook_input )
-        y_loss = y_recon_loss + y_KLD_loss * orderbook_autoencoder_beta
+        y_recon_loss = y_recon_loss.view( y_recon_loss.shape[0], -1).mean(dim=1)
+
+        # Spike penalties
+        tv_loss = torch.abs(y[:, 1:] - y[:, :-1]).mean()
+        curvature_loss = torch.abs(y[:, 2:] - 2*y[:, 1:-1] + y[:, :-2]).mean()
+
+        y_loss = y_recon_loss * orderbook_autoencoder_alpha + y_KLD_loss * orderbook_autoencoder_beta
+        y_loss = y_loss + 0.1 * tv_loss + 0.05 * curvature_loss
         y_loss = y_loss.mean()
+
         orderbook_optimizer.zero_grad()
         y_loss.backward()
+        torch.nn.utils.clip_grad_norm_( orderbook_autoencoder.parameters(), max_norm=5.0 ) # TODO: configure
         orderbook_optimizer.step()        
         y_KLD_loss_val = y_KLD_loss.mean().item()
         y_recon_loss_val = y_recon_loss.mean().item()
 
         #z_KLD_loss = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_KLD_loss = -0.5 * torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1)
-
-        z_KLD_loss = torch.max( z_KLD_loss, torch.tensor( last_trades_autoencoder_free_bits, device=z_KLD_loss.device))
+        z_KLD_loss = -0.5 * ( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp())        
+        z_KLD_loss = torch.clamp( z_KLD_loss, min=last_trades_autoencoder_free_bits )
+        z_KLD_loss = torch.sum( z_KLD_loss, dim=1)
 
         z_recon_loss = last_trades_loss( z, last_trades_input )        
-        z_loss = z_recon_loss + z_KLD_loss * last_trades_autoencoder_beta
+        z_recon_loss = z_recon_loss.view( z_recon_loss.shape[0], -1).mean(dim=1)
+
+        z_loss = z_recon_loss * last_trades_autoencoder_alpha + z_KLD_loss * last_trades_autoencoder_beta
         z_loss = z_loss.mean()
         last_trades_optimizer.zero_grad()
+        torch.nn.utils.clip_grad_norm_( last_trades_autoencoder.parameters(), max_norm=5.0 ) # TODO: configure
         z_loss.backward()
         last_trades_optimizer.step()
         z_KLD_loss_val = z_KLD_loss.mean().item()
@@ -474,16 +669,23 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_last_trades_output", "y_axis_last_trades_output","last_trades_output_series",z,0)
 
         #y_KLD_accuracy = -0.5 * torch.mean( torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1), dim=0 )
-        y_KLD_accuracy = -0.5 * torch.sum( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp(), dim=1)
+        y_KLD_accuracy = -0.5 * ( 1 + y_logvar - y_mean.pow(2) - y_logvar.exp())        
+        y_KLD_accuracy = torch.clamp( y_KLD_accuracy, min=orderbook_autoencoder_free_bits )
+        y_KLD_accuracy = torch.sum( y_KLD_accuracy, dim=1)
 
-        y_recon_accuracy = orderbook_loss( y, orderbook_input )        
+        y_recon_accuracy = orderbook_loss( y, orderbook_input )
+        y_recon_accuracy = y_recon_accuracy.view( y_recon_accuracy.shape[0], -1).mean(dim=1)
+
         y_KLD_accuracy_val = y_KLD_accuracy.mean().item()
         y_recon_accuracy_val = y_recon_accuracy.mean().item()
 
         #z_KLD_accuracy = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_KLD_accuracy = -0.5 * torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1)
+        z_KLD_accuracy = -0.5 * ( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp())        
+        z_KLD_accuracy = torch.clamp( z_KLD_accuracy, min=last_trades_autoencoder_free_bits )
+        z_KLD_accuracy = torch.sum( z_KLD_accuracy, dim=1)
 
         z_recon_accuracy = last_trades_loss( z, last_trades_input )
+        z_recon_accuracy = z_recon_accuracy.view( z_recon_accuracy.shape[0], -1).mean(dim=1)
         z_KLD_accuracy_val = z_KLD_accuracy.mean().item()
         z_recon_accuracy_val = z_recon_accuracy.mean().item()
 

@@ -52,14 +52,34 @@ class TkModel(torch.nn.Module):
             layer_out_channels = params[1]
             layer_kernel_size = params[2]
             layer_stride = params[3]
-            return torch.nn.Conv1d( in_channels=layer_in_channels, out_channels=layer_out_channels, kernel_size=layer_kernel_size, stride=layer_stride, padding=0)
+            layer_padding = 0
+            if len(params) > 4:
+                layer_padding = params[4]
+            return torch.nn.Conv1d( in_channels=layer_in_channels, out_channels=layer_out_channels, kernel_size=layer_kernel_size, stride=layer_stride, padding=layer_padding)
 
         def create_deconv_layer(params : list):
             layer_in_channels = params[0]
             layer_out_channels = params[1]
             layer_kernel_size = params[2]
             layer_stride = params[3]
-            return torch.nn.ConvTranspose1d( in_channels=layer_in_channels, out_channels=layer_out_channels, kernel_size=layer_kernel_size, stride=layer_stride, padding=0)
+            layer_padding = 0
+            if len(params) > 4:
+                layer_padding = params[4]
+            return torch.nn.ConvTranspose1d( in_channels=layer_in_channels, out_channels=layer_out_channels, kernel_size=layer_kernel_size, stride=layer_stride, padding=layer_padding)
+        
+        def create_maxpool_layer( params:list ):
+            layer_kernel_size = params[0]
+            layer_stride = params[1]
+            return torch.nn.MaxPool1d( kernel_size=layer_kernel_size, stride=layer_stride)
+        
+        def create_avgpool_layer( params:list ):
+            layer_kernel_size = params[0]
+            layer_stride = params[1]
+            return torch.nn.AvgPool1d( kernel_size=layer_kernel_size, stride=layer_stride)
+        
+        def create_upsample_layer( params:list ):
+            layer_scale_factor = params[0]
+            return torch.nn.Upsample( scale_factor=layer_scale_factor )
 
         def create_lrelu_layer(params : list):
             layer_leakage = params[0]
@@ -125,6 +145,12 @@ class TkModel(torch.nn.Module):
                 return create_conv_layer( layer_descriptor[layer_type] )
             if layer_type == 'Deconv':
                 return create_deconv_layer( layer_descriptor[layer_type] )
+            if layer_type == 'MaxPool':
+                return create_maxpool_layer( layer_descriptor[layer_type] )
+            if layer_type == 'AvgPool':
+                return create_avgpool_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Upsample':
+                return create_upsample_layer( layer_descriptor[layer_type] )
             if layer_type == 'LReLU':
                 return create_lrelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'TanH':
@@ -163,10 +189,13 @@ class TkModel(torch.nn.Module):
 
         self.initWeights()
 
-    def initWeights(self) -> None:
+    def initWeights(self, conv_init_mode='kaiming_normal', conv_init_gain:float=1.0) -> None:
         for m in self.modules():
             if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.ConvTranspose1d):
-                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if conv_init_mode == 'kaiming_normal':
+                    torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                else:
+                    torch.nn.init.xavier_normal_(m.weight,gain=conv_init_gain)
                 if m.bias is not None:
                     torch.nn.init.constant_(m.bias, 0)
             elif isinstance(m, torch.nn.BatchNorm2d) or isinstance(m, torch.nn.BatchNorm1d):
