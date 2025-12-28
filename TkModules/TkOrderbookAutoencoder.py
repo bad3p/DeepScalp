@@ -5,6 +5,80 @@ from TkModules.TkModel import TkModel
 
 #------------------------------------------------------------------------------------------------------------------------
 
+class VectorQuantizerEMA(torch.nn.Module):
+    def __init__(
+        self,
+        num_embeddings,
+        embedding_dim,
+        commitment_cost=0.25,
+        decay=0.99,
+        eps=1e-5,
+    ):
+        super().__init__()
+
+        self.embedding_dim = embedding_dim
+        self.num_embeddings = num_embeddings
+        self.commitment_cost = commitment_cost
+        self.decay = decay
+        self.eps = eps
+
+        self.embedding = torch.nn.Embedding(num_embeddings, embedding_dim)
+        self.embedding.weight.data.normal_()
+
+        self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
+        self.register_buffer("ema_w", self.embedding.weight.data.clone())
+
+    def quantize(self, z):
+        # z: (B, C, T)
+        z = z.permute(0, 2, 1).contiguous()  # (B, T, C)
+        flat_z = z.view(-1, self.embedding_dim)  # (B*T, C)
+
+        distances = (
+            flat_z.pow(2).sum(1, keepdim=True)
+            - 2 * flat_z @ self.embedding.weight.t()
+            + self.embedding.weight.pow(2).sum(1)
+        )
+
+        encoding_indices = torch.argmin(distances, dim=1)
+        encodings = torch.nn.functional.one_hot(encoding_indices, self.num_embeddings).type(flat_z.dtype)
+
+        quantized = self.embedding(encoding_indices).view(z.shape)
+
+        # EMA updates (training only)
+        if self.training:
+            self.ema_cluster_size.mul_(self.decay).add_(
+                encodings.sum(0), alpha=1 - self.decay
+            )
+
+            dw = encodings.t() @ flat_z
+            self.ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+
+            n = self.ema_cluster_size.sum()
+            cluster_size = (
+                (self.ema_cluster_size + self.eps)
+                / (n + self.num_embeddings * self.eps)
+                * n
+            )
+
+            self.embedding.weight.data.copy_(self.ema_w / cluster_size.unsqueeze(1))
+
+        # commitment loss
+        loss = self.commitment_cost * torch.nn.functional.mse_loss(quantized.detach(), z)
+
+        # straight-through estimator
+        quantized = z + (quantized - z).detach()
+        quantized = quantized.permute(0, 2, 1).contiguous()
+
+        codes = encoding_indices.view(z.shape[0], z.shape[1])  # (B, T)
+
+        return quantized, loss, codes
+
+    def forward(self, z):
+        z_q, loss, codes = self.quantize(z)
+        return z_q, loss, codes
+
+#------------------------------------------------------------------------------------------------------------------------
+
 class TkOrderbookAutoencoder(torch.nn.Module):
 
     def __init__(self, _cfg : configparser.ConfigParser):
@@ -13,16 +87,18 @@ class TkOrderbookAutoencoder(torch.nn.Module):
 
         self._cfg = _cfg
         self._code = None
+        
+        self._num_embedding_dimensions = int( _cfg['Autoencoders']['OrderbookAutoencoderNumEmbeddingDimensions'])
+        self._num_embeddings = int(_cfg['Autoencoders']['OrderbookAutoencoderNumEmbeddings'] )
+        self._code_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
+        self._code_scale = float( _cfg['Autoencoders']['OrderbookAutoencoderCodeScale'] )
+
         self._encoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookEncoder']) )
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookDecoder']) )
-        self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.01 )
-        self._hidden_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderHiddenLayerSize'])
-        self._code_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
-        self._code_scale = float( _cfg['Autoencoders']['OrderbookAutoencoderCodeScale'] )        
 
-        self._mean_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
-        self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)        
-        self._reparametrization_layer = torch.nn.Linear(self._code_layer_size, self._hidden_layer_size)
+        # re-initialize decoder weights to suppress undesirable peaks
+        self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.025 )
+        self._vq = VectorQuantizerEMA( num_embeddings=self._num_embeddings, embedding_dim=self._num_embedding_dimensions )
 
     def code_layer_size(self):
         return self._code_layer_size
@@ -92,22 +168,22 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         ]
 
     def encode(self, input):
-        y = self._encoder( input )
-        mean = self._mean_layer(y)
-        return mean * self._code_scale
+        z = self._encoder(input)
+        _, _, vq_codes = self._vq.quantize(z)
+        self._code = vq_codes
+        return vq_codes
 
     def forward(self, input):
-        y = self._encoder( input )
-        self._mean, self._logvar = self._mean_layer(y), self._logvar_layer(y)
-        self._logvar = self._logvar.clamp( -6.0, 2.0 )
-        self._code = torch.cat( (self._mean, self._logvar), dim=1 )
         
-        z = self._mean + torch.randn_like( torch.exp(0.5 * self._logvar) )
-        z = self._reparametrization_layer(z)
-        z = self._decoder( z )
+        z = self._encoder(input)
 
-        z_hat = z
-        z_hat = z_hat - z_hat.min(dim=2, keepdim=True)[0]      # shift ≥ 0
-        z_hat = z_hat / (z_hat.max(dim=2, keepdim=True)[0] + 1e-8)  # scale to 0..1
+        z_q, vq_loss, vq_codes = self._vq(z)
+        self._code = vq_codes
+
+        y = self._decoder(z_q)
+
+        # normalize
+        y = y - y.min(dim=2, keepdim=True)[0]      # shift ≥ 0
+        y = y / (y.max(dim=2, keepdim=True)[0] + 1e-8)  # scale to 0..1
         
-        return z_hat, self._mean, self._logvar
+        return y, vq_loss

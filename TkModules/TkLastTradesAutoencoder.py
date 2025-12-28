@@ -18,6 +18,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         self._hidden_layer_size = int( _cfg['Autoencoders']['LastTradesAutoencoderHiddenLayerSize'])
         self._code_layer_size = int( _cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])        
         self._code_scale = float( _cfg['Autoencoders']['LastTradesAutoencoderCodeScale'] )
+        self._smoothness_loss_noise_std = 0.01 # TODO: configure
 
         self._mean_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
         self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
@@ -112,5 +113,14 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         z = self._reparametrization_layer(z)
         z = self._decoder( z )
         z = z.clamp( 0, 1 )
+
+        # smoothness loss
+        eps = self._smoothness_loss_noise_std * torch.randn_like( input )
+        y_noise = self._encoder( input + eps )
+        y_noise_mean = self._mean_layer(y_noise)
         
-        return z, self._mean, self._logvar
+        return z, self._mean, self._logvar, torch.mean(( self._mean - y_noise_mean).pow(2))
+    
+    def freeze_parameters(self):
+        for p in self.parameters():
+            p.requires_grad = False

@@ -35,6 +35,7 @@ from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
+from TkModules.TkSSIM import MS_SSIM_1D_Loss
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -202,6 +203,7 @@ lta_model = TkLastTradesAutoencoder(config)
 lta_model.to(cuda)
 lta_model.load_state_dict(torch.load(lta_model_path))        
 lta_model.eval()
+lta_model.freeze_parameters()
 
 ts_model = TkTimeSeriesForecaster(config)
 ts_model.to(cuda)
@@ -211,9 +213,10 @@ ts_optimizer = torch.optim.RAdam(
     ts_model.get_trainable_parameters(lstm_weight_decay,tcnn_weight_decay,mlp_weight_decay),
     lr=learning_rate, 
 )
-if os.path.isfile(ts_optimizer_path):
+if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 ts_loss = torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction="none") 
+ts_recon_loss = MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_accuracy = torch.nn.MSELoss(reduction="none") # ts_accuracy = torch.nn.KLDivLoss(reduction = "batchmean", log_target=False)  # torch.nn.HuberLoss(reduction = "none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
@@ -307,14 +310,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_code = target_code.to(cuda)
 
         target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
-        target_true = torch.reshape( target_true, ( training_batch_size, target_true_width ) )
+        target_true = torch.reshape( target_true, ( training_batch_size, 1, target_true_width ) )
         target_true = target_true.to(cuda)
 
         data_loader.start_load_test_data()
 
         y = ts_model.forward( input )
 
-        z = lta_model.decode( y )
+        z = lta_model.decode( y )        
         z_target = lta_model.decode( target_code )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
@@ -325,8 +328,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", z_target, display_batch_id)
         #TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
 
-        y_loss = ts_loss( y, target_code )
-        y_loss = y_loss.mean()
+        y_recon_weight = 0.1 # TODO: configure
+        y_loss = ts_loss( y, target_code ).mean() + ts_recon_loss( z, target_true ).mean() * y_recon_weight
         ts_optimizer.zero_grad()
         y_loss.backward()
         ts_optimizer.step()
