@@ -6,26 +6,61 @@ import torch
 #------------------------------------------------------------------------------------------------------------------------
 
 class Residual(torch.nn.Module):
-    def __init__(self, idx:int, in_dim:int, out_dim:int, residual_scale:float):
+    def __init__(self, idx:int, in_dim:int, out_dim:int, scale:float, dropout:float, nonlinearity:torch.nn.Module):
         super().__init__()
         self._index = idx
         self._in_dim = in_dim
         self._out_dim = out_dim
-        self._residual_scale = residual_scale
+        self._scale = scale
+        self._dropout = torch.nn.Dropout(dropout) if dropout > 0 else None
         self._projection = torch.nn.Linear(in_dim, out_dim)
+        self._nonlinearity = nonlinearity
         self.initWeights()
 
     def index(self):
         return self._index
 
     def forward(self, x_prev, x):
-        return x * self._residual_scale + self._projection(x_prev)
+        if self._nonlinearity == None:
+            if self._dropout == None:
+                return x + self._projection(x_prev) * self._scale
+            else:
+                return x + self._dropout(self._projection(x_prev)) * self._scale
+        else:
+            if self._dropout == None:
+                return x + self._nonlinearity(self._projection(x_prev)) * self._scale
+            else:
+                return x + self._dropout(self._nonlinearity(self._projection(x_prev))) * self._scale
     
     def initWeights(self) -> None:
         for m in self.modules():
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.normal_(m.weight, 0, 0.001)
                 torch.nn.init.constant_(m.bias, 0)
+
+#------------------------------------------------------------------------------------------------------------------------
+# Clamp as layer
+#------------------------------------------------------------------------------------------------------------------------
+
+class Clamp(torch.nn.Module):
+    def __init__(self, min_val, max_val):
+        super(Clamp, self).__init__()
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def forward(self, x):
+        return torch.clamp(x, min=self.min_val, max=self.max_val)
+
+#------------------------------------------------------------------------------------------------------------------------
+# Exp as layer
+#------------------------------------------------------------------------------------------------------------------------
+
+class Exp(torch.nn.Module):
+    def __init__(self):
+        super(Exp, self).__init__()
+
+    def forward(self, x):
+        return torch.exp(x)
 
 #------------------------------------------------------------------------------------------------------------------------
 # Simple sequence of pytorch layers, constructed using given specification (list of layer descriptors).
@@ -106,6 +141,9 @@ class TkModel(torch.nn.Module):
         def create_softmax_layer(params : list):
             dimension = params[0]
             return torch.nn.Softmax(dim=dimension)
+        
+        def create_softplus_layer(params : list):
+            return torch.nn.Softplus()
 
         def create_dropout_layer(params : list):
             layer_dropout_prob = params[0]
@@ -124,18 +162,32 @@ class TkModel(torch.nn.Module):
             layer_out_channels = params[1]
             return torch.nn.Linear( layer_in_channels, layer_out_channels )
         
+        def create_lnorm_layer(params:list):
+            layer_channels = params[0]
+            return torch.nn.LayerNorm( [layer_channels] )
+        
+        def create_clamp_layer(params:list):
+            min = params[0]
+            max = params[1]
+            return Clamp( min, max )
+        
+        def create_exp_layer(params:list):
+            return Exp()
+        
         def create_residual_layer(params:list):
             index = params[0]
             layer_in_channels = params[1]
             layer_out_channels = params[2]
-            residual_scale = 1.0
+            scale = 1.0
             if len(params) > 3:
                 residual_scale = params[3]
-            return Residual(index, layer_in_channels, layer_out_channels, residual_scale)
-        
-        def create_norm_layer(params:list):
-            layer_channels = params[0]
-            return torch.nn.LayerNorm( [layer_channels] )
+            dropout = 0.0
+            if len(params) > 4:
+                dropout = params[4]
+            nonlinearity = None
+            if len(params) > 5:
+                nonlinearity = create_layer( {params[5]: [0.01]})
+            return Residual(index, layer_in_channels, layer_out_channels, scale, dropout, nonlinearity)
 
         def create_layer(layer_descriptor : dict):
             if len(layer_descriptor.keys()) == 0:
@@ -163,6 +215,8 @@ class TkModel(torch.nn.Module):
                 return create_prelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'Sigmoid':
                 return create_sigmoid_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Softplus':
+                return create_softplus_layer( layer_descriptor[layer_type] )
             if layer_type == 'Softmax':
                 return create_softmax_layer( layer_descriptor[layer_type] )
             if layer_type == 'Drop':
@@ -175,8 +229,12 @@ class TkModel(torch.nn.Module):
                 return create_linear_layer( layer_descriptor[layer_type] )
             if layer_type == 'Residual':
                 return create_residual_layer( layer_descriptor[layer_type] )
-            if layer_type == 'Norm':
-                return create_norm_layer( layer_descriptor[layer_type])
+            if layer_type == 'LNorm':
+                return create_lnorm_layer( layer_descriptor[layer_type])
+            if layer_type == 'Clamp':
+                return create_clamp_layer( layer_descriptor[layer_type])
+            if layer_type == 'Exp':
+                return create_exp_layer( layer_descriptor[layer_type])
             else:
                 raise RuntimeError('Unknown layer type: ' + layer_type + "!")
 

@@ -172,6 +172,31 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         _, _, vq_codes = self._vq.quantize(z)
         self._code = vq_codes
         return vq_codes
+    
+    def decoder_lipschitz_loss(self, z_q, eps=1e-2):
+        noise = eps * torch.randn_like(z_q)
+        y1 = self._decoder(z_q)
+        y2 = self._decoder(z_q + noise)
+        return ((y1 - y2) ** 2).mean() / (eps ** 2)
+    
+    def code_reconstruction_variance_loss(self, y, vq_codes):
+        B, C, L = y.shape
+        _, K = vq_codes.shape
+
+        loss = 0.0
+        count = 0
+
+        for k in range(K):
+            same = vq_codes[:, k].unsqueeze(0) == vq_codes[:, k].unsqueeze(1)
+            same = same.float()
+
+            diff = y.unsqueeze(0) - y.unsqueeze(1)
+            dist = diff.pow(2).mean(dim=(2, 3))
+
+            loss += (same * dist).sum() / (same.sum() + 1e-6)
+            count += 1
+
+        return loss / count
 
     def forward(self, input):
         
@@ -184,6 +209,9 @@ class TkOrderbookAutoencoder(torch.nn.Module):
 
         # normalize
         y = y - y.min(dim=2, keepdim=True)[0]      # shift ≥ 0
-        y = y / (y.max(dim=2, keepdim=True)[0] + 1e-8)  # scale to 0..1
+        y = y / (y.max(dim=2, keepdim=True)[0] + 1e-6)  # scale to 0..1
+
+        # decoder loss
+        smoothness_loss = self.decoder_lipschitz_loss( z_q, 1.0 ) + self.code_reconstruction_variance_loss( y, vq_codes )
         
-        return y, vq_loss
+        return y, vq_loss, smoothness_loss

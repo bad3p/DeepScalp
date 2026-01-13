@@ -451,6 +451,19 @@ data_loader = TkAutoencoderDataLoader(
     last_trades_training_history.test_sample_id() 
 )
 
+def save_orderbook_autoencoder():
+    orderbook_training_history.save()
+    torch.save( orderbook_autoencoder.state_dict(), orderbook_model_path )
+    torch.save( orderbook_optimizer.state_dict(), orderbook_optimizer_path )    
+
+def save_last_trades_autoencoder():
+    last_trades_training_history.save()
+    torch.save( last_trades_autoencoder.state_dict(), last_trades_model_path )
+    torch.save( last_trades_optimizer.state_dict(), last_trades_optimizer_path )    
+
+#orderbook_training_history.set_end_of_epoch_callback( save_orderbook_autoencoder )
+#last_trades_training_history.set_end_of_epoch_callback( save_last_trades_autoencoder )
+
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
@@ -589,8 +602,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         data_loader.start_load_test_data()
 
-        y, y_vq_loss = orderbook_autoencoder.forward( orderbook_input )
-        z, z_mean, z_logvar, z_smoothness_loss = last_trades_autoencoder.forward( last_trades_input )
+        y, y_vq_loss, y_smoothness_loss = orderbook_autoencoder.forward( orderbook_input )
+        z, z_alpha, z_smoothness_loss = last_trades_autoencoder.forward( last_trades_input )
 
         #TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
         #TkUI.set_series_from_tensor("x_axis_orderbook_code", "y_axis_orderbook_code","orderbook_code_series",orderbook_autoencoder.code(),0)
@@ -606,7 +619,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         tv_loss = torch.abs(y[:, 1:] - y[:, :-1]).mean()
         curvature_loss = torch.abs(y[:, 2:] - 2*y[:, 1:-1] + y[:, :-2]).mean()
 
-        y_loss = y_recon_loss + y_vq_loss + 0.1 * tv_loss + 0.05 * curvature_loss
+        y_loss = y_recon_loss + y_vq_loss + 0.1 * tv_loss + 0.05 * curvature_loss + 3.0 * y_smoothness_loss # TODO: configure
         y_loss = y_loss.mean()
 
         orderbook_optimizer.zero_grad()
@@ -616,11 +629,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         y_KLD_loss_val = y_vq_loss.mean().item()
         y_recon_loss_val = y_recon_loss.mean().item()
 
-        #z_KLD_loss = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_KLD_loss = -0.5 * ( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp())        
-        z_KLD_loss = torch.clamp( z_KLD_loss, min=last_trades_autoencoder_free_bits )
-        z_KLD_loss = torch.sum( z_KLD_loss, dim=1)
-
+        z_KLD_loss = last_trades_autoencoder.kl_divergence(z_alpha)
         z_recon_loss = last_trades_loss( z, last_trades_input )        
         z_recon_loss = z_recon_loss.view( z_recon_loss.shape[0], -1).mean(dim=1)
 
@@ -648,11 +657,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data()
 
         orderbook_autoencoder.train(False)
-        y, y_vq_loss = orderbook_autoencoder.forward( orderbook_input )
+        y, y_vq_loss, y_smoothness_loss = orderbook_autoencoder.forward( orderbook_input )
         orderbook_autoencoder.train(True)
 
         last_trades_autoencoder.train(False)
-        z, z_mean, z_logvar, z_smoothness_loss = last_trades_autoencoder.forward( last_trades_input )
+        z, z_alpha, z_smoothness_loss = last_trades_autoencoder.forward( last_trades_input )
         last_trades_autoencoder.train(True)
 
         TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series",orderbook_input,0)
@@ -670,11 +679,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         y_KLD_accuracy_val = y_vq_loss.mean().item()
         y_recon_accuracy_val = y_recon_accuracy.mean().item()
 
-        #z_KLD_accuracy = -0.5 * torch.mean( torch.sum( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp(), dim=1), dim=0 )
-        z_KLD_accuracy = -0.5 * ( 1 + z_logvar - z_mean.pow(2) - z_logvar.exp())        
-        z_KLD_accuracy = torch.clamp( z_KLD_accuracy, min=last_trades_autoencoder_free_bits )
-        z_KLD_accuracy = torch.sum( z_KLD_accuracy, dim=1)
-
+        z_KLD_accuracy = last_trades_autoencoder.kl_divergence(z_alpha)
         z_recon_accuracy = last_trades_loss( z, last_trades_input )
         z_recon_accuracy = z_recon_accuracy.view( z_recon_accuracy.shape[0], -1).mean(dim=1)
         z_KLD_accuracy_val = z_KLD_accuracy.mean().item()
@@ -722,10 +727,5 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     data_loader.complete_loading()
     data_loader.close()
 
-    orderbook_training_history.save()
-    torch.save( orderbook_autoencoder.state_dict(), orderbook_model_path )
-    torch.save( orderbook_optimizer.state_dict(), orderbook_optimizer_path )    
-
-    last_trades_training_history.save()
-    torch.save( last_trades_autoencoder.state_dict(), last_trades_model_path )
-    torch.save( last_trades_optimizer.state_dict(), last_trades_optimizer_path )    
+    save_orderbook_autoencoder()
+    save_last_trades_autoencoder()

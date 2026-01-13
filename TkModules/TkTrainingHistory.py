@@ -35,7 +35,10 @@ class TkAutoencoderTrainingHistory():
             self._epoch_recon_accuracy_history = [(0.0,0,0)]
             self._epoch_kld_accuracy_history = [(0.0,0,0)]            
 
-        print( _history_path, self._epoch_recon_accuracy_history[-1], self._epoch_kld_accuracy_history[-1])
+        self._end_of_epoch_callback = None
+
+    def set_end_of_epoch_callback(self,callback):
+        self._end_of_epoch_callback = callback
 
     def get_smooth_epoch(self,epoch_size:int):
         return len(self._epoch_recon_loss_history) - 1 + self._training_sample_id / epoch_size
@@ -124,6 +127,9 @@ class TkAutoencoderTrainingHistory():
 
         accumulate_epoch_data( self._epoch_kld_loss_history, kld_loss, is_end_of_training_epoch )
         accumulate_epoch_data( self._epoch_kld_accuracy_history, kld_accuracy, is_end_of_test_epoch )
+
+        if is_end_of_training_epoch and self._end_of_epoch_callback != None:
+            self._end_of_epoch_callback()
 
 #------------------------------------------------------------------------------------------------------------------------
 

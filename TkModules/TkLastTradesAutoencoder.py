@@ -2,34 +2,133 @@ import configparser
 import torch
 import json
 from TkModules.TkModel import TkModel
+from torch.distributions import Gamma, Dirichlet
 
 #------------------------------------------------------------------------------------------------------------------------
 
 class TkLastTradesAutoencoder(torch.nn.Module):
 
-    def __init__(self, _cfg : configparser.ConfigParser):
+    def __init__(self, _cfg: configparser.ConfigParser):
 
-        super(TkLastTradesAutoencoder, self).__init__()
+        super().__init__()
 
         self._cfg = _cfg
         self._code = None
-        self._encoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesEncoder']) )
-        self._decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesDecoder']) )
-        self._hidden_layer_size = int( _cfg['Autoencoders']['LastTradesAutoencoderHiddenLayerSize'])
-        self._code_layer_size = int( _cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])        
-        self._code_scale = float( _cfg['Autoencoders']['LastTradesAutoencoderCodeScale'] )
-        self._smoothness_loss_noise_std = 0.01 # TODO: configure
 
-        self._mean_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
-        self._logvar_layer = torch.nn.Linear(self._hidden_layer_size, self._code_layer_size)
-        self._reparametrization_layer = torch.nn.Linear(self._code_layer_size, self._hidden_layer_size)
+        self._encoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesEncoder']))
+        self._decoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesDecoder']))
+
+        self._hidden_layer_size = int(_cfg['Autoencoders']['LastTradesAutoencoderHiddenLayerSize'])
+        self._code_layer_size = int(_cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+
+        self._smoothness_loss_noise_std = 0.01  # TODO: configure
+
+        # Dirichlet parameter layer (log-alpha)
+        self._log_alpha_layer = torch.nn.Linear(
+            self._hidden_layer_size,
+            self._code_layer_size
+        )
+
+        self._reparametrization_layer = torch.nn.Linear(
+            self._code_layer_size,
+            self._hidden_layer_size
+        )
+
+        # Dirichlet prior (symmetric)
+        self._alpha_prior = float(
+            _cfg['Autoencoders'].get('DirichletAlphaPrior', 1.0)
+        )
+
+    # --------------------------------------------------------------------------------
 
     def code_layer_size(self):
         return self._code_layer_size
 
     def code(self):
         return self._code
-    
+
+    # --------------------------------------------------------------------------------
+
+    def encode(self, input):
+        y = self._encoder(input)
+        log_alpha = self._log_alpha_layer(y)
+        alpha = torch.exp(log_alpha)
+        return alpha
+
+    def decode(self, z):
+        # Dirichlet reparameterization
+        z = self._sample_dirichlet(z)
+        z = self._reparametrization_layer(z)
+        z = self._decoder(z)
+        return z
+
+    # --------------------------------------------------------------------------------
+
+    def _sample_dirichlet(self, alpha):
+        gamma_dist = Gamma(alpha, torch.ones_like(alpha))
+        g = gamma_dist.rsample()
+        z = g / g.sum(dim=1, keepdim=True)
+        return z
+
+    # --------------------------------------------------------------------------------
+
+    def forward(self, input):
+
+        y = self._encoder(input)
+
+        log_alpha = self._log_alpha_layer(y).clamp(-10.0, 10.0)
+        alpha = torch.exp(log_alpha)
+
+        self._code = alpha
+
+        # Dirichlet reparameterization
+        z = self._sample_dirichlet(alpha)
+
+        z = self._reparametrization_layer(z)
+        z = self._decoder(z)
+        z = z.clamp(0.0, 1.0)
+
+        # Smoothness loss
+        eps = self._smoothness_loss_noise_std * torch.randn_like(input)
+        y_noise = self._encoder(input + eps)
+        alpha_noise = torch.exp(self._log_alpha_layer(y_noise))
+
+        smoothness_loss = torch.mean(
+            (alpha - alpha_noise).pow(2)
+        )
+
+        return z, alpha, smoothness_loss
+
+    # --------------------------------------------------------------------------------
+
+    @staticmethod
+    def kl_divergence_loss(p,q, eps=1e-8):
+        m = 0.5 * (p + q)
+        return 0.5 * ( 
+            torch.nn.functional.kl_div((p+eps).log(), m, reduction="batchmean") +
+            torch.nn.functional.kl_div((q+eps).log(), m, reduction="batchmean")
+        )
+
+    # --------------------------------------------------------------------------------
+
+    def kl_divergence(self, alpha):
+        """
+        KL( Dir(alpha) || Dir(alpha_prior) )
+        """
+        prior = Dirichlet(
+            torch.full_like(alpha, self._alpha_prior)
+        )
+        posterior = Dirichlet(alpha)
+        return torch.distributions.kl_divergence(posterior, prior).mean()
+
+    # --------------------------------------------------------------------------------
+
+    def freeze_parameters(self):
+        for p in self.parameters():
+            p.requires_grad = False
+
+    # --------------------------------------------------------------------------------            
+
     def get_layer_by_parameter(model, target_param):
         for name, param in model.named_parameters():
             # Check if the parameter object matches the target
@@ -90,37 +189,3 @@ class TkLastTradesAutoencoder(torch.nn.Module):
             {"params": decoder_dense_params, "weight_decay": dense_weight_decay},
             {"params": decoder_no_decay_params, "weight_decay": 0.0}
         ]
-
-    def encode(self, input):
-        y = self._encoder( input )
-        mean = self._mean_layer(y)
-        return mean * self._code_scale
-    
-    def decode(self, input):
-        batch_size = input.shape[0]
-        mean = input * ( 1.0 / self._code_scale )        
-        z = self._reparametrization_layer( mean )
-        z = self._decoder( z )
-        return z
-
-    def forward(self, input):
-        y = self._encoder( input )
-        self._mean, self._logvar = self._mean_layer(y), self._logvar_layer(y)
-        self._logvar = self._logvar.clamp( -6.0, 2.0 )
-        self._code = torch.cat( (self._mean, self._logvar), dim=1 )
-
-        z = self._mean + torch.randn_like( torch.exp(0.5 * self._logvar) )
-        z = self._reparametrization_layer(z)
-        z = self._decoder( z )
-        z = z.clamp( 0, 1 )
-
-        # smoothness loss
-        eps = self._smoothness_loss_noise_std * torch.randn_like( input )
-        y_noise = self._encoder( input + eps )
-        y_noise_mean = self._mean_layer(y_noise)
-        
-        return z, self._mean, self._logvar, torch.mean(( self._mean - y_noise_mean).pow(2))
-    
-    def freeze_parameters(self):
-        for p in self.parameters():
-            p.requires_grad = False

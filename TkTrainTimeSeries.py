@@ -193,10 +193,11 @@ display_slice = int(config['TimeSeries']['DisplaySlice'])
 training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
 test_batch_size = int(config['TimeSeries']['TestBatchSize'])
 learning_rate = float(config['TimeSeries']['LearningRate'])
+embedding_weight_decay = float(config['TimeSeries']['EmbeddingMWeightDecay']) 
 lstm_weight_decay = float(config['TimeSeries']['LSTMWeightDecay']) 
-tcnn_weight_decay = float(config['TimeSeries']['TCNNWeightDecay']) 
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
+aux_loss_weight = float(config['TimeSeries']['AuxLossWeight']) 
 cooldown = float( config['TimeSeries']['Cooldown'] )
 
 lta_model = TkLastTradesAutoencoder(config)
@@ -210,14 +211,15 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.RAdam( 
-    ts_model.get_trainable_parameters(lstm_weight_decay,tcnn_weight_decay,mlp_weight_decay),
+    ts_model.get_trainable_parameters(embedding_weight_decay,lstm_weight_decay,mlp_weight_decay),
     lr=learning_rate, 
 )
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction="none") 
+ts_loss = lambda x,y: TkLastTradesAutoencoder.kl_divergence_loss(x, y) # torch.nn.MSELoss(reduction="none") # torch.nn.HuberLoss(reduction="none") 
 ts_recon_loss = MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_accuracy = torch.nn.MSELoss(reduction="none") # ts_accuracy = torch.nn.KLDivLoss(reduction = "batchmean", log_target=False)  # torch.nn.HuberLoss(reduction = "none") #
+ts_recon_accuracy = MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
 data_loader = TkTimeSeriesDataLoader(
@@ -315,7 +317,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         data_loader.start_load_test_data()
 
-        y = ts_model.forward( input )
+        y, y_aux = ts_model.forward( input )
 
         z = lta_model.decode( y )        
         z_target = lta_model.decode( target_code )
@@ -329,7 +331,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         #TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_true_target_series", target_true, display_batch_id)        
 
         y_recon_weight = 0.1 # TODO: configure
-        y_loss = ts_loss( y, target_code ).mean() + ts_recon_loss( z, target_true ).mean() * y_recon_weight
+        y_loss = ts_loss( y, target_code ).mean() + ts_recon_loss( z, target_true ).mean() * y_recon_weight + ts_loss( y_aux, target_code ).mean() * aux_loss_weight
         ts_optimizer.zero_grad()
         y_loss.backward()
         ts_optimizer.step()
@@ -339,7 +341,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
-        input_slice = torch.reshape( input_slice, ( training_batch_size, input_slice_size ) )
+        input_slice = torch.reshape( input_slice, ( training_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_training", "y_axis_slice_training", "training_slice_series", input_slice, display_batch_id)
 
         dpg.render_dearpygui_frame()
@@ -361,7 +363,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y = ts_model.forward( input )
+        y, y_aux = ts_model.forward( input )
         ts_model.train(True)
 
         z = lta_model.decode( y )
@@ -377,11 +379,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
-        input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice_size ) )
+        input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
         
-        #z_accuracy = ts_accuracy( z, z_target ).detach()
-        z_accuracy = ts_accuracy( y, target_code ).detach()
+        #z_accuracy = ts_accuracy( y, target_code ).detach()
+        z_accuracy = ts_recon_accuracy( z, z_target ).detach()
         z_accuracy = z_accuracy.mean()
         z_accuracy_val = z_accuracy.item()
         
