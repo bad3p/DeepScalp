@@ -21,7 +21,8 @@ class TkStackedLSTM(torch.nn.Module):
             output_size = self._specification[i]
             self._lstm.append( torch.nn.LSTM( input_size, output_size, batch_first=True) )
 
-        self._lstm = torch.nn.ModuleList( self._lstm )        
+        self._lstm = torch.nn.ModuleList( self._lstm )
+        #self._layerNorm = torch.nn.LayerNorm( [self._specification[-1]] )
 
         self.initWeights()
 
@@ -77,6 +78,7 @@ class TkStackedLSTM(torch.nn.Module):
 
         mh[-1] = mh[-1].reshape( (batch_size, self._specification[-1]) )
         self._output = mh[-1]
+        #self._output = self._layerNorm( self._output )
 
         return self._output
 

@@ -15,17 +15,33 @@ class TkAutoencoderTrainingHistory():
             file_content = TkIO.read_at_path(self._history_path)
             self._training_sample_id = file_content[0]
             self._test_sample_id = file_content[1]
-            self._loss_history = file_content[2]
-            self._accuracy_history = file_content[3]
-            self._epoch_loss_history = file_content[4]
-            self._epoch_accuracy_history = file_content[5]
+            self._recon_loss_history = file_content[2]
+            self._kld_loss_history = file_content[3]
+            self._recon_accuracy_history = file_content[4]
+            self._kld_accuracy_history = file_content[5]
+            self._epoch_recon_loss_history = file_content[6]
+            self._epoch_kld_loss_history = file_content[7]
+            self._epoch_recon_accuracy_history = file_content[8]
+            self._epoch_kld_accuracy_history = file_content[9]
         else:
             self._training_sample_id = 0
             self._test_sample_id = 0
-            self._loss_history = []
-            self._accuracy_history = []
-            self._epoch_loss_history = [(0.0,0,0)]
-            self._epoch_accuracy_history = [(0.0,0,0)]
+            self._recon_loss_history = []
+            self._kld_loss_history = []
+            self._recon_accuracy_history = []
+            self._kld_accuracy_history = []
+            self._epoch_recon_loss_history = [(0.0,0,0)]
+            self._epoch_kld_loss_history = [(0.0,0,0)]
+            self._epoch_recon_accuracy_history = [(0.0,0,0)]
+            self._epoch_kld_accuracy_history = [(0.0,0,0)]            
+
+        self._end_of_epoch_callback = None
+
+    def set_end_of_epoch_callback(self,callback):
+        self._end_of_epoch_callback = callback
+
+    def get_smooth_epoch(self,epoch_size:int):
+        return len(self._epoch_recon_loss_history) - 1 + self._training_sample_id / epoch_size
 
     def training_sample_id(self):
         return self._training_sample_id
@@ -33,27 +49,43 @@ class TkAutoencoderTrainingHistory():
     def test_sample_id(self):
         return self._test_sample_id
 
-    def loss_history(self):
-        return self._loss_history
+    def recon_loss_history(self):
+        return self._recon_loss_history
 
-    def epoch_loss_history(self):
-        return [self._epoch_loss_history[i][0] for i in range(0, len(self._epoch_loss_history))]
+    def epoch_recon_loss_history(self):
+        return [self._epoch_recon_loss_history[i][0] for i in range(0, len(self._epoch_recon_loss_history))]
 
-    def accuracy_history(self):
-        return self._accuracy_history
+    def recon_accuracy_history(self):
+        return self._recon_accuracy_history
 
-    def epoch_accuracy_history(self):
-        return [self._epoch_accuracy_history[i][0] for i in range(0, len(self._epoch_accuracy_history))]
+    def epoch_recon_accuracy_history(self):
+        return [self._epoch_recon_accuracy_history[i][0] for i in range(0, len(self._epoch_recon_accuracy_history))]
+    
+    def kld_loss_history(self):
+        return self._kld_loss_history
+
+    def epoch_kld_loss_history(self):
+        return [self._epoch_kld_loss_history[i][0] for i in range(0, len(self._epoch_kld_loss_history))]
+
+    def kld_accuracy_history(self):
+        return self._kld_accuracy_history
+
+    def epoch_kld_accuracy_history(self):
+        return [self._epoch_kld_accuracy_history[i][0] for i in range(0, len(self._epoch_kld_accuracy_history))]
 
     def save(self):
         TkIO.write_at_path(self._history_path, self._training_sample_id)
         TkIO.append_at_path(self._history_path, self._test_sample_id)
-        TkIO.append_at_path(self._history_path, self._loss_history)
-        TkIO.append_at_path(self._history_path,self._accuracy_history)
-        TkIO.append_at_path(self._history_path,self._epoch_loss_history)
-        TkIO.append_at_path(self._history_path,self._epoch_accuracy_history)
+        TkIO.append_at_path(self._history_path, self._recon_loss_history)
+        TkIO.append_at_path(self._history_path, self._kld_loss_history)
+        TkIO.append_at_path(self._history_path, self._recon_accuracy_history)
+        TkIO.append_at_path(self._history_path, self._kld_accuracy_history)
+        TkIO.append_at_path(self._history_path, self._epoch_recon_loss_history)
+        TkIO.append_at_path(self._history_path, self._epoch_kld_loss_history)
+        TkIO.append_at_path(self._history_path, self._epoch_recon_accuracy_history)
+        TkIO.append_at_path(self._history_path, self._epoch_kld_accuracy_history)
 
-    def log(self, training_sample_id:int, test_sample_id:int, loss:float, accuracy:float):
+    def log(self, training_sample_id:int, test_sample_id:int, recon_loss:float, recon_accuracy:float, kld_loss:float, kld_accuracy:float):
 
         def accumulate_epoch_data(epoch_data:list, value:float, is_end_of_epoch:bool):
             if math.isnan(value) or math.isinf(value):
@@ -72,16 +104,32 @@ class TkAutoencoderTrainingHistory():
         self._training_sample_id = training_sample_id
         self._test_sample_id = test_sample_id
 
-        self._loss_history.append( loss )
-        if len(self._loss_history) > self._history_size:
-            del self._loss_history[0]
+        self._recon_loss_history.append( recon_loss )
+        if len(self._recon_loss_history) > self._history_size:
+            del self._recon_loss_history[0]
 
-        self._accuracy_history.append( accuracy )
-        if len(self._accuracy_history) > self._history_size:
-            del self._accuracy_history[0]
+        self._recon_accuracy_history.append( recon_accuracy )
+        if len(self._recon_accuracy_history) > self._history_size:
+            del self._recon_accuracy_history[0]
 
-        accumulate_epoch_data( self._epoch_loss_history, loss, is_end_of_training_epoch )
-        accumulate_epoch_data( self._epoch_accuracy_history, accuracy, is_end_of_test_epoch )
+        accumulate_epoch_data( self._epoch_recon_loss_history, recon_loss, is_end_of_training_epoch )
+        accumulate_epoch_data( self._epoch_recon_accuracy_history, recon_accuracy, is_end_of_test_epoch )
+
+        # KL
+
+        self._kld_loss_history.append( kld_loss )
+        if len(self._kld_loss_history) > self._history_size:
+            del self._kld_loss_history[0]
+
+        self._kld_accuracy_history.append( kld_accuracy )
+        if len(self._kld_accuracy_history) > self._history_size:
+            del self._kld_accuracy_history[0]
+
+        accumulate_epoch_data( self._epoch_kld_loss_history, kld_loss, is_end_of_training_epoch )
+        accumulate_epoch_data( self._epoch_kld_accuracy_history, kld_accuracy, is_end_of_test_epoch )
+
+        if is_end_of_training_epoch and self._end_of_epoch_callback != None:
+            self._end_of_epoch_callback()
 
 #------------------------------------------------------------------------------------------------------------------------
 

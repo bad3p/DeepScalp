@@ -1,4 +1,5 @@
 
+import sys
 import os.path
 import numpy as np
 import random
@@ -48,6 +49,44 @@ class TkStatistics():
         result = negativeRanges + positiveRanges
         return result
 
+    #------------------------------------------------------------------------------------------------------------------------
+    # Returns significant range for the cumulative distribution
+    # Significant range is between minimal and maximal index of histogram beyond which the values repeat themselves
+    #------------------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def cumulative_significant_range(distribution : np.ndarray, tolerance=1e-6):
+        min_index = 0
+        while min_index < distribution.size - 2 and abs( distribution[min_index] - distribution[min_index+1] ) < tolerance:
+            min_index = min_index + 1
+
+        max_index = distribution.size - 1
+        while max_index > 1 and abs( distribution[max_index] - distribution[max_index-1] ) < tolerance:
+            max_index = max_index - 1
+
+        return min_index, max_index
+
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # For the given orderbook, the method returns its absolute spread
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def orderbook_spread(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+        
+        max_bid_price = 0.0
+        if len(orderbook.bids) > 0:
+            for bid in orderbook.bids:
+                max_bid_price = max( max_bid_price, quotation_to_float( bid.price ) )                
+
+        min_ask_price = 10e10
+        if len(orderbook.asks) > 0:
+            for ask in orderbook.asks:
+                min_ask_price = min( min_ask_price, quotation_to_float( ask.price ) )
+
+        spread = ( min_ask_price - max_bid_price ) / min_price_increment
+        return int( max( 0.0, min( spread, orderbook_width) ) ) * min_price_increment
+
+    
     #------------------------------------------------------------------------------------------------------------------------
     # For the given orderbook, the method returns cumulative distrubution of order volumes,
     # * pivoted around maximal bid price / minimal ask price / last price - conditionally on availability of specific orders
@@ -194,13 +233,13 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def generate_distribution(distribution : np.ndarray, scheme : list, bias : float):
+    def generate_distribution(distribution : np.ndarray, scheme : list, bias : float, min_index : int, max_index : int):
         cumulative_distribution_weight = 0
         for i in range(len(distribution)):
             cumulative_distribution_weight = cumulative_distribution_weight + distribution[i]
         for i in range(len(scheme)):
             sample_weight = scheme[i] * (1.0 + random.uniform(-bias,bias))
-            idx = random.randint(0, distribution.size-1)
+            idx = random.randint(min_index, max_index)
             distribution[idx] = distribution[idx] + sample_weight
             cumulative_distribution_weight = cumulative_distribution_weight + sample_weight
         
@@ -283,10 +322,12 @@ class TkStatistics():
     
     #------------------------------------------------------------------------------------------------------------------------
     # Return "tail means" of the given distribution
+    # Let's suppose the "central mean" of a set of values is equal to its true mean.
+    # Then the "right tail mean" of 1nd order is a mean of values from a given set which are larger than the "central mean".
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def get_distribution_tail_means(distribution : list, descriptor : list):
+    def get_distribution_tail_means(distribution : list, descriptor : list, order: int):
 
         mean = 0.0
         for i in range(len(distribution)):
@@ -294,10 +335,14 @@ class TkStatistics():
             binWeight = distribution[i]
             mean += avgBinPrice * binWeight
 
+        if order == 0:
+            return float(mean), float(mean)
+
         right_mean = 0.0
         right_bin_weight = 0.0
         left_mean = 0.0
         left_bin_weight = 0.0
+
         for i in range(len(distribution)):
             avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
             binWeight = distribution[i]
@@ -317,5 +362,40 @@ class TkStatistics():
             right_mean *= 1.0 / right_bin_weight
         else:
             right_mean = mean
-    
-        return left_mean, right_mean
+
+        if order == 1:
+            return float(left_mean), float(right_mean)
+        
+        leftmost_mean = left_mean
+        leftmost_bin_weight = 0.0
+        rightmost_mean = right_mean
+        rightmost_bin_weight = 0.0
+
+        for i in range(order-1):
+
+            leftmost_mean = 0.0
+            leftmost_bin_weight = 0.0
+            rightmost_mean = 0.0
+            rightmost_bin_weight = 0.0
+            
+            for i in range(len(distribution)):
+                avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
+                binWeight = distribution[i]
+                if avgBinPrice < left_mean:
+                    leftmost_mean += avgBinPrice * binWeight
+                    leftmost_bin_weight += binWeight
+                elif avgBinPrice > right_mean:
+                    rightmost_mean += avgBinPrice * binWeight
+                    rightmost_bin_weight += binWeight
+
+            if leftmost_bin_weight > 0.0:
+                leftmost_mean *= 1.0 / leftmost_bin_weight
+            else:
+                leftmost_mean = left_mean
+
+            if rightmost_bin_weight > 0.0:
+                rightmost_mean *= 1.0 / rightmost_bin_weight
+            else:
+                rightmost_mean = right_mean
+
+        return float(leftmost_mean), float(rightmost_mean)

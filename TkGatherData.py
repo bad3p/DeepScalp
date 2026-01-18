@@ -4,6 +4,7 @@ import sys
 import time
 import pickle
 import numpy as np
+import random
 import configparser
 import json
 import threading
@@ -87,9 +88,9 @@ if __name__ ==  '__main__':
         global ipcMessageQueue
         global config
         print("IPC thread started.")
-        ipcAddress = config['IPC']['Address']
-        ipcPort = int(config['IPC']['Port'])
-        ipcAuthKey = bytes( config['IPC']['AuthKey'], 'ascii' )
+        ipcAddress = config['IPC']['ForecastingServiceAddress']
+        ipcPort = int(config['IPC']['ForecastingServicePort'])
+        ipcAuthKey = bytes( config['IPC']['ForecastingServiceAuthKey'], 'ascii' )
         while True:
             try:
                 with mpc.Client( (ipcAddress,ipcPort), authkey=ipcAuthKey ) as conn:
@@ -114,6 +115,10 @@ if __name__ ==  '__main__':
     last_trades_period_in_minutes = int(config['GatherData']['LastTradesPeriodInMinutes'])
     max_iteration_time = int(config['GatherData']['MaxIterationTime'])
     ignore_tickers = json.loads(config['GatherData']['IgnoreTickers'])
+    regularize_gathering = config['GatherData']['RegularizeGathering'] == "True"
+    regular_iteration_time_mean = float(config['GatherData']['RegularIterationTimeMean'])
+    regular_iteration_time_std_dev = float(config['GatherData']['RegularIterationTimeStdDev'])    
+    
 
     def init_gather_data_queue_callback():
         print( 'Initializing gather data queue...' )
@@ -145,7 +150,16 @@ if __name__ ==  '__main__':
                 break
             else:
                 end_time = time.time()
-                print( 'Gathering time: ', (end_time-start_time) )
+
+                gathering_time = (end_time-start_time)
+
+                if regularize_gathering:
+                    regularized_time = random.gauss(regular_iteration_time_mean, regular_iteration_time_std_dev)
+                    if regularized_time > gathering_time:
+                        time.sleep(regularized_time - gathering_time)
+                        gathering_time = regularized_time
+
+                print( 'Gathering time: ', gathering_time )
                 if ipc:
                     today = date.today()
                     filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + orderbook_file_extension
