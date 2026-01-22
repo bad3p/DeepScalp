@@ -399,3 +399,177 @@ class TkStatistics():
                 rightmost_mean = right_mean
 
         return float(leftmost_mean), float(rightmost_mean)
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Converts orderbook to multi-channel tensor with following channels per level:
+    # (0) delta price with pivot price == ( max bid price | min ask price | last price )
+    # (1) absolute volume
+    # (2) normalized volume
+    # (3) imbalance
+    # (4) discrete imbalance
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def orderbook_to_tensor(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+
+        def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
+            return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+        
+        def discrete_imbalance(val):
+            return 0 if almost_equal(val,0.0) else ( -1 if val < 0.0 else 1 )            
+
+        pivot_price = 0.0
+
+        if len(orderbook.bids) > 0:
+            for bid in orderbook.bids:
+                pivot_price = max( pivot_price, quotation_to_float( bid.price ) )
+        else:
+            pivot_price = quotation_to_float( orderbook.last_price )
+            for ask in orderbook.asks:
+                pivot_price = min( pivot_price, quotation_to_float( ask.price ) )
+
+        bid_price = [ pivot_price - min_price_increment * i for i in range(int(orderbook_width/2))]
+        ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(orderbook_width/2)+1)]
+
+        bid_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in bid_price]
+        ask_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in ask_price]
+
+        total_volume = 0
+
+        bid_volume = np.empty( len(bid_price), dtype=float)
+        bid_volume.fill(0) 
+        
+        for bid in orderbook.bids:
+            price = quotation_to_float( bid.price )
+            index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(orderbook_width/2)-1 )
+            assert almost_equal(price, bid_price[index]) if index < int(orderbook_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
+            total_volume = total_volume + bid.quantity
+            bid_volume[index] = bid_volume[index] + bid.quantity
+
+        ask_volume = np.empty( len(ask_price), dtype=float)
+        ask_volume.fill(0) 
+        
+        for ask in orderbook.asks:
+            price = quotation_to_float( ask.price )
+            if price <= pivot_price:
+                print( 'Ask overlapping bids: ', pivot_price, price )
+                continue
+            index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(orderbook_width/2)-1 )
+            assert almost_equal(price, ask_price[index]) if index < int(orderbook_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
+            total_volume = total_volume + ask.quantity
+            ask_volume[index] = ask_volume[index] + ask.quantity
+
+        bid_imbalance = np.empty( len(bid_volume), dtype=float)
+        bid_imbalance.fill(0)
+
+        bid_discrete_imbalance = np.empty( len(bid_volume), dtype=float)
+        bid_discrete_imbalance.fill(0)
+
+        ask_imbalance = np.empty( len(ask_volume), dtype=float)
+        ask_imbalance.fill(0) 
+
+        ask_discrete_imbalance = np.empty( len(ask_volume), dtype=float)
+        ask_discrete_imbalance.fill(0) 
+
+        bid_total = 0
+        ask_total = 0
+
+        epsilon = np.finfo(np.float32).eps
+
+        for i in range(int(orderbook_width/2)):
+            bid_total = bid_total + bid_volume[i]
+            ask_total = ask_total + ask_volume[i]
+            bid_imbalance[i] = (bid_total - ask_total) / (bid_total + ask_total + epsilon)
+            bid_discrete_imbalance[i] = discrete_imbalance(bid_imbalance[i])
+            ask_imbalance[i] = (ask_total - bid_total) / (bid_total + ask_total + epsilon)
+            ask_discrete_imbalance[i] = discrete_imbalance(ask_imbalance[i])
+
+        bid_delta_price = np.flip( bid_delta_price )
+        delta_price_tensor = np.concatenate((bid_delta_price, ask_delta_price))
+
+        bid_volume = np.flip( bid_volume )
+        volume_tensor = np.concatenate((bid_volume, ask_volume))
+        normalized_volume_tensor = volume_tensor.copy()
+        if total_volume > 0:
+            normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
+            assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
+
+        bid_imbalance = np.flip(bid_imbalance)
+        imbalance_tensor = np.concatenate((bid_imbalance, ask_imbalance))
+
+        bid_discrete_imbalance = np.flip(bid_discrete_imbalance)
+        discrete_imbalance_tensor = np.concatenate((bid_discrete_imbalance, ask_discrete_imbalance))
+
+        result_tensor = np.stack([delta_price_tensor, volume_tensor, normalized_volume_tensor, imbalance_tensor, discrete_imbalance_tensor], axis=1)
+
+        assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
+
+        hasheable_tensor = np.multiply( delta_price_tensor, volume_tensor )
+
+        # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
+        return result_tensor.T, hasheable_tensor, pivot_price
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # For the given list of anonymized trades, the method returns distrubution of order volumes,
+    # * pivoted around given price
+    # * with discretization proportional to given min_price_increment
+    # * with optional time threshold allowing to ignore events older than the certain time
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def last_trades_to_tensor(trades : list, pivot_price : float, distribution_width : int, min_price_increment : float, trade_time_threshold):
+
+        def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
+            return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+
+        bid_price = [ pivot_price - min_price_increment * i for i in range(int(distribution_width/2))]
+        ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(distribution_width/2)+1)]
+
+        bid_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in bid_price]
+        ask_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in ask_price]
+
+        total_volume = 0
+        total_event_count = 0
+
+        bid_volume = np.empty( len(bid_price), dtype=float)
+        bid_volume.fill( 0 )
+
+        ask_volume = np.empty( len(ask_price), dtype=float)
+        ask_volume.fill( 0 )
+
+        for i in range(len(trades)):
+            for trade in trades[i].trades:
+                trade_time = trade.time
+                if trade_time_threshold != None and trade_time < trade_time_threshold:
+                    continue
+                total_event_count = total_event_count + 1
+                price = quotation_to_float( trade.price )
+                if price <= pivot_price:
+                    index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(distribution_width/2)-1 )
+                    assert almost_equal(price, bid_price[index]) if index < int(distribution_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
+                    total_volume = total_volume + trade.quantity
+                    bid_volume[index] = bid_volume[index] + trade.quantity
+                else:
+                    index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 )
+                    assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
+                    total_volume = total_volume + trade.quantity
+                    ask_volume[index] = ask_volume[index] + trade.quantity
+
+        bid_delta_price = np.flip( bid_delta_price )
+        delta_price_tensor = np.concatenate((bid_delta_price,ask_delta_price))
+
+        bid_volume = np.flip( bid_volume )
+        volume_tensor = np.concatenate((bid_volume, ask_volume))
+        normalized_volume_tensor = volume_tensor.copy()
+        if total_volume > 0:
+            normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
+            assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
+
+        result_tensor = np.stack([delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
+
+        assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
+
+        hasheable_tensor = np.multiply( delta_price_tensor, volume_tensor )
+
+        # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
+        return result_tensor.T, hasheable_tensor, total_event_count

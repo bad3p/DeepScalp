@@ -37,7 +37,7 @@ config.read( 'TkConfig.ini' )
 data_path = config['Paths']['DataPath']
 data_extension = config['Paths']['OrderbookFileExtension']
 
-orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
+orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
 

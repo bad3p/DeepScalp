@@ -61,7 +61,7 @@ class TkTimeSeriesDataPreprocessor():
         self._last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))        
         self._last_trades_autoencoder.eval()
 
-        self._orderbook_width = int(_cfg['Autoencoders']['OrderBookWidth'])
+        self._orderbook_width = int(_cfg['Autoencoders']['OrderbookWidth'])
         self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
         self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])        
         self._test_data_ratio = float(_cfg['Autoencoders']['TestDataRatio'])

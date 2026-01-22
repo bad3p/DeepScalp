@@ -88,6 +88,10 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._cfg = _cfg
         self._code = None
         
+        self._orderbook_regularization_channel = int(_cfg['Autoencoders']['OrderbookRegularizationChannel'])
+        self._orderbook_log_volume_branch_injection_layer = int(_cfg['Autoencoders']['OrderbookLogVolumeBranchInjectionLayer'])
+        self._orderbook_log_volume_branch_features = int(_cfg['Autoencoders']['OrderbookLogVolumeBranchFeatures'])
+
         self._num_embedding_dimensions = int( _cfg['Autoencoders']['OrderbookAutoencoderNumEmbeddingDimensions'])
         self._num_embeddings = int(_cfg['Autoencoders']['OrderbookAutoencoderNumEmbeddings'] )
         self._code_layer_size = int( _cfg['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
@@ -99,6 +103,9 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         # re-initialize decoder weights to suppress undesirable peaks
         self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.025 )
         self._vq = VectorQuantizerEMA( num_embeddings=self._num_embeddings, embedding_dim=self._num_embedding_dimensions )
+
+        # LOB volume regularization branch
+        self._log_volume_head = torch.nn.Linear( self._orderbook_log_volume_branch_features, 1 )
 
     def code_layer_size(self):
         return self._code_layer_size
@@ -206,12 +213,21 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._code = vq_codes
 
         y = self._decoder(z_q)
+        y = torch.softmax(y, dim=2)
 
-        # normalize
-        y = y - y.min(dim=2, keepdim=True)[0]      # shift ≥ 0
-        y = y / (y.max(dim=2, keepdim=True)[0] + 1e-6)  # scale to 0..1
+        # LOB volume regularization loss
+        y_log_volume = self._decoder.layer_outputs()[ self._orderbook_log_volume_branch_injection_layer ]
+        y_log_volume = torch.mean( y_log_volume, dim=2 ) 
+        y_log_volume = self._log_volume_head( y_log_volume )
+        
+        y_log_volume_target = input[:, (self._orderbook_regularization_channel):(self._orderbook_regularization_channel+1), :]
+        y_log_volume_target = torch.sum( y_log_volume_target, dim=-1, keepdim=True)
+        y_log_volume_target = y_log_volume_target + 1e-7
+        y_log_volume_target = torch.log( y_log_volume_target )
+        y_log_volume_loss = y_log_volume_target - y_log_volume
+        y_log_volume_loss = y_log_volume_loss ** 2
 
         # decoder loss
         smoothness_loss = self.decoder_lipschitz_loss( z_q, 1.0 ) + self.code_reconstruction_variance_loss( y, vq_codes )
         
-        return y, vq_loss, smoothness_loss
+        return y, y_log_volume_loss, vq_loss, smoothness_loss

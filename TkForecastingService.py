@@ -536,7 +536,7 @@ orderbook_model_path = join( config['Paths']['ModelsPath'], config['Paths']['Ord
 last_trades_model_path = join( config['Paths']['ModelsPath'], config['Paths']['LastTradesAutoencoderModelFileName'] )
 ts_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesModelFileName'] )
 
-orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
+orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
 

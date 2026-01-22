@@ -36,7 +36,7 @@ from LSHash import LSHash
 class TkAutoencoderDataPreprocessor():
 
     def __init__(self, _cfg : configparser.ConfigParser):
-        self._orderbook_width = int(_cfg['Autoencoders']['OrderBookWidth'])
+        self._orderbook_width = int(_cfg['Autoencoders']['OrderbookWidth'])
         self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
         self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])
         self._lshash_size = int(_cfg['Autoencoders']['LSHashSize'])
@@ -75,9 +75,6 @@ class TkAutoencoderDataPreprocessor():
         self._last_trades_training_data_stream = open( join(self._data_path, self._last_trades_training_data_filename), 'wb+')
         self._last_trades_test_data_stream = open( join(self._data_path, self._last_trades_test_data_filename), 'wb+')
 
-        self._normalized_orderbook_samples = []
-        self._normalized_last_trades_samples = []
-
         self._orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
         self._last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
@@ -115,101 +112,101 @@ class TkAutoencoderDataPreprocessor():
         min_price_increment = quotation_to_float( share.min_price_increment() )
         raw_sample_count = int( len(raw_samples) / 2 ) # orderbook, last_trades
 
-        self._normalized_orderbook_samples = []
-        self._normalized_last_trades_samples = []
+        orderbook_samples = []
+        hasheable_orderbook_samples = []
+        last_trades_samples = []
+        hasheable_last_trades_samples = []
 
         callback_indices = [int(i / 10.0 * raw_sample_count) for i in range(1,100)]
 
         local_orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
         local_last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
-        orderbook_min_significant_index = int(self._orderbook_width / 2)
-        orderbook_max_significant_index = int(self._orderbook_width / 2)
+        last_trades_time_threshold = None
 
         for i in range(raw_sample_count):
-            orderbook_sample = raw_samples[i*2]
-            distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor ) 
-            if volume > 0:
-                distribution *= 1.0 / volume
-            lsh_query = local_orderbook_lsh.query( distribution, num_results=1 )
-            if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
-                self._normalized_orderbook_samples.append(distribution)
-                local_orderbook_lsh.index(distribution)
 
-                min_index, max_index = TkStatistics.cumulative_significant_range(distribution)
-                if min_index < max_index:
-                    orderbook_min_significant_index = min( orderbook_min_significant_index, min_index )
-                    orderbook_max_significant_index = max( orderbook_max_significant_index, max_index )
+            # orderbook sample
+            orderbook_sample = raw_samples[i*2]
+            orderbook_tensor, hasheable_orderbook_tensor, pivot_price = TkStatistics.orderbook_to_tensor( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )             
+            lsh_query = local_orderbook_lsh.query( hasheable_orderbook_tensor, num_results=1 )
+            if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
+                orderbook_samples.append(orderbook_tensor)
+                hasheable_orderbook_samples.append(hasheable_orderbook_tensor)
+                local_orderbook_lsh.index(hasheable_orderbook_tensor)
 
             # last trades sample
-            last_trades_sample = raw_samples[i*2+1]
-            distribution, descriptor, volume = TkStatistics.trades_distribution( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
-            if volume > 0:
-                distribution *= 1.0 / volume
-            lsh_query = local_last_trades_lsh.query( distribution, num_results=1 )
+            last_trades_sample = [raw_samples[i*2+1]]
+            last_trades_tensor, hasheable_last_trades_tensor, num_events = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, last_trades_time_threshold )
+            lsh_query = local_last_trades_lsh.query( hasheable_last_trades_tensor, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
-                self._normalized_last_trades_samples.append(distribution)
-                local_last_trades_lsh.index(distribution)
+                last_trades_samples.append(last_trades_tensor)
+                hasheable_last_trades_samples.append(hasheable_last_trades_tensor)
+                local_last_trades_lsh.index(hasheable_last_trades_tensor)
 
-            # accumulated last trades sample (time series output)
+            # cumulative last trades sample (this will represent time series output)
             if i + self._future_steps_count < raw_sample_count / 2:
                 for j in range( 1, self._future_steps_count ):
-                    last_trades_sample = raw_samples[(i+j+1)*2+1]
-                    volume = TkStatistics.accumulate_trades_distribution( distribution, descriptor, volume, last_trades_sample, pivot_price)
-                if volume > 0:
-                    distribution *= 1.0 / volume
-                lsh_query = local_last_trades_lsh.query( distribution, num_results=1 )
+                    last_trades_sample.append( raw_samples[(i+j+1)*2+1] )
+                cumulative_last_trades_tensor, hasheable_cumulative_last_trades_tensor, num_cumulative_events = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, last_trades_time_threshold )                
+                lsh_query = local_last_trades_lsh.query( hasheable_cumulative_last_trades_tensor, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
-                    self._normalized_last_trades_samples.append(distribution)
-                    local_last_trades_lsh.index(distribution)
+                    last_trades_samples.append(cumulative_last_trades_tensor)
+                    hasheable_last_trades_samples.append(hasheable_cumulative_last_trades_tensor)
+                    local_last_trades_lsh.index(hasheable_cumulative_last_trades_tensor)
+            
+            # adjust minimal time for next last trades sample
+            last_trades_time_threshold = orderbook_sample.orderbook_ts
 
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
                 if render_callback != None:
-                    render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+                    render_callback( orderbook_samples, last_trades_samples )
 
-        for i in reversed(range(len(self._normalized_orderbook_samples))):
-            lsh_query = self._orderbook_lsh.query( self._normalized_orderbook_samples[i], num_results=1 )
+        for i in reversed(range(len(hasheable_orderbook_samples))):
+            lsh_query = self._orderbook_lsh.query( hasheable_orderbook_samples[i], num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
-                self._orderbook_lsh.index(self._normalized_orderbook_samples[i])
+                self._orderbook_lsh.index(hasheable_orderbook_samples[i])
             else:
-                del self._normalized_orderbook_samples[i]
+                del orderbook_samples[i]
+                del hasheable_orderbook_samples[i]
 
         if render_callback != None:
-            render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+            render_callback( orderbook_samples, last_trades_samples )
 
-        for i in reversed(range(len(self._normalized_last_trades_samples))):
-            lsh_query = self._last_trades_lsh.query( self._normalized_last_trades_samples[i], num_results=1 )
+        for i in reversed(range(len(hasheable_last_trades_samples))):
+            lsh_query = self._last_trades_lsh.query( hasheable_last_trades_samples[i], num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
-                self._last_trades_lsh.index(self._normalized_last_trades_samples[i])
+                self._last_trades_lsh.index(hasheable_last_trades_samples[i])
             else:
-                del self._normalized_last_trades_samples[i]
+                del last_trades_samples[i]
+                del hasheable_last_trades_samples[i]
 
         if render_callback != None:
-            render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+            render_callback( orderbook_samples, last_trades_samples )
 
         if training_category:                    
             self._orderbook_training_data_offset = self.write_samples( 
-                self._normalized_orderbook_samples,
+                orderbook_samples,
                 self._orderbook_training_index, 
                 self._orderbook_training_data_offset, 
                 self._orderbook_training_data_stream
             )
             self._last_trades_training_data_offset = self.write_samples(
-                self._normalized_last_trades_samples, 
+                last_trades_samples, 
                 self._last_trades_training_index, 
                 self._last_trades_training_data_offset, 
                 self._last_trades_training_data_stream
             )
         else:
             self._orderbook_test_data_offset = self.write_samples( 
-                self._normalized_orderbook_samples,
+                orderbook_samples,
                 self._orderbook_test_index, 
                 self._orderbook_test_data_offset, 
                 self._orderbook_test_data_stream
             )
             self._last_trades_test_data_offset = self.write_samples(
-                self._normalized_last_trades_samples, 
+                last_trades_samples, 
                 self._last_trades_test_index, 
                 self._last_trades_test_data_offset, 
                 self._last_trades_test_data_stream
@@ -217,9 +214,11 @@ class TkAutoencoderDataPreprocessor():
 
         end_time = time.time()
         elapsed_time = end_time - start_time
-        return raw_sample_count / elapsed_time, orderbook_min_significant_index, orderbook_max_significant_index, len(self._normalized_orderbook_samples), len(self._normalized_last_trades_samples)
+        return raw_sample_count / elapsed_time, len(orderbook_samples), len(last_trades_samples)
 
     def generate_synthetic_samples(self, training_category : bool, orderbook_min_index : int, orderbook_max_index : int, num_orderbook_samples : int, num_last_trades_samples : int, render_callback):
+
+        return # TODO: investigate possibility to generate novel complex samples
 
         def generate_render_callback_indices(num_samples:int):
             if num_samples < 1000:
@@ -243,8 +242,8 @@ class TkAutoencoderDataPreprocessor():
         synthetic_orderbook_sample_central_bias = float(config['Autoencoders']['SyntheticOrderbookSampleCentralBias'])
         synthetic_last_trades_sample_max_variance = float(config['Autoencoders']['SyntheticLastTradesSampleMaxVariance'])        
 
-        self._normalized_orderbook_samples = []
-        self._normalized_last_trades_samples = []
+        self._orderbook_samples = []
+        self._last_trades_samples = []
 
         num_samples = num_orderbook_samples
         callback_indices = generate_render_callback_indices( num_samples )
@@ -261,7 +260,7 @@ class TkAutoencoderDataPreprocessor():
                 TkStatistics.to_cumulative_distribution(distribution)
                 lsh_query = self._orderbook_lsh.query( distribution, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._synthetic_orderbook_sample_similarity:
-                    self._normalized_orderbook_samples.append(distribution)
+                    self._orderbook_samples.append(distribution)
                     self._orderbook_lsh.index(distribution)
                     success = True
             t1 = time.time()
@@ -271,7 +270,7 @@ class TkAutoencoderDataPreprocessor():
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
                 if render_callback != None:
-                    render_callback( self._normalized_orderbook_samples, None )
+                    render_callback( self._orderbook_samples, None )
 
         
         num_samples = num_last_trades_samples        
@@ -287,7 +286,7 @@ class TkAutoencoderDataPreprocessor():
                 TkStatistics.generate_clustered_distribution( distribution, last_trades_scheme, synthetic_sample_bias, synthetic_last_trades_sample_max_variance )
                 lsh_query = self._last_trades_lsh.query( distribution, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._synthetic_last_trades_sample_similarity:
-                    self._normalized_last_trades_samples.append(distribution)
+                    self._last_trades_samples.append(distribution)
                     self._last_trades_lsh.index(distribution)
                     success = True
             t1 = time.time()
@@ -297,33 +296,33 @@ class TkAutoencoderDataPreprocessor():
             if len(callback_indices) > 0 and i >= callback_indices[0]:
                 del callback_indices[0]
                 if render_callback != None:
-                    render_callback( None, self._normalized_last_trades_samples )
+                    render_callback( None, self._last_trades_samples )
 
         if render_callback != None:
-            render_callback( self._normalized_orderbook_samples, self._normalized_last_trades_samples )
+            render_callback( self._orderbook_samples, self._last_trades_samples )
 
         if training_category:
             self._orderbook_training_data_offset = self.write_samples( 
-                self._normalized_orderbook_samples,
+                self._orderbook_samples,
                 self._orderbook_training_index, 
                 self._orderbook_training_data_offset, 
                 self._orderbook_training_data_stream
             )
             self._last_trades_training_data_offset = self.write_samples(
-                self._normalized_last_trades_samples, 
+                self._last_trades_samples, 
                 self._last_trades_training_index, 
                 self._last_trades_training_data_offset, 
                 self._last_trades_training_data_stream
             )
         else:
             self._orderbook_test_data_offset = self.write_samples( 
-                self._normalized_orderbook_samples,
+                self._orderbook_samples,
                 self._orderbook_test_index, 
                 self._orderbook_test_data_offset, 
                 self._orderbook_test_data_stream
             )
             self._last_trades_test_data_offset = self.write_samples(
-                self._normalized_last_trades_samples, 
+                self._last_trades_samples, 
                 self._last_trades_test_index, 
                 self._last_trades_test_data_offset, 
                 self._last_trades_test_data_stream
@@ -341,7 +340,7 @@ config.read( 'TkConfig.ini' )
 data_path = config['Paths']['DataPath']
 data_extension = config['Paths']['OrderbookFileExtension']
 test_data_ratio = float(config['Autoencoders']['TestDataRatio'])
-orderbook_width = int(config['Autoencoders']['OrderBookWidth'])
+orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 synthetic_sample_ratio = float(config['Autoencoders']['SyntheticSampleRatio'])
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
@@ -391,9 +390,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     def render_samples( orderbook_samples, last_trades_samples ):
         if orderbook_samples:
-            TkUI.set_series("x_axis_orderbook","y_axis_orderbook","orderbook_series", orderbook_samples[-1].tolist())
+            orderbook_sample_view = orderbook_samples[-1][1,:].tolist()
+            TkUI.set_series("x_axis_orderbook","y_axis_orderbook","orderbook_series", orderbook_sample_view)
         if last_trades_samples:
-            TkUI.set_series("x_axis_last_trades","y_axis_last_trades","last_trades_series", last_trades_samples[-1].tolist())
+            last_trades_sample_view = last_trades_samples[-1][1,:].tolist()
+            TkUI.set_series("x_axis_last_trades","y_axis_last_trades","last_trades_series", last_trades_sample_view)
         dpg.render_dearpygui_frame()
 
     total_samples = 0
@@ -432,9 +433,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-            samples_per_second, orderbook_min_index, orderbook_max_index, num_orderbook_samples, num_last_trades_samples = preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
-            generated_orderbook_min_index = generated_orderbook_min_index + orderbook_min_index
-            generated_orderbook_max_index = generated_orderbook_max_index + orderbook_max_index
+            samples_per_second, num_orderbook_samples, num_last_trades_samples = preprocessor.add_samples(share, raw_samples, not is_test_data_source, render_samples)            
             if is_test_data_source:
                 num_orderbook_test_samples = num_orderbook_test_samples + num_orderbook_samples
                 num_last_trades_test_samples = num_last_trades_test_samples + num_last_trades_samples

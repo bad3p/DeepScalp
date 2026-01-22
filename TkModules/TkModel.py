@@ -244,6 +244,7 @@ class TkModel(torch.nn.Module):
             self._layers.append( create_layer( layer_descriptor ) )
 
         self._layers = torch.nn.ModuleList( self._layers )
+        self._layer_outputs = []
 
         self.initWeights()
 
@@ -265,15 +266,18 @@ class TkModel(torch.nn.Module):
 
     def forward(self, input):
 
-        y = [input]
-        y.append( self._layers[0]( input ) )
+        self._layer_outputs = [input]
+        self._layer_outputs.append( self._layers[0]( input ) )
 
         for layer_id in range(1, len(self._layers)):
             if isinstance(self._layers[layer_id], Residual):
                 residual: Residual = self._layers[layer_id]
                 index = residual.index()
-                y.append( self._layers[layer_id]( y[index], y[-1] ) )
+                self._layer_outputs.append( self._layers[layer_id]( self._layer_outputs[index], self._layer_outputs[-1] ) )
             else:
-                y.append( self._layers[layer_id]( y[-1] ) )
+                self._layer_outputs.append( self._layers[layer_id]( self._layer_outputs[-1] ) )
         
-        return y[-1]
+        return self._layer_outputs[-1]
+    
+    def layer_outputs(self):
+        return self._layer_outputs

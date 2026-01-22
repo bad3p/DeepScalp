@@ -15,6 +15,8 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         self._cfg = _cfg
         self._code = None
 
+        self._last_trades_regularization_channel = int(_cfg['Autoencoders']['LastTradesRegularizationChannel'])
+
         self._encoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesEncoder']))
         self._decoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesDecoder']))
 
@@ -28,11 +30,13 @@ class TkLastTradesAutoencoder(torch.nn.Module):
             self._hidden_layer_size,
             self._code_layer_size
         )
-
         self._reparametrization_layer = torch.nn.Linear(
             self._code_layer_size,
             self._hidden_layer_size
         )
+
+        # Log-volume regularization head
+        self._log_volume_head = torch.nn.Linear( self._hidden_layer_size, 1 )
 
         # Dirichlet prior (symmetric)
         self._alpha_prior = float(
@@ -91,13 +95,23 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         # Smoothness loss
         eps = self._smoothness_loss_noise_std * torch.randn_like(input)
         y_noise = self._encoder(input + eps)
-        alpha_noise = torch.exp(self._log_alpha_layer(y_noise))
+        alpha_noise = torch.exp( self._log_alpha_layer(y_noise).clamp(-10.0, 10.0) )
 
         smoothness_loss = torch.mean(
             (alpha - alpha_noise).pow(2)
         )
 
-        return z, alpha, smoothness_loss
+        # log-volume loss
+        log_volume = self._log_volume_head( y )
+
+        log_volume_target = input[:, (self._last_trades_regularization_channel):(self._last_trades_regularization_channel+1), :]
+        log_volume_target = torch.sum( log_volume_target, dim=-1, keepdim=True)
+        log_volume_target = log_volume_target + 1e-7
+        log_volume_target = torch.log( log_volume_target )
+        log_volume_loss = log_volume_target - log_volume
+        log_volume_loss = log_volume_loss ** 2
+
+        return z, alpha, smoothness_loss, log_volume_loss
 
     # --------------------------------------------------------------------------------
 
