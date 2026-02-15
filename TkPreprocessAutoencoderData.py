@@ -1,4 +1,5 @@
 
+from decimal import Decimal
 import os
 import time
 import numpy as np
@@ -24,6 +25,7 @@ from tinkoff.invest import SecurityTradingStatus
 from tinkoff.invest import GetOrderBookResponse, GetLastTradesResponse
 from tinkoff.invest import HistoricCandle
 from tinkoff.invest.exceptions import RequestError
+from tinkoff.invest.utils import decimal_to_quotation, quotation_to_decimal
 from TkModules.TkQuotation import quotation_to_float
 from TkModules.TkIO import TkIO
 from TkModules.TkInstrument import TkInstrument
@@ -108,8 +110,7 @@ class TkAutoencoderDataPreprocessor():
     def add_samples(self, share : TkInstrument, raw_samples : list, training_category : bool, render_callback):        
 
         start_time = time.time()
-
-        min_price_increment = quotation_to_float( share.min_price_increment() )
+        
         raw_sample_count = int( len(raw_samples) / 2 ) # orderbook, last_trades
 
         orderbook_samples = []
@@ -122,13 +123,18 @@ class TkAutoencoderDataPreprocessor():
         local_orderbook_lsh = LSHash(self._lshash_size, self._orderbook_width)
         local_last_trades_lsh = LSHash(self._lshash_size, self._last_trades_width)
 
+        min_price_increment = TkStatistics.get_min_price_increment(raw_samples[0], quotation_to_decimal(share.min_price_increment()))
+        for i in range(raw_sample_count):
+            min_price_increment = min( min_price_increment, TkStatistics.get_min_price_increment(raw_samples[i*2], quotation_to_decimal(share.min_price_increment())))
+        min_price_increment = float(min_price_increment)
+
         last_trades_time_threshold = None
 
         for i in range(raw_sample_count):
 
             # orderbook sample
             orderbook_sample = raw_samples[i*2]
-            orderbook_tensor, hasheable_orderbook_tensor, pivot_price = TkStatistics.orderbook_to_tensor( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )             
+            orderbook_tensor, hasheable_orderbook_tensor, pivot_price, orderbook_volume = TkStatistics.orderbook_to_tensor( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )             
             lsh_query = local_orderbook_lsh.query( hasheable_orderbook_tensor, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._orderbook_sample_similarity:
                 orderbook_samples.append(orderbook_tensor)
@@ -136,8 +142,8 @@ class TkAutoencoderDataPreprocessor():
                 local_orderbook_lsh.index(hasheable_orderbook_tensor)
 
             # last trades sample
-            last_trades_sample = [raw_samples[i*2+1]]
-            last_trades_tensor, hasheable_last_trades_tensor, num_events = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, last_trades_time_threshold )
+            last_trades_sample = [(raw_samples[i*2+1], last_trades_time_threshold)]
+            last_trades_tensor, hasheable_last_trades_tensor, num_events, last_trades_volume, last_trades_tails = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
             lsh_query = local_last_trades_lsh.query( hasheable_last_trades_tensor, num_results=1 )
             if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                 last_trades_samples.append(last_trades_tensor)
@@ -145,16 +151,18 @@ class TkAutoencoderDataPreprocessor():
                 local_last_trades_lsh.index(hasheable_last_trades_tensor)
 
             # cumulative last trades sample (this will represent time series output)
+            '''
             if i + self._future_steps_count < raw_sample_count / 2:
                 for j in range( 1, self._future_steps_count ):
                     last_trades_sample.append( raw_samples[(i+j+1)*2+1] )
-                cumulative_last_trades_tensor, hasheable_cumulative_last_trades_tensor, num_cumulative_events = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, last_trades_time_threshold )                
+                cumulative_last_trades_tensor, hasheable_cumulative_last_trades_tensor, num_cumulative_events, cumulative_last_trades_tails = TkStatistics.last_trades_to_tensor( last_trades_sample, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, last_trades_time_threshold )                
                 lsh_query = local_last_trades_lsh.query( hasheable_cumulative_last_trades_tensor, num_results=1 )
                 if len(lsh_query) == 0 or lsh_query[0][1] > self._last_trades_sample_similarity:
                     last_trades_samples.append(cumulative_last_trades_tensor)
                     hasheable_last_trades_samples.append(hasheable_cumulative_last_trades_tensor)
                     local_last_trades_lsh.index(hasheable_cumulative_last_trades_tensor)
-            
+            '''
+
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts
 
@@ -378,7 +386,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_orderbook" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_orderbook" )
-                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Orderbook", parent="x_axis_orderbook", tag="orderbook_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Orderbook", parent="x_axis_orderbook", tag="orderbook_bid_series" )
+                dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Orderbook", parent="x_axis_orderbook", tag="orderbook_ask_series" )
             with dpg.plot(label="Last trades", width=512, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_last_trades" )
@@ -390,8 +399,10 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     def render_samples( orderbook_samples, last_trades_samples ):
         if orderbook_samples:
-            orderbook_sample_view = orderbook_samples[-1][1,:].tolist()
-            TkUI.set_series("x_axis_orderbook","y_axis_orderbook","orderbook_series", orderbook_sample_view)
+            orderbook_bid_view = orderbook_samples[-1][1,:].tolist()
+            orderbook_ask_view = orderbook_samples[-1][3,:].tolist()
+            TkUI.set_series("x_axis_orderbook","y_axis_orderbook","orderbook_bid_series", orderbook_bid_view)
+            TkUI.set_series("x_axis_orderbook","y_axis_orderbook","orderbook_ask_series", orderbook_ask_view)
         if last_trades_samples:
             last_trades_sample_view = last_trades_samples[-1][1,:].tolist()
             TkUI.set_series("x_axis_last_trades","y_axis_last_trades","last_trades_series", last_trades_sample_view)

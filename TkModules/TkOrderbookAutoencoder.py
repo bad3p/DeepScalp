@@ -1,81 +1,9 @@
 import configparser
 import torch
 import json
+import math
 from TkModules.TkModel import TkModel
-
-#------------------------------------------------------------------------------------------------------------------------
-
-class VectorQuantizerEMA(torch.nn.Module):
-    def __init__(
-        self,
-        num_embeddings,
-        embedding_dim,
-        commitment_cost=0.25,
-        decay=0.99,
-        eps=1e-5,
-    ):
-        super().__init__()
-
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
-        self.commitment_cost = commitment_cost
-        self.decay = decay
-        self.eps = eps
-
-        self.embedding = torch.nn.Embedding(num_embeddings, embedding_dim)
-        self.embedding.weight.data.normal_()
-
-        self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
-        self.register_buffer("ema_w", self.embedding.weight.data.clone())
-
-    def quantize(self, z):
-        # z: (B, C, T)
-        z = z.permute(0, 2, 1).contiguous()  # (B, T, C)
-        flat_z = z.view(-1, self.embedding_dim)  # (B*T, C)
-
-        distances = (
-            flat_z.pow(2).sum(1, keepdim=True)
-            - 2 * flat_z @ self.embedding.weight.t()
-            + self.embedding.weight.pow(2).sum(1)
-        )
-
-        encoding_indices = torch.argmin(distances, dim=1)
-        encodings = torch.nn.functional.one_hot(encoding_indices, self.num_embeddings).type(flat_z.dtype)
-
-        quantized = self.embedding(encoding_indices).view(z.shape)
-
-        # EMA updates (training only)
-        if self.training:
-            self.ema_cluster_size.mul_(self.decay).add_(
-                encodings.sum(0), alpha=1 - self.decay
-            )
-
-            dw = encodings.t() @ flat_z
-            self.ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
-
-            n = self.ema_cluster_size.sum()
-            cluster_size = (
-                (self.ema_cluster_size + self.eps)
-                / (n + self.num_embeddings * self.eps)
-                * n
-            )
-
-            self.embedding.weight.data.copy_(self.ema_w / cluster_size.unsqueeze(1))
-
-        # commitment loss
-        loss = self.commitment_cost * torch.nn.functional.mse_loss(quantized.detach(), z)
-
-        # straight-through estimator
-        quantized = z + (quantized - z).detach()
-        quantized = quantized.permute(0, 2, 1).contiguous()
-
-        codes = encoding_indices.view(z.shape[0], z.shape[1])  # (B, T)
-
-        return quantized, loss, codes
-
-    def forward(self, z):
-        z_q, loss, codes = self.quantize(z)
-        return z_q, loss, codes
+from TkModules.TkVectorQuantizerEMA import TkVectorQuantizerEMA
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -88,7 +16,8 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._cfg = _cfg
         self._code = None
         
-        self._orderbook_regularization_channel = int(_cfg['Autoencoders']['OrderbookRegularizationChannel'])
+        self._orderbook_regularization_channel_0 = int(_cfg['Autoencoders']['OrderbookRegularizationChannel0'])
+        self._orderbook_regularization_channel_1 = int(_cfg['Autoencoders']['OrderbookRegularizationChannel1'])
         self._orderbook_log_volume_branch_injection_layer = int(_cfg['Autoencoders']['OrderbookLogVolumeBranchInjectionLayer'])
         self._orderbook_log_volume_branch_features = int(_cfg['Autoencoders']['OrderbookLogVolumeBranchFeatures'])
 
@@ -101,8 +30,8 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['OrderbookDecoder']) )
 
         # re-initialize decoder weights to suppress undesirable peaks
-        self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.025 )
-        self._vq = VectorQuantizerEMA( num_embeddings=self._num_embeddings, embedding_dim=self._num_embedding_dimensions )
+        #self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.1 )
+        self._vq = TkVectorQuantizerEMA( num_embeddings=self._num_embeddings, embedding_dim=self._num_embedding_dimensions )
 
         # LOB volume regularization branch
         self._log_volume_head = torch.nn.Linear( self._orderbook_log_volume_branch_features, 1 )
@@ -180,54 +109,81 @@ class TkOrderbookAutoencoder(torch.nn.Module):
         self._code = vq_codes
         return vq_codes
     
-    def decoder_lipschitz_loss(self, z_q, eps=1e-2):
-        noise = eps * torch.randn_like(z_q)
-        y1 = self._decoder(z_q)
-        y2 = self._decoder(z_q + noise)
-        return ((y1 - y2) ** 2).mean() / (eps ** 2)
-    
-    def code_reconstruction_variance_loss(self, y, vq_codes):
-        B, C, L = y.shape
-        _, K = vq_codes.shape
+    def kl_code_usage_loss(self, vq_codes, eps=1e-8):
 
-        loss = 0.0
-        count = 0
+        if vq_codes.dim() == 2:
+            codes = vq_codes.reshape(-1)
+        else:
+            codes = vq_codes
 
-        for k in range(K):
-            same = vq_codes[:, k].unsqueeze(0) == vq_codes[:, k].unsqueeze(1)
-            same = same.float()
+        # Count code usage
+        counts = torch.bincount(codes, minlength=self._num_embeddings).float()
 
-            diff = y.unsqueeze(0) - y.unsqueeze(1)
-            dist = diff.pow(2).mean(dim=(2, 3))
+        # Empirical distribution
+        p = counts / (counts.sum() + eps)
 
-            loss += (same * dist).sum() / (same.sum() + 1e-6)
-            count += 1
+        # Uniform prior
+        p_prior = torch.full_like(p, 1.0 / self._num_embeddings)
 
-        return loss / count
+        # KL(p || prior)
+        kl = torch.sum(p * torch.log((p + eps) / (p_prior + eps)))
 
+        return kl
+        
     def forward(self, input):
         
         z = self._encoder(input)
+        z = z / (z.norm(dim=1, keepdim=True) + 1e-6)
 
         z_q, vq_loss, vq_codes = self._vq(z)
         self._code = vq_codes
 
         y = self._decoder(z_q)
-        y = torch.softmax(y, dim=2)
+        y = torch.sigmoid(y)
 
         # LOB volume regularization loss
         y_log_volume = self._decoder.layer_outputs()[ self._orderbook_log_volume_branch_injection_layer ]
         y_log_volume = torch.mean( y_log_volume, dim=2 ) 
         y_log_volume = self._log_volume_head( y_log_volume )
         
-        y_log_volume_target = input[:, (self._orderbook_regularization_channel):(self._orderbook_regularization_channel+1), :]
-        y_log_volume_target = torch.sum( y_log_volume_target, dim=-1, keepdim=True)
-        y_log_volume_target = y_log_volume_target + 1e-7
+        y_log_volume_target_0 = input[:, (self._orderbook_regularization_channel_0):(self._orderbook_regularization_channel_0+1), :]
+        y_log_volume_target_0 = torch.sum( y_log_volume_target_0, dim=-1, keepdim=True)
+        y_log_volume_target_0 = y_log_volume_target_0 + 1e-7
+
+        y_log_volume_target_1 = input[:, (self._orderbook_regularization_channel_1):(self._orderbook_regularization_channel_1+1), :]
+        y_log_volume_target_1 = torch.sum( y_log_volume_target_1, dim=-1, keepdim=True)
+        y_log_volume_target_1 = y_log_volume_target_1 + 1e-7
+
+        y_log_volume_target = y_log_volume_target_0 + y_log_volume_target_1
+
         y_log_volume_target = torch.log( y_log_volume_target )
         y_log_volume_loss = y_log_volume_target - y_log_volume
         y_log_volume_loss = y_log_volume_loss ** 2
 
-        # decoder loss
-        smoothness_loss = self.decoder_lipschitz_loss( z_q, 1.0 ) + self.code_reconstruction_variance_loss( y, vq_codes )
+        y_kl_loss = self.kl_code_usage_loss( vq_codes )
         
-        return y, y_log_volume_loss, vq_loss, smoothness_loss
+        return y, y_log_volume_loss, vq_loss, y_kl_loss
+
+    @torch.no_grad()
+    def get_code_usage(self, eps=1e-8):
+
+        codes = self._code.reshape(-1)
+
+        counts = torch.bincount(
+            codes,
+            minlength=self._num_embeddings
+        ).float()
+
+        total = counts.sum()
+
+        probs = counts / (total + eps)
+
+        # Stats
+        active_codes = (counts > 0).sum().item()
+        dead_codes = self._num_embeddings - active_codes
+
+        entropy = -(probs * torch.log(probs + eps)).sum().item()
+        max_entropy = math.log(self._num_embeddings)
+        entropy_norm = entropy / max_entropy
+
+        return active_codes, dead_codes, entropy_norm

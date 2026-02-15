@@ -23,6 +23,8 @@ class TkAutoencoderTrainingHistory():
             self._epoch_kld_loss_history = file_content[7]
             self._epoch_recon_accuracy_history = file_content[8]
             self._epoch_kld_accuracy_history = file_content[9]
+            self._active_codes = file_content[10]
+            self._dead_codes = file_content[11]
         else:
             self._training_sample_id = 0
             self._test_sample_id = 0
@@ -33,7 +35,9 @@ class TkAutoencoderTrainingHistory():
             self._epoch_recon_loss_history = [(0.0,0,0)]
             self._epoch_kld_loss_history = [(0.0,0,0)]
             self._epoch_recon_accuracy_history = [(0.0,0,0)]
-            self._epoch_kld_accuracy_history = [(0.0,0,0)]            
+            self._epoch_kld_accuracy_history = [(0.0,0,0)]
+            self._active_codes = []
+            self._dead_codes = []
 
         self._end_of_epoch_callback = None
 
@@ -48,6 +52,12 @@ class TkAutoencoderTrainingHistory():
 
     def test_sample_id(self):
         return self._test_sample_id
+    
+    def active_codes(self):
+        return self._active_codes
+    
+    def dead_codes(self):
+        return self._dead_codes
 
     def recon_loss_history(self):
         return self._recon_loss_history
@@ -84,8 +94,10 @@ class TkAutoencoderTrainingHistory():
         TkIO.append_at_path(self._history_path, self._epoch_kld_loss_history)
         TkIO.append_at_path(self._history_path, self._epoch_recon_accuracy_history)
         TkIO.append_at_path(self._history_path, self._epoch_kld_accuracy_history)
+        TkIO.append_at_path(self._history_path, self._active_codes)
+        TkIO.append_at_path(self._history_path, self._dead_codes)
 
-    def log(self, training_sample_id:int, test_sample_id:int, recon_loss:float, recon_accuracy:float, kld_loss:float, kld_accuracy:float):
+    def log(self, training_sample_id:int, test_sample_id:int, recon_loss:float, recon_accuracy:float, kld_loss:float, kld_accuracy:float, active_codes:float=0.0, dead_codes:float=0.0):
 
         def accumulate_epoch_data(epoch_data:list, value:float, is_end_of_epoch:bool):
             if math.isnan(value) or math.isinf(value):
@@ -103,6 +115,14 @@ class TkAutoencoderTrainingHistory():
         is_end_of_test_epoch = test_sample_id < self._test_sample_id
         self._training_sample_id = training_sample_id
         self._test_sample_id = test_sample_id
+
+        self._active_codes.append( active_codes )
+        if len(self._active_codes) > self._history_size:
+            del self._active_codes[0]
+
+        self._dead_codes.append( dead_codes )
+        if len(self._dead_codes) > self._history_size:
+            del self._dead_codes[0]
 
         self._recon_loss_history.append( recon_loss )
         if len(self._recon_loss_history) > self._history_size:
@@ -156,6 +176,9 @@ class TkTimeSeriesTrainingHistory():
             self._accuracy_history = []
             self._epoch_loss_history = [(0.0,0,0)]
             self._epoch_accuracy_history = [(0.0,0,0)]
+
+    def get_smooth_epoch(self,epoch_size:int):
+        return len(self._epoch_loss_history) - 1 + self._regular_sample_id / epoch_size
 
     def priority_sample_id(self):
         return self._priority_sample_id

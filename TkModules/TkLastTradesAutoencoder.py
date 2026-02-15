@@ -1,148 +1,46 @@
 import configparser
 import torch
 import json
+import math
 from TkModules.TkModel import TkModel
-from torch.distributions import Gamma, Dirichlet
+from TkModules.TkVectorQuantizerEMA import TkVectorQuantizerEMA
 
 #------------------------------------------------------------------------------------------------------------------------
 
 class TkLastTradesAutoencoder(torch.nn.Module):
 
-    def __init__(self, _cfg: configparser.ConfigParser):
+    def __init__(self, _cfg : configparser.ConfigParser):
 
-        super().__init__()
+        super(TkLastTradesAutoencoder, self).__init__()
 
         self._cfg = _cfg
         self._code = None
-
+        
         self._last_trades_regularization_channel = int(_cfg['Autoencoders']['LastTradesRegularizationChannel'])
+        self._last_trades_log_volume_branch_injection_layer = int(_cfg['Autoencoders']['LastTradesLogVolumeBranchInjectionLayer'])
+        self._last_trades_log_volume_branch_features = int(_cfg['Autoencoders']['LastTradesLogVolumeBranchFeatures'])
 
-        self._encoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesEncoder']))
-        self._decoder = TkModel(json.loads(_cfg['Autoencoders']['LastTradesDecoder']))
+        self._num_embedding_dimensions = int( _cfg['Autoencoders']['LastTradesAutoencoderNumEmbeddingDimensions'])
+        self._num_embeddings = int(_cfg['Autoencoders']['LastTradesAutoencoderNumEmbeddings'] )
+        self._code_layer_size = int( _cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+        self._code_scale = float( _cfg['Autoencoders']['LastTradesAutoencoderCodeScale'] )
 
-        self._hidden_layer_size = int(_cfg['Autoencoders']['LastTradesAutoencoderHiddenLayerSize'])
-        self._code_layer_size = int(_cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+        self._encoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesEncoder']) )
+        self._decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesDecoder']) )
 
-        self._smoothness_loss_noise_std = 0.01  # TODO: configure
+        # re-initialize decoder weights to suppress undesirable peaks
+        #self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.025 )
+        self._vq = TkVectorQuantizerEMA( num_embeddings=self._num_embeddings, embedding_dim=self._num_embedding_dimensions )
 
-        # Dirichlet parameter layer (log-alpha)
-        self._log_alpha_layer = torch.nn.Linear(
-            self._hidden_layer_size,
-            self._code_layer_size
-        )
-        self._reparametrization_layer = torch.nn.Linear(
-            self._code_layer_size,
-            self._hidden_layer_size
-        )
-
-        # Log-volume regularization head
-        self._log_volume_head = torch.nn.Linear( self._hidden_layer_size, 1 )
-
-        # Dirichlet prior (symmetric)
-        self._alpha_prior = float(
-            _cfg['Autoencoders'].get('DirichletAlphaPrior', 1.0)
-        )
-
-    # --------------------------------------------------------------------------------
+        # LOB volume regularization branch
+        self._log_volume_head = torch.nn.Linear( self._last_trades_log_volume_branch_features, 1 )
 
     def code_layer_size(self):
         return self._code_layer_size
 
     def code(self):
         return self._code
-
-    # --------------------------------------------------------------------------------
-
-    def encode(self, input):
-        y = self._encoder(input)
-        log_alpha = self._log_alpha_layer(y)
-        alpha = torch.exp(log_alpha)
-        return alpha
-
-    def decode(self, z):
-        # Dirichlet reparameterization
-        z = self._sample_dirichlet(z)
-        z = self._reparametrization_layer(z)
-        z = self._decoder(z)
-        return z
-
-    # --------------------------------------------------------------------------------
-
-    def _sample_dirichlet(self, alpha):
-        gamma_dist = Gamma(alpha, torch.ones_like(alpha))
-        g = gamma_dist.rsample()
-        z = g / g.sum(dim=1, keepdim=True)
-        return z
-
-    # --------------------------------------------------------------------------------
-
-    def forward(self, input):
-
-        y = self._encoder(input)
-
-        log_alpha = self._log_alpha_layer(y).clamp(-10.0, 10.0)
-        alpha = torch.exp(log_alpha)
-
-        self._code = alpha
-
-        # Dirichlet reparameterization
-        z = self._sample_dirichlet(alpha)
-
-        z = self._reparametrization_layer(z)
-        z = self._decoder(z)
-        z = z.clamp(0.0, 1.0)
-
-        # Smoothness loss
-        eps = self._smoothness_loss_noise_std * torch.randn_like(input)
-        y_noise = self._encoder(input + eps)
-        alpha_noise = torch.exp( self._log_alpha_layer(y_noise).clamp(-10.0, 10.0) )
-
-        smoothness_loss = torch.mean(
-            (alpha - alpha_noise).pow(2)
-        )
-
-        # log-volume loss
-        log_volume = self._log_volume_head( y )
-
-        log_volume_target = input[:, (self._last_trades_regularization_channel):(self._last_trades_regularization_channel+1), :]
-        log_volume_target = torch.sum( log_volume_target, dim=-1, keepdim=True)
-        log_volume_target = log_volume_target + 1e-7
-        log_volume_target = torch.log( log_volume_target )
-        log_volume_loss = log_volume_target - log_volume
-        log_volume_loss = log_volume_loss ** 2
-
-        return z, alpha, smoothness_loss, log_volume_loss
-
-    # --------------------------------------------------------------------------------
-
-    @staticmethod
-    def kl_divergence_loss(p,q, eps=1e-8):
-        m = 0.5 * (p + q)
-        return 0.5 * ( 
-            torch.nn.functional.kl_div((p+eps).log(), m, reduction="batchmean") +
-            torch.nn.functional.kl_div((q+eps).log(), m, reduction="batchmean")
-        )
-
-    # --------------------------------------------------------------------------------
-
-    def kl_divergence(self, alpha):
-        """
-        KL( Dir(alpha) || Dir(alpha_prior) )
-        """
-        prior = Dirichlet(
-            torch.full_like(alpha, self._alpha_prior)
-        )
-        posterior = Dirichlet(alpha)
-        return torch.distributions.kl_divergence(posterior, prior).mean()
-
-    # --------------------------------------------------------------------------------
-
-    def freeze_parameters(self):
-        for p in self.parameters():
-            p.requires_grad = False
-
-    # --------------------------------------------------------------------------------            
-
+    
     def get_layer_by_parameter(model, target_param):
         for name, param in model.named_parameters():
             # Check if the parameter object matches the target
@@ -203,3 +101,104 @@ class TkLastTradesAutoencoder(torch.nn.Module):
             {"params": decoder_dense_params, "weight_decay": dense_weight_decay},
             {"params": decoder_no_decay_params, "weight_decay": 0.0}
         ]
+
+    def freeze_parameters(self):
+        for p in self.parameters():
+            p.requires_grad = False
+
+    def encode(self, input):
+        z = self._encoder(input)
+        _, _, vq_codes = self._vq.quantize(z)
+        self._code = vq_codes
+        return vq_codes
+    
+    def decode(self, vq_codes):
+
+        # embedding.weight: (num_embeddings, embedding_dim)
+        z_q = self._vq.embedding(vq_codes.long())   # (B, K, D)
+
+        # Restore latent tensor shape expected by the decoder
+        # Encoder output is typically (B, D, L)
+        z_q = z_q.permute(0, 2, 1).contiguous()  # (B, D, K)
+
+        # Decode
+        y = self._decoder(z_q)
+        y = torch.softmax(y, dim=2)
+        return y
+    
+    def decoder_lipschitz_loss(self, z_q, eps=1e-2):
+        noise = eps * torch.randn_like(z_q)
+        y1 = self._decoder(z_q)
+        y2 = self._decoder(z_q + noise)
+        return ((y1 - y2) ** 2).mean() / (eps ** 2)
+    
+    def code_reconstruction_variance_loss(self, y, vq_codes):
+        B, C, L = y.shape
+        _, K = vq_codes.shape
+
+        loss = 0.0
+        count = 0
+
+        for k in range(K):
+            same = vq_codes[:, k].unsqueeze(0) == vq_codes[:, k].unsqueeze(1)
+            same = same.float()
+
+            diff = y.unsqueeze(0) - y.unsqueeze(1)
+            dist = diff.pow(2).mean(dim=(2, 3))
+
+            loss += (same * dist).sum() / (same.sum() + 1e-6)
+            count += 1
+
+        return loss / count
+
+    def forward(self, input):
+        
+        z = self._encoder(input)
+
+        z_q, vq_loss, vq_codes = self._vq(z)
+        self._code = vq_codes
+
+        y = self._decoder(z_q)
+        y = torch.softmax(y, dim=2)
+
+        # LOB volume regularization loss
+        y_log_volume = self._decoder.layer_outputs()[ self._last_trades_log_volume_branch_injection_layer ]
+        y_log_volume = torch.mean( y_log_volume, dim=2 ) 
+        y_log_volume = self._log_volume_head( y_log_volume )
+        
+        y_log_volume_target = input[:, (self._last_trades_regularization_channel):(self._last_trades_regularization_channel+1), :]
+        y_log_volume_target = torch.sum( y_log_volume_target, dim=-1, keepdim=True)
+        y_log_volume_target = y_log_volume_target + 1e-7
+
+        y_log_volume_target = torch.log( y_log_volume_target )
+        y_log_volume_loss = y_log_volume_target - y_log_volume
+        y_log_volume_loss = y_log_volume_loss ** 2
+
+        # decoder loss
+        smoothness_loss = self.decoder_lipschitz_loss( z_q ) + self.code_reconstruction_variance_loss( y, vq_codes )
+        
+        return y, y_log_volume_loss, vq_loss, smoothness_loss
+
+    @torch.no_grad()
+    def get_code_usage(self, eps=1e-8):
+
+        codes = self._code.reshape(-1)
+
+        counts = torch.bincount(
+            codes,
+            minlength=self._num_embeddings
+        ).float()
+
+        total = counts.sum()
+
+        probs = counts / (total + eps)
+
+        # Stats
+        active_codes = (counts > 0).sum().item()
+        dead_codes = self._num_embeddings - active_codes
+
+        entropy = -(probs * torch.log(probs + eps)).sum().item()
+        max_entropy = math.log(self._num_embeddings)
+        entropy_norm = entropy / max_entropy
+
+        return active_codes, dead_codes, entropy_norm

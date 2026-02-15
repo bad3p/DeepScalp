@@ -3,7 +3,10 @@ import sys
 import os.path
 import numpy as np
 import random
+import math
+from decimal import Decimal
 from tinkoff.invest.schemas import Quotation
+from tinkoff.invest.utils import quotation_to_decimal
 from tinkoff.invest import GetOrderBookResponse, GetLastTradesResponse
 from TkModules.TkQuotation import quotation_to_float
 
@@ -331,9 +334,7 @@ class TkStatistics():
 
         mean = 0.0
         for i in range(len(distribution)):
-            avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
-            binWeight = distribution[i]
-            mean += avgBinPrice * binWeight
+            mean += descriptor[i] * distribution[i]
 
         if order == 0:
             return float(mean), float(mean)
@@ -344,14 +345,12 @@ class TkStatistics():
         left_bin_weight = 0.0
 
         for i in range(len(distribution)):
-            avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
-            binWeight = distribution[i]
-            if avgBinPrice < mean:
-                left_mean += avgBinPrice * binWeight
-                left_bin_weight += binWeight
-            elif avgBinPrice > mean:
-                right_mean += avgBinPrice * binWeight
-                right_bin_weight += binWeight
+            if descriptor[i] < mean:
+                left_mean += descriptor[i] * distribution[i]
+                left_bin_weight += distribution[i]
+            elif descriptor[i] > mean:
+                right_mean += descriptor[i] * distribution[i]
+                right_bin_weight += distribution[i]
 
         if left_bin_weight > 0.0:
             left_mean *= 1.0 / left_bin_weight
@@ -379,14 +378,12 @@ class TkStatistics():
             rightmost_bin_weight = 0.0
             
             for i in range(len(distribution)):
-                avgBinPrice = 0.5 *( descriptor[i][0] + descriptor[i][1] )
-                binWeight = distribution[i]
-                if avgBinPrice < left_mean:
-                    leftmost_mean += avgBinPrice * binWeight
-                    leftmost_bin_weight += binWeight
-                elif avgBinPrice > right_mean:
-                    rightmost_mean += avgBinPrice * binWeight
-                    rightmost_bin_weight += binWeight
+                if descriptor[i] < left_mean:
+                    leftmost_mean += descriptor[i] * distribution[i]
+                    leftmost_bin_weight += distribution[i]
+                elif descriptor[i] > right_mean:
+                    rightmost_mean += descriptor[i] * distribution[i]
+                    rightmost_bin_weight += distribution[i]
 
             if leftmost_bin_weight > 0.0:
                 leftmost_mean *= 1.0 / leftmost_bin_weight
@@ -400,6 +397,33 @@ class TkStatistics():
 
         return float(leftmost_mean), float(rightmost_mean)
     
+    #------------------------------------------------------------------------------------------------------------------------
+    # Deduces minimal price increment from orderbooks
+    # Price increment for certain shares can vary over time
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_min_price_increment(orderbook : GetOrderBookResponse, default_value:Decimal):
+
+        def get_min_price_diff(prices:list):
+            min_diff = Decimal(99999999999)
+            for i in range(len(prices) - 1):
+                current_diff = prices[i+1] - prices[i]
+                if current_diff < min_diff:
+                    min_diff = current_diff
+            return min_diff
+
+        bid_prices = [ quotation_to_decimal( bid.price ) for bid in orderbook.bids ]        
+        ask_prices = [ quotation_to_decimal( ask.price ) for ask in orderbook.asks ]        
+
+        if len(bid_prices) == 0 and len(ask_prices) == 0:
+            return default_value
+
+        bid_prices.sort()
+        ask_prices.sort()
+
+        return min( get_min_price_diff(bid_prices), get_min_price_diff(ask_prices) )
+
     #------------------------------------------------------------------------------------------------------------------------
     # Converts orderbook to multi-channel tensor with following channels per level:
     # (0) delta price with pivot price == ( max bid price | min ask price | last price )
@@ -431,20 +455,25 @@ class TkStatistics():
         bid_price = [ pivot_price - min_price_increment * i for i in range(int(orderbook_width/2))]
         ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(orderbook_width/2)+1)]
 
-        bid_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in bid_price]
-        ask_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in ask_price]
+        bid_delta_price = [ math.log( price / pivot_price ) for price in bid_price]
+        ask_delta_price = [ math.log( price / pivot_price ) for price in ask_price]
 
-        total_volume = 0
+        total_bid_volume = 0        
 
         bid_volume = np.empty( len(bid_price), dtype=float)
-        bid_volume.fill(0) 
+        bid_volume.fill(0)
         
         for bid in orderbook.bids:
             price = quotation_to_float( bid.price )
+            if price > pivot_price:
+                print( 'Bid overlapping asks: ', pivot_price, price )
+                continue
             index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(orderbook_width/2)-1 )
             assert almost_equal(price, bid_price[index]) if index < int(orderbook_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
-            total_volume = total_volume + bid.quantity
+            total_bid_volume = total_bid_volume + bid.quantity
             bid_volume[index] = bid_volume[index] + bid.quantity
+
+        total_ask_volume = 0            
 
         ask_volume = np.empty( len(ask_price), dtype=float)
         ask_volume.fill(0) 
@@ -456,7 +485,7 @@ class TkStatistics():
                 continue
             index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(orderbook_width/2)-1 )
             assert almost_equal(price, ask_price[index]) if index < int(orderbook_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
-            total_volume = total_volume + ask.quantity
+            total_ask_volume = total_ask_volume + ask.quantity
             ask_volume[index] = ask_volume[index] + ask.quantity
 
         bid_imbalance = np.empty( len(bid_volume), dtype=float)
@@ -487,12 +516,25 @@ class TkStatistics():
         bid_delta_price = np.flip( bid_delta_price )
         delta_price_tensor = np.concatenate((bid_delta_price, ask_delta_price))
 
-        bid_volume = np.flip( bid_volume )
-        volume_tensor = np.concatenate((bid_volume, ask_volume))
-        normalized_volume_tensor = volume_tensor.copy()
-        if total_volume > 0:
-            normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
-            assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
+        empty_volume = np.empty( len(bid_price), dtype=float)
+        empty_volume.fill(0)
+
+        bid_volume = np.flip( bid_volume )        
+        bid_volume_tensor = np.concatenate((bid_volume, empty_volume))
+
+        normalized_bid_volume_tensor = bid_volume_tensor.copy()
+
+        if total_bid_volume > 0:
+            normalized_bid_volume_tensor = normalized_bid_volume_tensor * 1.0 / total_bid_volume
+            assert almost_equal( np.sum(normalized_bid_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
+
+        ask_volume_tensor = np.concatenate((empty_volume, ask_volume))
+
+        normalized_ask_volume_tensor = ask_volume_tensor.copy()
+
+        if total_ask_volume > 0:
+            normalized_ask_volume_tensor = normalized_ask_volume_tensor * 1.0 / total_ask_volume
+            assert almost_equal( np.sum(normalized_ask_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
         bid_imbalance = np.flip(bid_imbalance)
         imbalance_tensor = np.concatenate((bid_imbalance, ask_imbalance))
@@ -500,24 +542,25 @@ class TkStatistics():
         bid_discrete_imbalance = np.flip(bid_discrete_imbalance)
         discrete_imbalance_tensor = np.concatenate((bid_discrete_imbalance, ask_discrete_imbalance))
 
-        result_tensor = np.stack([delta_price_tensor, volume_tensor, normalized_volume_tensor, imbalance_tensor, discrete_imbalance_tensor], axis=1)
+        result_tensor = np.stack([delta_price_tensor, bid_volume_tensor, normalized_bid_volume_tensor, ask_volume_tensor, normalized_ask_volume_tensor, imbalance_tensor, discrete_imbalance_tensor], axis=1)
 
         assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
 
-        hasheable_tensor = np.multiply( delta_price_tensor, volume_tensor )
+        hasheable_tensor = np.multiply( delta_price_tensor, bid_volume_tensor, ask_volume_tensor )
 
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
-        return result_tensor.T, hasheable_tensor, pivot_price
+        return result_tensor.T, hasheable_tensor, pivot_price, (total_bid_volume + total_ask_volume)
 
     #------------------------------------------------------------------------------------------------------------------------
     # For the given list of anonymized trades, the method returns distrubution of order volumes,
     # * pivoted around given price
     # * with discretization proportional to given min_price_increment
     # * with optional time threshold allowing to ignore events older than the certain time
+    # Additionally the method measures the means of distribution tails, given the order "measure_distribution_tail_order"
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def last_trades_to_tensor(trades : list, pivot_price : float, distribution_width : int, min_price_increment : float, trade_time_threshold):
+    def last_trades_to_tensor(trades_with_time_threshold : list, pivot_price : float, distribution_width : int, min_price_increment : float, measure_distribution_tail_order=1):
 
         def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
             return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
@@ -525,8 +568,11 @@ class TkStatistics():
         bid_price = [ pivot_price - min_price_increment * i for i in range(int(distribution_width/2))]
         ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(distribution_width/2)+1)]
 
-        bid_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in bid_price]
-        ask_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in ask_price]
+        bid_abs_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in bid_price]
+        ask_abs_delta_price = [ ( price / pivot_price - 1.0 ) * 100 for price in ask_price]
+
+        bid_log_delta_price = [ math.log( price / pivot_price ) for price in bid_price]
+        ask_log_delta_price = [ math.log( price / pivot_price ) for price in ask_price]
 
         total_volume = 0
         total_event_count = 0
@@ -537,10 +583,14 @@ class TkStatistics():
         ask_volume = np.empty( len(ask_price), dtype=float)
         ask_volume.fill( 0 )
 
-        for i in range(len(trades)):
-            for trade in trades[i].trades:
+        for i in range(len(trades_with_time_threshold)):
+
+            trades = trades_with_time_threshold[i][0]
+            time_threshold = trades_with_time_threshold[i][1]
+
+            for trade in trades.trades:
                 trade_time = trade.time
-                if trade_time_threshold != None and trade_time < trade_time_threshold:
+                if time_threshold != None and trade_time < time_threshold:
                     continue
                 total_event_count = total_event_count + 1
                 price = quotation_to_float( trade.price )
@@ -555,8 +605,11 @@ class TkStatistics():
                     total_volume = total_volume + trade.quantity
                     ask_volume[index] = ask_volume[index] + trade.quantity
 
-        bid_delta_price = np.flip( bid_delta_price )
-        delta_price_tensor = np.concatenate((bid_delta_price,ask_delta_price))
+        bid_log_delta_price = np.flip( bid_log_delta_price )
+        log_delta_price_tensor = np.concatenate((bid_log_delta_price,ask_log_delta_price))
+
+        bid_abs_delta_price = np.flip( bid_abs_delta_price )
+        abs_delta_price_tensor = np.concatenate((bid_abs_delta_price,ask_abs_delta_price))
 
         bid_volume = np.flip( bid_volume )
         volume_tensor = np.concatenate((bid_volume, ask_volume))
@@ -565,11 +618,68 @@ class TkStatistics():
             normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
-        result_tensor = np.stack([delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
+        result_tensor = np.stack([log_delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
 
         assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
 
-        hasheable_tensor = np.multiply( delta_price_tensor, volume_tensor )
+        hasheable_tensor = np.multiply( log_delta_price_tensor, volume_tensor )
+
+        left_tail, right_tail = TkStatistics.get_distribution_tail_means( normalized_volume_tensor, abs_delta_price_tensor, measure_distribution_tail_order )
 
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
-        return result_tensor.T, hasheable_tensor, total_event_count
+        return result_tensor.T, hasheable_tensor, total_event_count, total_volume, (left_tail, right_tail)
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Performs log1p transform with subsequent EMA normalization for the given sequence
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def log_ema_normalize(sequence, half_life=250, eps=1e-6):
+
+        sequence = np.asarray(sequence, dtype=np.float64)
+
+        # log transform
+        log_sequence = np.log1p(sequence)
+
+        # EMA coefficient
+        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
+
+        mu = np.zeros_like(log_sequence)
+        var = np.zeros_like(log_sequence)
+
+        mu[0] = log_sequence[0]
+        var[0] = 0.0
+
+        for t in range(1, len(log_sequence)):
+            mu[t] = alpha * log_sequence[t] + (1.0 - alpha) * mu[t - 1]
+            diff = log_sequence[t] - mu[t]
+            var[t] = alpha * diff * diff + (1.0 - alpha) * var[t - 1]
+
+        norm_sequence = (log_sequence - mu) / np.sqrt(var + eps)
+
+        return norm_sequence
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Performs log1p transform with subsequent short-term volatility extraction & EMA normalization
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def log_vol_ema_normalize(sequence, half_life=250, eps=1e-6):
+
+        sequence = np.asarray(sequence, dtype=np.float64)
+
+        log_sequence = np.log(sequence)
+
+        r = np.diff(log_sequence, prepend=log_sequence[0])
+        r2 = r * r
+
+        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
+
+        ema_r2 = np.zeros_like(r2)
+        ema_r2[0] = r2[0]
+
+        for t in range(1, len(r2)):
+            ema_r2[t] = alpha * r2[t] + (1 - alpha) * ema_r2[t - 1]
+
+        # volatility estimate
+        vol = np.sqrt(ema_r2 + eps)
+
+        return vol

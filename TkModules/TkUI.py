@@ -38,14 +38,14 @@ class TkUI():
             dpg.fit_axis_data( y_axis_tag )
 
     @staticmethod
-    def set_series_from_tensor( x_axis_tag:str, y_axis_tag:str, series_tag:str, t:torch.Tensor, batch_id:int):
+    def set_series_from_tensor( x_axis_tag:str, y_axis_tag:str, series_tag:str, t:torch.Tensor, batch_id:int):        
         series = []
         if len(t.size()) > 2:
             for i in range(t.size(dim=2)):
-                series.append( t[batch_id,0,i] )
+                series.append( t[batch_id,0,i].item() )
         else:
             for i in range(t.size(dim=1)):
-                series.append( t[batch_id,i] )
+                series.append( t[batch_id,i].item() )
         dpg.set_value( series_tag, [[i for i in range(0, len(series))], series])
         if TkUI.need_fit_axis( series_tag ):
             dpg.fit_axis_data( x_axis_tag )

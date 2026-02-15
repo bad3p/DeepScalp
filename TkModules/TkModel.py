@@ -61,6 +61,21 @@ class Exp(torch.nn.Module):
 
     def forward(self, x):
         return torch.exp(x)
+    
+#------------------------------------------------------------------------------------------------------------------------
+# Channel normalization
+#------------------------------------------------------------------------------------------------------------------------
+
+class ChannelNorm(torch.nn.Module):
+    def __init__(self, num_channels):
+        super().__init__()
+        self.ln = torch.nn.LayerNorm([num_channels])
+
+    def forward(self, x):
+        # x: (B, C, L)
+        x = x.transpose(1, 2)   # (B, L, C)
+        x = self.ln(x)
+        return x.transpose(1, 2)
 
 #------------------------------------------------------------------------------------------------------------------------
 # Simple sequence of pytorch layers, constructed using given specification (list of layer descriptors).
@@ -166,6 +181,10 @@ class TkModel(torch.nn.Module):
             layer_channels = params[0]
             return torch.nn.LayerNorm( [layer_channels] )
         
+        def create_cnorm_layer(params:list):
+            layer_channels = params[0]
+            return ChannelNorm( layer_channels )
+        
         def create_clamp_layer(params:list):
             min = params[0]
             max = params[1]
@@ -231,6 +250,8 @@ class TkModel(torch.nn.Module):
                 return create_residual_layer( layer_descriptor[layer_type] )
             if layer_type == 'LNorm':
                 return create_lnorm_layer( layer_descriptor[layer_type])
+            if layer_type == 'CNorm':
+                return create_cnorm_layer( layer_descriptor[layer_type])
             if layer_type == 'Clamp':
                 return create_clamp_layer( layer_descriptor[layer_type])
             if layer_type == 'Exp':
