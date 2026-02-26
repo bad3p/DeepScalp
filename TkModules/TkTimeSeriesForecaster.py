@@ -211,6 +211,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         super(TkTimeSeriesForecaster, self).__init__()
 
         self._cfg = _cfg
+        self._num_market_regimes = int(_cfg['TimeSeries']['NumMarketRegimes'])
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount']) 
         self._display_slice = int(_cfg['TimeSeries']['DisplaySlice'])  
         self._input_width = int(_cfg['TimeSeries']['InputWidth'])  
@@ -219,6 +220,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._lstm_specification = json.loads(_cfg['TimeSeries']['LSTM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
+        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
         self._aux_loss_slice = int(_cfg['TimeSeries']['AuxLossSlice']) 
         self._aux_mlp = TkModel( json.loads(_cfg['TimeSeries']['AuxMLP']) )
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
@@ -278,8 +280,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         with torch.no_grad():
             self._fusion.gate[0].bias.fill_(-2.0)
 
+        # reinitialize MLP weights
+        for m in self._mlp.modules():            
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                torch.nn.init.constant_(m.bias, 0)
+
         # learnable normalization temperature
-        self._y_scale = torch.nn.Parameter(torch.tensor(5.0))
+        # self._y_scale = torch.nn.Parameter(torch.tensor(5.0))
+        # self._y_regime_scale = torch.nn.Parameter(torch.tensor(5.0))
         
         self._lstm_output_tensors = None
 
@@ -313,6 +322,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 mlp_no_decay_params.append(param)
 
+        for name, param in self._regime_mlp.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
         for name, param in self._aux_mlp.named_parameters():
             if not param.requires_grad:
                 continue
@@ -329,7 +346,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 fusion_no_decay_params.append(param)
 
-        other = [ self._y_scale ]
+        # other = [ self._y_scale, self._y_regime_scale ]
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate},
@@ -340,8 +357,26 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate},
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate},
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate},
-            {"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
+            #{"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
         ]
+    
+    def embedding_group_indices(self):
+        return [0,1]
+    
+    def embedding_decay_group_indices(self):
+        return [0]
+    
+    def lstm_group_indices(self):
+        return [2,3]
+    
+    def lstm_decay_group_indices(self):
+        return [2]
+        
+    def mlp_group_indices(self):
+        return [4,5]
+    
+    def mlp_decay_group_indices(self):
+        return [4]
 
     def fusion_group_indices(self):
         return [6,7]
@@ -383,29 +418,28 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         y = self._mlp.forward( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
-        y = y / self._y_scale.clamp(2.0, 10.0)
+        #y = y / self._y_scale.clamp(2.0, 10.0)
 
         # no fusion case
         # y = self._mlp.forward( torch.cat( self._lstm_output_tensors, dim=-1) )
 
+        y_regime = self._regime_mlp.forward( merged )
+        y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
+        #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
+
         y_aux = self._aux_mlp.forward( self._lstm_output_tensors[self._aux_loss_slice] )
         y_aux = torch.reshape( y_aux, (y_aux.shape[0],y_aux.shape[1]*y_aux.shape[2]))
 
-        if not self.training:
-            y = torch.nn.functional.softmax(y, dim=1)
-
-        y_probs = torch.nn.functional.softmax(y, dim=-1)
-        y_entropy = -(y_probs * torch.log(y_probs + 1e-8)).sum(dim=-1)
-        
-        y_diversity = torch.nn.functional.normalize(y, dim=-1)
-        y_diversity = y_diversity @ y_diversity.T
+        #if not self.training:
+        #    y = torch.nn.functional.softmax(y, dim=1)
+        #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
 
         # monitoring feedback
         self._lstm_output_tensors = merged
         # self._lstm_output_tensors = gates
         # self._lstm_output_tensors = self._lstm_output_tensors[self._display_slice]        
 
-        return y, y_entropy, y_diversity, y_aux
+        return y, y_regime, y_aux
 
     @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):

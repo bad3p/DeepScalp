@@ -76,6 +76,8 @@ class TkTimeSeriesDataPreprocessor():
         self._time_series_training_data_filename = _cfg['Paths']['TimeSeriesTrainingDataFileName']
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
 
+        self._market_regime_steps_count = int(_cfg['TimeSeries']['MarketRegimeStepsCount'])
+        self._num_market_regimes = int(_cfg['TimeSeries']['NumMarketRegimes'])
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
         self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
         self._priority_tail_epsilon = float(_cfg['TimeSeries']['PriorityTailEpsilon'])
@@ -122,9 +124,14 @@ class TkTimeSeriesDataPreprocessor():
             for j in range( item_length ):
                 result[-1].append( l[i*item_length + j] )
         return result
+    
+    def collect_price_samples(self, raw_samples : list, output:list):
+        raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
+        for i in range( raw_sample_count ):
+            orderbook_sample = raw_samples[i*2]
+            output.append( quotation_to_float( orderbook_sample.last_price ) )
 
-
-    def add_samples(self, share : TkInstrument, raw_samples : list, is_test_data_source : bool, render_callback):
+    def add_samples(self, share : TkInstrument, raw_samples : list, regimes:list, is_test_data_source : bool, render_callback):
 
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -171,6 +178,10 @@ class TkTimeSeriesDataPreprocessor():
 
         last_trades = [None] * raw_sample_count
         
+        # offset last trades per TS sample:
+        # * instead of using the shared array of last trades bound to correlated price level
+        # * made separate array of last trades for each sample and compute last trades in this array with the same pivot price, bound to the base price of whole TS sample
+
         for i in range( raw_sample_count ):
             last_trades[i] = []
             for j in range( self._prior_steps_count ):
@@ -181,13 +192,13 @@ class TkTimeSeriesDataPreprocessor():
                 last_trades_tensor, _, num_events, volume, last_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, price[i], self._last_trades_width, min_price_increment * self._min_price_increment_factor )
                 last_trades[i].append( last_trades_tensor )
 
-        last_trades = list(itertools.chain.from_iterable(last_trades))        
+        last_trades = list(itertools.chain.from_iterable(last_trades))
 
-        price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( price ).tolist()
-        orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( orderbook_volume ).tolist()
-        last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( last_trades_volume ).tolist()
-        last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( last_trades_num_events ).tolist()
-        spread_log_ema_norm = TkStatistics.log_ema_normalize( spread ).tolist()
+        price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( price, half_life=self._market_regime_steps_count ).tolist()
+        orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( orderbook_volume, half_life=self._market_regime_steps_count ).tolist()
+        last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( last_trades_volume, half_life=self._market_regime_steps_count ).tolist()
+        last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( last_trades_num_events, half_life=self._market_regime_steps_count ).tolist()
+        spread_log_ema_norm = TkStatistics.log_ema_normalize( spread, half_life=self._market_regime_steps_count ).tolist()
 
         orderbook_input = torch.Tensor( np.concatenate( orderbook ) )
         orderbook_input = torch.reshape( orderbook_input, ( raw_sample_count, self._orderbook_depth, self._orderbook_width ) )
@@ -222,7 +233,7 @@ class TkTimeSeriesDataPreprocessor():
                 prev_orderbook_sample = raw_samples[(i+j-1)*2]
                 last_trades_samples.append( ( raw_samples[(i+j)*2+1], prev_orderbook_sample.orderbook_ts ) )
 
-            future_last_trades_tensor, _, num_future_events, future_volume, future_last_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
+            future_last_trades_tensor, _, num_future_events, future_volume, future_last_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, force_categorical=True )
             
             future_trades[i] = future_last_trades_tensor
             future_trades_volume[i] = future_volume
@@ -250,6 +261,10 @@ class TkTimeSeriesDataPreprocessor():
 
         for i in range( start_range, end_range+1 ):
 
+            ts_regime = regimes[i]
+            if ts_regime < 0:
+                continue
+
             ts_input = [None] * self._prior_steps_count
             ts_base_price = price[i]
 
@@ -262,24 +277,29 @@ class TkTimeSeriesDataPreprocessor():
             for j in range( self._prior_steps_count ):
                 k = i-self._prior_steps_count+j+1
 
+                # 1st slice
                 ts_input[j] = orderbook_code[k].copy()
 
-                ts_input[j].extend( last_trades_code[i][j].copy() )
+                # 2nd slice
+                if last_trades_volume[k] > 0:
+                    ts_input[j].extend( last_trades_code[i][j].copy() )
+                else:
+                    all_zeroes = [0] * len(last_trades_code[i][j])
+                    ts_input[j].extend( all_zeroes )
 
+                # 3rd slice
                 ts_sample_price = math.log( price[k] ) - math.log( ts_base_price )
                 ts_input[j].append( ts_sample_price )
                 ts_input[j].append( price_log_ema_volatility[k] )
-
-                ts_input[j].append( spread_log_ema_norm[k] )
-
-                ts_input[j].append( 1.0 if ( orderbook_volume[k] > 0 ) else 0.0 )
-                ts_input[j].append( orderbook_log_ema_norm_volume[k] )
-
-                ts_input[j].append( 1.0 if ( last_trades_volume[k] > 0 ) else 0.0 )
+                ts_input[j].append( spread_log_ema_norm[k] )            
+                ts_input[j].append( orderbook_log_ema_norm_volume[k] )                
                 ts_input[j].append( last_trades_log_ema_norm_volume[k] )
-
-                ts_input[j].append( 1.0 if ( last_trades_num_events[k] > 0 ) else 0.0 )
                 ts_input[j].append( last_trades_log_ema_norm_num_events[k] )
+
+                # 4th slice
+                ts_input[j].append( 1.0 if ( orderbook_volume[k] > 0 ) else 0.0 )
+                ts_input[j].append( 1.0 if ( last_trades_volume[k] > 0 ) else 0.0 ) 
+                
 
             ts_input = list( itertools.chain.from_iterable(ts_input) )
 
@@ -298,6 +318,7 @@ class TkTimeSeriesDataPreprocessor():
                     TkIO.write_to_file( self._test_data_stream, ts_target_code )
                     TkIO.write_to_file( self._test_data_stream, ts_target )
                     TkIO.write_to_file( self._test_data_stream, ts_aux_target )
+                    TkIO.write_to_file( self._test_data_stream, ts_regime )
                     self._test_data_offset = self._test_data_stream.tell()
                 else:
                     ts_target_left_tail = future_trades_tails[i][0]
@@ -312,6 +333,7 @@ class TkTimeSeriesDataPreprocessor():
                     TkIO.write_to_file( self._training_data_stream, ts_target_code )
                     TkIO.write_to_file( self._training_data_stream, ts_target )
                     TkIO.write_to_file( self._training_data_stream, ts_aux_target )
+                    TkIO.write_to_file( self._training_data_stream, ts_regime )
                     self._training_data_offset = self._training_data_stream.tell()
                     verbalize = is_priority_sample
 
@@ -363,6 +385,8 @@ config.read( 'TkConfig.ini' )
 data_path = config['Paths']['DataPath']
 data_extension = config['Paths']['OrderbookFileExtension']
 test_data_ratio = float(config['TimeSeries']['TestDataRatio'])
+market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
+num_market_regimes = int(config['TimeSeries']['NumMarketRegimes'])
 
 data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
 print( 'Data files found:', len(data_files) )
@@ -414,11 +438,33 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     start_time = time.time()
     for ticker in files_by_ticker:
 
+        if not dpg.is_dearpygui_running():
+            break
+
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
 
         num_data_sources = len(files_by_ticker[ticker])
         num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
         num_training_data_sources = num_data_sources - num_test_data_sources
+
+        price_samples = []
+
+        for i in range(num_data_sources):
+
+            date_and_filename = files_by_ticker[ticker][i]
+            date = date_and_filename[0]
+            filename = date_and_filename[1]
+
+            dpg.set_value("filename", filename)
+
+            dpg.render_dearpygui_frame()
+            if not dpg.is_dearpygui_running():
+                break
+        
+            raw_samples = TkIO.read_at_path( join( data_path, filename) )
+            preprocessor.collect_price_samples( raw_samples, price_samples )
+
+        regimes = TkStatistics.price_to_market_regimes(price_samples, market_regime_steps_count, num_market_regimes)
 
         for i in range(num_data_sources):
 
@@ -435,7 +481,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-            preprocessor.add_samples(share, raw_samples, is_test_data_source, render_samples)
+            preprocessor.add_samples(share, raw_samples, regimes, is_test_data_source, render_samples)
+
+            del regimes[:int(len(raw_samples)/2)]
 
             total_samples = total_samples + int( len( raw_samples ) / 2 )
             files_processed = files_processed + 1

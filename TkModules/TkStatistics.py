@@ -556,11 +556,12 @@ class TkStatistics():
     # * pivoted around given price
     # * with discretization proportional to given min_price_increment
     # * with optional time threshold allowing to ignore events older than the certain time
+    # Using "force_categorical" the method will return valid categorical distribution peaked at pivot_price if the input volume is zero.
     # Additionally the method measures the means of distribution tails, given the order "measure_distribution_tail_order"
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def last_trades_to_tensor(trades_with_time_threshold : list, pivot_price : float, distribution_width : int, min_price_increment : float, measure_distribution_tail_order=1):
+    def last_trades_to_tensor(trades_with_time_threshold : list, pivot_price : float, distribution_width : int, min_price_increment : float, force_categorical: bool = False, measure_distribution_tail_order=1):
 
         def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
             return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
@@ -604,6 +605,10 @@ class TkStatistics():
                     assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
                     total_volume = total_volume + trade.quantity
                     ask_volume[index] = ask_volume[index] + trade.quantity
+
+        if total_volume == 0 and force_categorical:
+            total_volume = 1
+            bid_volume[0] = 1
 
         bid_log_delta_price = np.flip( bid_log_delta_price )
         log_delta_price_tensor = np.concatenate((bid_log_delta_price,ask_log_delta_price))
@@ -683,3 +688,34 @@ class TkStatistics():
         vol = np.sqrt(ema_r2 + eps)
 
         return vol
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Given the absolute price series, the method computes market regimes based on rolling volatility 
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def price_to_market_regimes(prices:list, rolling_window_size:int=20, num_regimes:int=3):
+
+        log_returns = np.diff(np.log(prices))
+        rolling_vol = np.full_like(prices, fill_value=np.nan, dtype=float)
+
+        for t in range(rolling_window_size - 1, len(log_returns)):
+            window_slice = log_returns[t - rolling_window_size + 1 : t + 1]
+            rolling_vol[t + 1] = np.std(window_slice, ddof=0)
+
+        valid_vol = rolling_vol[~np.isnan(rolling_vol)]
+    
+        # quantile boundaries
+        quantiles = np.linspace(0, 1, num_regimes + 1)
+        bins = np.quantile(valid_vol, quantiles)
+    
+        # unique bins are important if volatility is flat
+        bins = np.unique(bins)
+    
+        # assign regimes using digitize
+        regimes = np.full_like(rolling_vol, fill_value=-1, dtype=int)
+    
+        for i, v in enumerate(rolling_vol):
+            if not np.isnan(v):
+                regimes[i] = np.digitize(v, bins[1:-1], right=True)
+    
+        return regimes.tolist()

@@ -150,6 +150,27 @@ class TkLastTradesAutoencoder(torch.nn.Module):
             count += 1
 
         return loss / count
+    
+    def kl_code_usage_loss(self, vq_codes, eps=1e-8):
+
+        if vq_codes.dim() == 2:
+            codes = vq_codes.reshape(-1)
+        else:
+            codes = vq_codes
+
+        # Count code usage
+        counts = torch.bincount(codes, minlength=self._num_embeddings).float()
+
+        # Empirical distribution
+        p = counts / (counts.sum() + eps)
+
+        # Uniform prior
+        p_prior = torch.full_like(p, 1.0 / self._num_embeddings)
+
+        # KL(p || prior)
+        kl = torch.sum(p * torch.log((p + eps) / (p_prior + eps)))
+
+        return kl    
 
     def forward(self, input):
         
@@ -161,7 +182,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         y = self._decoder(z_q)
         y = torch.softmax(y, dim=2)
 
-        # LOB volume regularization loss
+        # volume regularization loss
         y_log_volume = self._decoder.layer_outputs()[ self._last_trades_log_volume_branch_injection_layer ]
         y_log_volume = torch.mean( y_log_volume, dim=2 ) 
         y_log_volume = self._log_volume_head( y_log_volume )
@@ -176,8 +197,10 @@ class TkLastTradesAutoencoder(torch.nn.Module):
 
         # decoder loss
         smoothness_loss = self.decoder_lipschitz_loss( z_q ) + self.code_reconstruction_variance_loss( y, vq_codes )
+
+        kl_loss = self.kl_code_usage_loss( vq_codes )
         
-        return y, y_log_volume_loss, vq_loss, smoothness_loss
+        return y, y_log_volume_loss, vq_loss, smoothness_loss, kl_loss
 
     @torch.no_grad()
     def get_code_usage(self, eps=1e-8):
