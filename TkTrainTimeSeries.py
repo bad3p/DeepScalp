@@ -419,9 +419,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )
 
         aux_target = torch.Tensor( list( itertools.chain.from_iterable(aux_target_samples) ) )
-        aux_target = torch.reshape( aux_target, ( training_batch_size, orderbook_depth, orderbook_width) )
+        #aux_target = torch.reshape( aux_target, ( training_batch_size, orderbook_depth, orderbook_width) )
         aux_target = aux_target.to(cuda)
-        aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
+        #aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
         aux_target = torch.reshape( aux_target, ( training_batch_size, orderbook_width) )
         aux_target = aux_target[:, :aux_target.shape[-1] // 2] # imbalance is symmetric, so we only target half of it
 
@@ -437,17 +437,18 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # y_aux, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", target_regime, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", y_aux, display_batch_id) # torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # 
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", aux_target, display_batch_id) # target_regime, display_batch_id) #
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
 
-        y_loss = ts_loss( y, target_true ).mean() + ts_aux_loss( y_aux, aux_target ).mean() * aux_loss_weight + ts_regime_loss( y_regime, target_regime ).mean() * regime_loss_weight
+        y_recon_loss = ts_loss( y, target_true ).mean()
+        y_loss = y_recon_loss + ts_aux_loss( y_aux, aux_target ).mean() * aux_loss_weight + ts_regime_loss( y_regime, target_regime ).mean() * regime_loss_weight
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
         ts_optimizer.step()
-        y_loss_val = y_loss.item()
+        y_loss_val = y_recon_loss.item()
 
         TkUI.set_series_from_tensor("x_axis_lstm_training", "y_axis_lstm_training", "training_lstm_series", ts_model.lstm_output(), display_batch_id)
 
@@ -470,9 +471,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
 
         aux_target = torch.Tensor( list( itertools.chain.from_iterable(aux_target_samples) ) )
-        aux_target = torch.reshape( aux_target, ( test_batch_size, orderbook_depth, orderbook_width) )
+        #aux_target = torch.reshape( aux_target, ( test_batch_size, orderbook_depth, orderbook_width) )
         aux_target = aux_target.to(cuda)
-        aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
+        #aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
         aux_target = torch.reshape( aux_target, ( test_batch_size, orderbook_width) )
         aux_target = aux_target[:, :aux_target.shape[-1] // 2] # imbalance is symmetric, so we only target half of it
 
@@ -492,8 +493,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # y_aux, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", target_regime, display_batch_id)# aux_target, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", y_aux, display_batch_id) # torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # 
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", aux_target, display_batch_id) # target_regime, display_batch_id) # 
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id) # y, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", target_true, display_batch_id)        
 

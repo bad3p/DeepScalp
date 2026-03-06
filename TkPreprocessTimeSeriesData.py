@@ -7,6 +7,7 @@ import json
 import copy
 import random
 import math
+from LSHash import LSHash
 from os import listdir
 from os.path import isfile, join
 from datetime import date, datetime, timezone, timedelta
@@ -76,11 +77,13 @@ class TkTimeSeriesDataPreprocessor():
         self._time_series_training_data_filename = _cfg['Paths']['TimeSeriesTrainingDataFileName']
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
 
+        self._lshash_size = int(_cfg['TimeSeries']['LSHashSize'])
+        self._ts_sample_similatiry = float(_cfg['TimeSeries']['TSSampleSimilatiry'])
+        self._ts_data_stride = int(_cfg['TimeSeries']['TSDataStride'])
         self._market_regime_steps_count = int(_cfg['TimeSeries']['MarketRegimeStepsCount'])
         self._num_market_regimes = int(_cfg['TimeSeries']['NumMarketRegimes'])
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount'])
         self._future_steps_count = int(_cfg['TimeSeries']['FutureStepsCount'])
-        self._priority_tail_epsilon = float(_cfg['TimeSeries']['PriorityTailEpsilon'])
         self._priority_tail_threshold = float(_cfg['TimeSeries']['PriorityTailThreshold'])
 
         if ( os.path.isfile( join(self._data_path, self._time_series_training_data_filename)) or
@@ -124,14 +127,8 @@ class TkTimeSeriesDataPreprocessor():
             for j in range( item_length ):
                 result[-1].append( l[i*item_length + j] )
         return result
-    
-    def collect_price_samples(self, raw_samples : list, output:list):
-        raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
-        for i in range( raw_sample_count ):
-            orderbook_sample = raw_samples[i*2]
-            output.append( quotation_to_float( orderbook_sample.last_price ) )
 
-    def add_samples(self, share : TkInstrument, raw_samples : list, regimes:list, is_test_data_source : bool, render_callback):
+    def add_samples(self, share : TkInstrument, raw_samples : list, is_test_data_source : bool, render_callback):
 
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -154,7 +151,7 @@ class TkTimeSeriesDataPreprocessor():
         last_trades_volume = [0] * raw_sample_count
         last_trades_num_events = [0] * raw_sample_count
         orderbook = [None] * raw_sample_count
-        last_trades = [None] * raw_sample_count
+        last_trades = [None] * raw_sample_count        
 
         last_trades_time_threshold = None
 
@@ -175,6 +172,16 @@ class TkTimeSeriesDataPreprocessor():
 
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts
+
+        regimes = TkStatistics.price_to_market_regimes(price, self._market_regime_steps_count, self._num_market_regimes)
+
+        delta_imbalance = [None] * raw_sample_count
+
+        for i in range( raw_sample_count ):
+            if i == 0:
+                delta_imbalance[i] = orderbook[i][5]
+            else:
+                delta_imbalance[i] = np.subtract( orderbook[i][5], orderbook[i-1][5] )
 
         last_trades = [None] * raw_sample_count
         
@@ -239,9 +246,6 @@ class TkTimeSeriesDataPreprocessor():
             future_trades_volume[i] = future_volume
             future_trades_tails[i] = future_last_trades_mean_tails
 
-            # adjust minimal time for next last trades sample
-            last_trades_time_threshold = orderbook_sample.orderbook_ts
-
         future_trades_input = [future_trades[i] for i in range(start_range, end_range+1)]
         future_trades_input = torch.Tensor( np.concatenate( future_trades_input ) )
         future_trades_input = torch.reshape( future_trades_input, ( (end_range+1-start_range), self._last_trades_depth, self._last_trades_width ) )
@@ -257,14 +261,15 @@ class TkTimeSeriesDataPreprocessor():
 
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
-        num_invalid_samples = 0
+        hasheable_sample_width = self._orderbook_autoencoder_code_layer_size * self._prior_steps_count + self._last_trades_autoencoder_code_layer_size * ( self._prior_steps_count + 1 )
+        sample_lhs = LSHash(self._lshash_size, hasheable_sample_width) 
+        step = 0
 
         for i in range( start_range, end_range+1 ):
 
-            ts_regime = regimes[i]
-            if ts_regime < 0:
-                continue
+            step = step + 1
 
+            ts_regime = regimes[i+1] 
             ts_input = [None] * self._prior_steps_count
             ts_base_price = price[i]
 
@@ -274,18 +279,23 @@ class TkTimeSeriesDataPreprocessor():
             #ts_base_last_trades_volume = sum( last_trades_volume[i0:i1] ) / self._prior_steps_count
             #ts_base_last_trades_num_events = sum( last_trades_num_events[i0:i1] ) / self._prior_steps_count
 
+            hasheable_sample = []
+
             for j in range( self._prior_steps_count ):
                 k = i-self._prior_steps_count+j+1
 
                 # 1st slice
                 ts_input[j] = orderbook_code[k].copy()
+                hasheable_sample.extend( orderbook_code[k].copy() )
 
                 # 2nd slice
                 if last_trades_volume[k] > 0:
                     ts_input[j].extend( last_trades_code[i][j].copy() )
+                    hasheable_sample.extend( last_trades_code[i][j].copy() )
                 else:
                     all_zeroes = [0] * len(last_trades_code[i][j])
                     ts_input[j].extend( all_zeroes )
+                    hasheable_sample.extend( all_zeroes )
 
                 # 3rd slice
                 ts_sample_price = math.log( price[k] ) - math.log( ts_base_price )
@@ -299,20 +309,26 @@ class TkTimeSeriesDataPreprocessor():
                 # 4th slice
                 ts_input[j].append( 1.0 if ( orderbook_volume[k] > 0 ) else 0.0 )
                 ts_input[j].append( 1.0 if ( last_trades_volume[k] > 0 ) else 0.0 ) 
+
+            # sample similatiry check
+            hasheable_sample.extend( future_trades_code[i].copy() )
+            lsh_query = sample_lhs.query( hasheable_sample, num_results=1 )
+            if len(lsh_query) > 0 and lsh_query[0][1] <= self._ts_sample_similatiry:
+                print( "Too similar sample, skipped: ", lsh_query[0][1])
+                continue
+            sample_lhs.index( hasheable_sample )
                 
+            ts_input = list( itertools.chain.from_iterable(ts_input) )        
+            ts_target_code = future_trades_code[i].copy()
+            ts_target = future_trades[i].tolist()
+            ts_aux_target = delta_imbalance[i+1] # safe since we alway have >= 1 steps ahead (it's what we to predict)
 
-            ts_input = list( itertools.chain.from_iterable(ts_input) )
-
-            # ignore sample if volume of future trades is zero
-
-            if future_trades_volume[i] > 0:
-
-                ts_target_code = future_trades_code[i].copy()
-                ts_target = future_trades[i].tolist()
-                ts_aux_target = orderbook[i+1] # safe since we alway have >= 1 steps ahead (it's what we to predict)
-
-                verbalize = True
-                if is_test_data_source:
+            verbalize = True
+            if is_test_data_source:
+                ts_target_left_tail = future_trades_tails[i][0]
+                ts_target_right_tail = future_trades_tails[i][1]
+                is_priority_sample = ( ts_target_left_tail <= -self._priority_tail_threshold ) or ( ts_target_right_tail >= self._priority_tail_threshold )
+                if (step-1) % self._ts_data_stride == 0 or is_priority_sample:
                     self._test_index.append( self._test_data_offset )
                     TkIO.write_to_file( self._test_data_stream, ts_input )
                     TkIO.write_to_file( self._test_data_stream, ts_target_code )
@@ -320,10 +336,12 @@ class TkTimeSeriesDataPreprocessor():
                     TkIO.write_to_file( self._test_data_stream, ts_aux_target )
                     TkIO.write_to_file( self._test_data_stream, ts_regime )
                     self._test_data_offset = self._test_data_stream.tell()
-                else:
-                    ts_target_left_tail = future_trades_tails[i][0]
-                    ts_target_right_tail = future_trades_tails[i][1]
-                    is_priority_sample = ( ts_target_left_tail <= -self._priority_tail_threshold ) or ( ts_target_right_tail >= self._priority_tail_threshold )
+                    verbalize = is_priority_sample
+            else:
+                ts_target_left_tail = future_trades_tails[i][0]
+                ts_target_right_tail = future_trades_tails[i][1]
+                is_priority_sample = ( ts_target_left_tail <= -self._priority_tail_threshold ) or ( ts_target_right_tail >= self._priority_tail_threshold )
+                if (step-1) % self._ts_data_stride == 0 or is_priority_sample:
                     if is_priority_sample:
                         self._priority_table.append( len(self._training_index) )
                     else:
@@ -337,12 +355,11 @@ class TkTimeSeriesDataPreprocessor():
                     self._training_data_offset = self._training_data_stream.tell()
                     verbalize = is_priority_sample
 
-                if len(callback_indices) > 0 and i >= callback_indices[0] and verbalize:
-                    del callback_indices[0]
-                    if render_callback != None:
-                        render_callback( ts_input, ts_target )
-            else:
-                num_invalid_samples = num_invalid_samples + 1
+            if len(callback_indices) > 0 and i >= callback_indices[0] and verbalize:
+                del callback_indices[0]
+                if render_callback != None:
+                    render_callback( ts_input, ts_target )
+
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -447,25 +464,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
         num_training_data_sources = num_data_sources - num_test_data_sources
 
-        price_samples = []
-
-        for i in range(num_data_sources):
-
-            date_and_filename = files_by_ticker[ticker][i]
-            date = date_and_filename[0]
-            filename = date_and_filename[1]
-
-            dpg.set_value("filename", filename)
-
-            dpg.render_dearpygui_frame()
-            if not dpg.is_dearpygui_running():
-                break
-        
-            raw_samples = TkIO.read_at_path( join( data_path, filename) )
-            preprocessor.collect_price_samples( raw_samples, price_samples )
-
-        regimes = TkStatistics.price_to_market_regimes(price_samples, market_regime_steps_count, num_market_regimes)
-
         for i in range(num_data_sources):
 
             date_and_filename = files_by_ticker[ticker][i]
@@ -481,9 +479,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
             raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
-            preprocessor.add_samples(share, raw_samples, regimes, is_test_data_source, render_samples)
-
-            del regimes[:int(len(raw_samples)/2)]
+            preprocessor.add_samples(share, raw_samples, is_test_data_source, render_samples)
 
             total_samples = total_samples + int( len( raw_samples ) / 2 )
             files_processed = files_processed + 1

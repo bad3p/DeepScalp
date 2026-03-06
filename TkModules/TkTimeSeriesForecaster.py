@@ -273,7 +273,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             embed_dim=self._fusion_embedding_dims, 
             num_heads=self._fusion_attention_heads, 
             dropout=self._fusion_dropout, 
-            pooling="mean"
+            pooling="attn"
         )
 
         # enforce gate bias
@@ -413,17 +413,17 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         fused, source_attn, gates = self._fusion(self._lstm_output_tensors)
 
         fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
-        self._lstm_output_tensors.append( fused )
-        merged = torch.cat( self._lstm_output_tensors, dim=-1)
+        # self._lstm_output_tensors.append( fused )
+        # merged = torch.cat( self._lstm_output_tensors, dim=-1)
 
-        y = self._mlp.forward( merged )
+        y = self._mlp.forward( fused )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
         #y = y / self._y_scale.clamp(2.0, 10.0)
 
         # no fusion case
         # y = self._mlp.forward( torch.cat( self._lstm_output_tensors, dim=-1) )
 
-        y_regime = self._regime_mlp.forward( merged )
+        y_regime = self._regime_mlp.forward( fused )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
         #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
 
@@ -435,7 +435,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
 
         # monitoring feedback
-        self._lstm_output_tensors = merged
+        self._lstm_output_tensors = fused
         # self._lstm_output_tensors = gates
         # self._lstm_output_tensors = self._lstm_output_tensors[self._display_slice]        
 

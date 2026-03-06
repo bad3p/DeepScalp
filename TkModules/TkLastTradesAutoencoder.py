@@ -27,6 +27,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
 
         self._encoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesEncoder']) )
         self._decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesDecoder']) )
+        self._price_decoder = TkModel( json.loads(_cfg['Autoencoders']['LastTradesPriceDecoder']) )
 
         # re-initialize decoder weights to suppress undesirable peaks
         #self._decoder.initWeights( conv_init_mode='xavier_normal', conv_init_gain=0.025 )
@@ -93,13 +94,28 @@ class TkLastTradesAutoencoder(torch.nn.Module):
             else:
                 decoder_no_decay_params.append(param)
 
+        for name, param in self._price_decoder.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                layer = self.get_layer_by_parameter( param )
+                if isinstance( layer, torch.nn.Linear):
+                    decoder_dense_params.append(param)
+                else:
+                    decoder_conv_params.append(param)
+            else:
+                decoder_no_decay_params.append(param)
+
+        vq_parameters = self._vq.parameters()
+
         return [
             {"params": encoder_conv_params, "weight_decay": conv_weight_decay},
             {"params": encoder_dense_params, "weight_decay": dense_weight_decay},
             {"params": encoder_no_decay_params, "weight_decay": 0.0},
             {"params": decoder_conv_params, "weight_decay": conv_weight_decay},
             {"params": decoder_dense_params, "weight_decay": dense_weight_decay},
-            {"params": decoder_no_decay_params, "weight_decay": 0.0}
+            {"params": decoder_no_decay_params, "weight_decay": 0.0},
+            {"params": vq_parameters, "weight_decay": 0.0},
         ]
 
     def freeze_parameters(self):
@@ -108,6 +124,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
 
     def encode(self, input):
         z = self._encoder(input)
+        z = z / (z.norm(dim=1, keepdim=True) + 1e-6)
         _, _, vq_codes = self._vq.quantize(z)
         self._code = vq_codes
         return vq_codes
@@ -175,6 +192,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
     def forward(self, input):
         
         z = self._encoder(input)
+        z = z / (z.norm(dim=1, keepdim=True) + 1e-6)
 
         z_q, vq_loss, vq_codes = self._vq(z)
         self._code = vq_codes
@@ -182,16 +200,23 @@ class TkLastTradesAutoencoder(torch.nn.Module):
         y = self._decoder(z_q)
         y = torch.softmax(y, dim=2)
 
+        # price embedding regularization
+        y_price = self._price_decoder(z_q)
+        y_price_target = input[:, 0:1, :]
+        y_price_loss = y_price_target - y_price
+        y_price_loss = y_price_loss ** 2
+        y_price_loss = y_price_loss.mean(dim=-1)
+
         # volume regularization loss
         y_log_volume = self._decoder.layer_outputs()[ self._last_trades_log_volume_branch_injection_layer ]
         y_log_volume = torch.mean( y_log_volume, dim=2 ) 
         y_log_volume = self._log_volume_head( y_log_volume )
         
         y_log_volume_target = input[:, (self._last_trades_regularization_channel):(self._last_trades_regularization_channel+1), :]
-        y_log_volume_target = torch.sum( y_log_volume_target, dim=-1, keepdim=True)
-        y_log_volume_target = y_log_volume_target + 1e-7
+        #y_log_volume_target = torch.sum( y_log_volume_target, dim=-1, keepdim=True)
+        y_log_volume_target = torch.sum( torch.expm1( y_log_volume_target ), dim=-1, keepdim=True)
 
-        y_log_volume_target = torch.log( y_log_volume_target )
+        y_log_volume_target = torch.log( y_log_volume_target + 1 )
         y_log_volume_loss = y_log_volume_target - y_log_volume
         y_log_volume_loss = y_log_volume_loss ** 2
 
@@ -200,7 +225,7 @@ class TkLastTradesAutoencoder(torch.nn.Module):
 
         kl_loss = self.kl_code_usage_loss( vq_codes )
         
-        return y, y_log_volume_loss, vq_loss, smoothness_loss, kl_loss
+        return y, y_price_loss, y_log_volume_loss, vq_loss, smoothness_loss, kl_loss
 
     @torch.no_grad()
     def get_code_usage(self, eps=1e-8):

@@ -249,9 +249,12 @@ last_trades_reconstruction_channel = int(config['Autoencoders']['LastTradesRecon
 orderbook_code_layer_size = int(config['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
 last_trades_code_layer_size = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
 
+random_restart_frequency = TkAnnealing(config['Autoencoders']['RandomRestartFrequency'])
+
 orderbook_autoencoder_conv_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderConvWeightDecay'])
 orderbook_autoencoder_dense_weight_decay = float(config['Autoencoders']['OrderbookAutoencoderDenseWeightDecay'])
 orderbook_autoencoder_log_volume_loss_weight = TkAnnealing(config['Autoencoders']['OrderbookAutoencoderLogVolumeLossWeight'])
+orderbook_autoencoder_price_loss_weight = TkAnnealing(config['Autoencoders']['OrderbookAutoencoderPriceLossWeight'])
 orderbook_autoencoder_kl_loss_weight = TkAnnealing(config['Autoencoders']['OrderbookAutoencoderKLLossWeight'])
 orderbook_autoencoder_vq_loss_weight = TkAnnealing(config['Autoencoders']['OrderbookAutoencoderVQLossWeight'])
 orderbook_autoencoder_learning_rate = TkAnnealing(config['Autoencoders']['OrderbookAutoencoderLearningRate'])
@@ -261,6 +264,7 @@ last_trades_autoencoder_dense_weight_decay = float(config['Autoencoders']['LastT
 last_trades_autoencoder_kl_loss_weight = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderKLLossWeight'])
 last_trades_autoencoder_smoothness_loss_weight = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderSmoothnessLossWeight'])
 last_trades_autoencoder_log_volume_loss_weight = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderLogVolumeLossWeight'])
+last_trades_autoencoder_price_loss_weight = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderPriceLossWeight'])
 last_trades_autoencoder_vq_loss_weight = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderVQLossWeight'])
 last_trades_autoencoder_learning_rate = TkAnnealing(config['Autoencoders']['LastTradesAutoencoderLearningRate'])
 
@@ -289,7 +293,7 @@ last_trades_optimizer = torch.optim.AdamW(
 if os.path.isfile(last_trades_optimizer_path):
     last_trades_optimizer.load_state_dict(torch.load(last_trades_optimizer_path))
 
-last_trades_loss = MS_SSIM_1D_Loss(window_size=3) # lambda x,y: hybrid_ssim_1d_gaussian_l1_loss(x,y,win_size=9,alpha=0.9) # torch.nn.BCELoss(reduction="none") #
+last_trades_loss = torch.nn.BCELoss(reduction="none") # MS_SSIM_1D_Loss(window_size=3) # lambda x,y: hybrid_ssim_1d_gaussian_l1_loss(x,y,win_size=9,alpha=0.9) # 
 last_trades_training_history = TkAutoencoderTrainingHistory(last_trades_history_path, history_size)
 
 data_loader = TkAutoencoderDataLoader(
@@ -434,7 +438,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             norm = norm + 1
         return  result / norm if norm > 0 else result        
 
+    step = 0
+
     while dpg.is_dearpygui_running():
+
+        step = step + 1
 
         orderbook_smooth_epoch = orderbook_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.orderbook_training_batch_size() )
         for param_group in orderbook_optimizer.param_groups:
@@ -443,6 +451,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         last_trades_smooth_epoch = last_trades_training_history.get_smooth_epoch( data_loader.epoch_size() * data_loader.last_trades_training_batch_size() )
         for param_group in last_trades_optimizer.param_groups:
             param_group['lr'] = last_trades_autoencoder_learning_rate.get_value(last_trades_smooth_epoch)
+
+        orderbook_random_restart_frequency = int( random_restart_frequency.get_value( orderbook_smooth_epoch ) )
+        orderbook_autoencoder._vq.set_random_restart( step % orderbook_random_restart_frequency == 0 )
+
+        last_trades_random_restart_frequency = int( random_restart_frequency.get_value( last_trades_smooth_epoch ) )
+        last_trades_autoencoder._vq.set_random_restart( step % last_trades_random_restart_frequency == 0 )
 
         orderbook_samples, last_trades_samples = data_loader.complete_loading()
 
@@ -461,9 +475,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         data_loader.start_load_test_data()
 
-        y, y_log_volume_loss, y_vq_loss, y_kl_loss = orderbook_autoencoder.forward( orderbook_input )
+        y, y_price_loss, y_log_volume_loss, y_vq_loss, y_kl_loss = orderbook_autoencoder.forward( orderbook_input )
         y_active_codes, y_dead_codes, _ = orderbook_autoencoder.get_code_usage()
-        z, z_log_volume_loss, z_vq_loss, z_smoothness_loss, z_kl_loss = last_trades_autoencoder.forward( last_trades_input )
+        z, z_price_loss, z_log_volume_loss, z_vq_loss, z_smoothness_loss, z_kl_loss = last_trades_autoencoder.forward( last_trades_input )
         z_active_codes, z_dead_codes, _ = last_trades_autoencoder.get_code_usage()
 
         y_0 = y[:, 0:1, :]
@@ -481,7 +495,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         y_recon_loss = orderbook_loss( y_0, orderbook_recon_target_0 ) + orderbook_loss( y_1, orderbook_recon_target_1 ) 
         y_loss = ( y_recon_loss + 
-                   y_vq_loss * orderbook_autoencoder_vq_loss_weight.get_value(orderbook_smooth_epoch) + 
+                   y_vq_loss * orderbook_autoencoder_vq_loss_weight.get_value(orderbook_smooth_epoch) +
+                   y_price_loss * orderbook_autoencoder_price_loss_weight.get_value(orderbook_smooth_epoch) +
                    y_log_volume_loss * orderbook_autoencoder_log_volume_loss_weight.get_value(orderbook_smooth_epoch) +
                    y_kl_loss * orderbook_autoencoder_kl_loss_weight.get_value(orderbook_smooth_epoch) )
         y_loss = y_loss.mean()
@@ -494,8 +509,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         z_recon_loss = last_trades_loss( z, last_trades_recon_target )
         z_loss = ( z_recon_loss + 
-                   z_vq_loss * last_trades_autoencoder_vq_loss_weight.get_value(last_trades_smooth_epoch) + 
+                   z_vq_loss * last_trades_autoencoder_vq_loss_weight.get_value(last_trades_smooth_epoch) +                    
                    z_log_volume_loss * last_trades_autoencoder_log_volume_loss_weight.get_value(last_trades_smooth_epoch) + 
+                   z_price_loss * last_trades_autoencoder_price_loss_weight.get_value(last_trades_smooth_epoch) + 
                    z_smoothness_loss * last_trades_autoencoder_smoothness_loss_weight.get_value(last_trades_smooth_epoch) +
                    z_kl_loss * last_trades_autoencoder_kl_loss_weight.get_value(last_trades_smooth_epoch) )
         z_loss = z_loss.mean()
@@ -528,14 +544,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             data_loader.start_load_training_data()
 
             orderbook_autoencoder.train(False)
-            y, y_log_volume_loss, y_vq_loss, y_kl_loss = orderbook_autoencoder.forward( orderbook_input )
+            y, y_price_loss, y_log_volume_loss, y_vq_loss, y_kl_loss = orderbook_autoencoder.forward( orderbook_input )
             orderbook_autoencoder.train(True)
 
             y_0 = y[:, 0:1, :]
             y_1 = y[:, 1:2, :]
 
             last_trades_autoencoder.train(False)
-            z, z_log_volume_loss, z_vq_loss, z_smoothness_loss, z_kl_loss = last_trades_autoencoder.forward( last_trades_input )
+            z, z_price_loss, z_log_volume_loss, z_vq_loss, z_smoothness_loss, z_kl_loss = last_trades_autoencoder.forward( last_trades_input )
             last_trades_autoencoder.train(True)
 
             TkUI.set_series_from_tensor("x_axis_orderbook", "y_axis_orderbook","orderbook_series_0", orderbook_recon_target_0.detach().cpu(), 0)

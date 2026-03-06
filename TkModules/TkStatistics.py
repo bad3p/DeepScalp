@@ -541,12 +541,15 @@ class TkStatistics():
 
         bid_discrete_imbalance = np.flip(bid_discrete_imbalance)
         discrete_imbalance_tensor = np.concatenate((bid_discrete_imbalance, ask_discrete_imbalance))
+        
+        bid_volume_tensor = np.log1p( bid_volume_tensor )
+        ask_volume_tensor = np.log1p( ask_volume_tensor )
 
         result_tensor = np.stack([delta_price_tensor, bid_volume_tensor, normalized_bid_volume_tensor, ask_volume_tensor, normalized_ask_volume_tensor, imbalance_tensor, discrete_imbalance_tensor], axis=1)
 
         assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
 
-        hasheable_tensor = np.multiply( delta_price_tensor, bid_volume_tensor, ask_volume_tensor )
+        hasheable_tensor = np.multiply( delta_price_tensor, np.add( bid_volume_tensor, ask_volume_tensor ) )
 
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
         return result_tensor.T, hasheable_tensor, pivot_price, (total_bid_volume + total_ask_volume)
@@ -623,6 +626,8 @@ class TkStatistics():
             normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
+        volume_tensor = np.log1p( volume_tensor )
+
         result_tensor = np.stack([log_delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
 
         assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
@@ -695,6 +700,10 @@ class TkStatistics():
 
     def price_to_market_regimes(prices:list, rolling_window_size:int=20, num_regimes:int=3):
 
+        # insert padding to the input list, using first element as a padding value
+        prices = prices.copy()
+        prices[0:0] = [prices[0]] * rolling_window_size
+
         log_returns = np.diff(np.log(prices))
         rolling_vol = np.full_like(prices, fill_value=np.nan, dtype=float)
 
@@ -711,11 +720,16 @@ class TkStatistics():
         # unique bins are important if volatility is flat
         bins = np.unique(bins)
     
-        # assign regimes using digitize
+        # assign regimes using digitize^
         regimes = np.full_like(rolling_vol, fill_value=-1, dtype=int)
     
         for i, v in enumerate(rolling_vol):
             if not np.isnan(v):
                 regimes[i] = np.digitize(v, bins[1:-1], right=True)
     
-        return regimes.tolist()
+        regimes = regimes.tolist()
+
+        # remove padding elements from output list
+        regimes = regimes[rolling_window_size:] 
+        
+        return regimes
