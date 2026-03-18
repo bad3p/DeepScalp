@@ -4,6 +4,7 @@ import os.path
 import numpy as np
 import random
 import math
+from collections import defaultdict
 from decimal import Decimal
 from tinkoff.invest.schemas import Quotation
 from tinkoff.invest.utils import quotation_to_decimal
@@ -638,17 +639,43 @@ class TkStatistics():
 
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
         return result_tensor.T, hasheable_tensor, total_event_count, total_volume, (left_tail, right_tail)
-    
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Performs EMA normalization for the given sequence
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def ema_normalize(sequence, half_life=250, eps=1e-12):
+
+        sequence = np.asarray(sequence, dtype=np.float64)
+
+        # EMA coefficient
+        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
+
+        mu = np.zeros_like(sequence)
+        var = np.zeros_like(sequence)
+
+        mu[0] = sequence[0]
+        var[0] = 0.0
+
+        for t in range(1, len(sequence)):
+            mu[t] = alpha * sequence[t] + (1.0 - alpha) * mu[t - 1]
+            diff = sequence[t] - mu[t]
+            var[t] = alpha * diff * diff + (1.0 - alpha) * var[t - 1]
+
+        norm_sequence = (sequence - mu) / np.sqrt(var + eps)
+
+        return norm_sequence
+
     #------------------------------------------------------------------------------------------------------------------------
     # Performs log1p transform with subsequent EMA normalization for the given sequence
     #------------------------------------------------------------------------------------------------------------------------
 
-    def log_ema_normalize(sequence, half_life=250, eps=1e-6):
+    def log_ema_normalize(sequence, half_life=250, eps=1e-12):
 
         sequence = np.asarray(sequence, dtype=np.float64)
 
         # log transform
-        log_sequence = np.log1p(sequence)
+        log_sequence = np.sign(sequence) * np.log1p(abs(sequence))
 
         # EMA coefficient
         alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
@@ -672,7 +699,7 @@ class TkStatistics():
     # Performs log1p transform with subsequent short-term volatility extraction & EMA normalization
     #------------------------------------------------------------------------------------------------------------------------
 
-    def log_vol_ema_normalize(sequence, half_life=250, eps=1e-6):
+    def log_vol_ema_normalize(sequence, half_life=250, eps=1e-12):
 
         sequence = np.asarray(sequence, dtype=np.float64)
 
@@ -733,3 +760,146 @@ class TkStatistics():
         regimes = regimes[rolling_window_size:] 
         
         return regimes
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Compute depth-weighted Order Flow Imbalance between two LOB snapshots.
+    # alpha : float = exponential decay parameter for depth weighting
+    #------------------------------------------------------------------------------------------------------------------------
+    
+    def depth_weighted_order_flow_imbalance(orderbook1 : GetOrderBookResponse, orderbook2 : GetOrderBookResponse, alpha=1.0):
+    
+        def build_signed_depth(bids, asks):
+            S = defaultdict(float)
+
+            for p, q in bids:
+                S[p] += q
+
+            for p, q in asks:
+                S[p] -= q
+
+            return S
+        
+        bids_1 = []
+        for bid in orderbook1.bids:
+            bids_1.append( (quotation_to_float( bid.price ), bid.quantity) )
+
+        asks_1 = []
+        for ask in orderbook1.asks:
+            asks_1.append( (quotation_to_float( ask.price ), ask.quantity) )
+
+        bids_2 = []
+        for bid in orderbook2.bids:
+            bids_2.append( (quotation_to_float( bid.price ), bid.quantity) )
+
+        asks_2 = []
+        for ask in orderbook2.asks:
+            asks_2.append( (quotation_to_float( ask.price ), ask.quantity) )
+
+        S1 = build_signed_depth(bids_1, asks_1)
+        S2 = build_signed_depth(bids_2, asks_2)
+
+        # union of price levels
+        prices = set(S1.keys()) | set(S2.keys())
+
+        # compute midprice (use second snapshot)
+        best_bid = 0
+        best_ask = 0
+
+        if len(bids_2) > 0 and len(asks_2) > 0 :
+            best_bid = max(p for p, _ in bids_2)
+            best_ask = min(p for p, _ in asks_2)
+        elif len(bids_2) > 0 and len(asks_2) == 0 :
+            best_bid = max(p for p, _ in bids_2)
+            best_ask = best_bid
+        elif len(bids_2) == 0 and len(asks_2) > 0 :
+            best_ask = min(p for p, _ in asks_2)
+            best_bid = best_ask
+        else:
+            return 0.0
+
+        mid = 0.5 * (best_bid + best_ask)
+
+        ofi = 0.0
+
+        for p in prices:
+            s1 = S1.get(p, 0.0)
+            s2 = S2.get(p, 0.0)
+
+            delta = s2 - s1
+
+            # exponential depth weight
+            weight = math.exp(-alpha * abs(p - mid))
+
+            ofi += weight * delta
+
+        return ofi
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Returns cumulative sum over input x using given window size
+    #------------------------------------------------------------------------------------------------------------------------
+    
+    def rolling_sum(x, window:int):
+        x = np.asarray(x)
+        c = np.cumsum(x)
+        out = c.copy()
+
+        if window < len(x):
+            out[window:] = c[window:] - c[:-window]
+
+        return out
+
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Depth-weighted queue imbalance accounting for missing price levels.
+    #------------------------------------------------------------------------------------------------------------------------        
+    
+    def depth_weighted_queue_imbalance(orderbook : GetOrderBookResponse, min_price_increment : float, depth=None, alpha=1.0):
+
+        bids = []
+        for bid in orderbook.bids:
+            bids.append( (quotation_to_float( bid.price ), bid.quantity) )
+
+        asks = []
+        for ask in orderbook.asks:
+            asks.append( (quotation_to_float( ask.price ), ask.quantity) )
+
+        if not bids or not asks:
+            return 0.0
+
+        # Sort the book
+        bids_sorted = sorted(bids, key=lambda x: x[0], reverse=True)
+        asks_sorted = sorted(asks, key=lambda x: x[0])
+
+        best_bid = bids_sorted[0][0]
+        best_ask = asks_sorted[0][0]
+
+        weighted_bid = 0.0
+        weighted_ask = 0.0
+
+        # ----- BIDS -----
+        for price, qty in bids_sorted:
+
+            level = round((best_bid - price) / min_price_increment)
+
+            if depth is not None and level >= depth:
+                continue
+
+            weight = math.exp(-alpha * level)
+            weighted_bid += weight * qty
+
+        # ----- ASKS -----
+        for price, qty in asks_sorted:
+
+            level = round((price - best_ask) / min_price_increment)
+
+            if depth is not None and level >= depth:
+                continue
+
+            weight = math.exp(-alpha * level)
+            weighted_ask += weight * qty
+
+        total = weighted_bid + weighted_ask
+        if total == 0:
+            return 0.0
+
+        return (weighted_bid - weighted_ask) / total

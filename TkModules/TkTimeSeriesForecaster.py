@@ -6,6 +6,7 @@ from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkSelfAttention import TkSelfAttention
 from TkModules.TkTCNN import TkTCNN
+from TkModules.TkStateSpace import TkStateSpaceModule
 
 # --------------------------------------------------------------------------------------------------------------
 # Gated residual fusion
@@ -137,6 +138,7 @@ class VQCodeEmbedding(torch.nn.Module):
             torch.nn.LayerNorm(hidden_dim),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(hidden_dim, out_dim),
+            torch.nn.LayerNorm(out_dim),
         )
 
         self._init_weights()
@@ -194,6 +196,13 @@ class ScalarGroupEmbedding(torch.nn.Module):
             if i < len(specification) - 1:
                 self._proj.append( torch.nn.Dropout(dropout) )
         self._proj = torch.nn.ModuleList( self._proj )        
+        self._init_weights()
+
+    def _init_weights(self):        
+        for m in self._proj:
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                torch.nn.init.zeros_(m.bias)
 
     def forward(self, x):
         for _,layer in enumerate(self._proj):
@@ -218,7 +227,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
-        self._lstm_specification = json.loads(_cfg['TimeSeries']['LSTM'])
+        self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
         self._aux_loss_slice = int(_cfg['TimeSeries']['AuxLossSlice']) 
@@ -227,13 +236,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])         
 
-        if len(self._input_slices) != len(self._lstm_specification):
-            raise RuntimeError('InputSlices and LSTM config mismatched!')
+        if len(self._input_slices) != len(self._smm_specification):
+            raise RuntimeError('InputSlices and SMM config mismatched!')
         
         self._fusion_input_dims = []
 
         self._embedding = []
-        self._lstm = []
+        self._smm_proj = []
+        self._smm = []
+        self._smm_norm = []
         self._mlp_input_size = 0
         for i in range(len(self._input_slices)):
             ch0 = self._input_slices[i][0]
@@ -256,17 +267,24 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                     self._embedding.append( VQCodeEmbedding( num_codes, code_dim, embed_dim, hidden_dim, out_dim, dropout ) )
                     slice_size = out_dim
                 elif embedding_type == 'MLP':
-                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, 0.0 ) )
+                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, 0.01 ) )
                     slice_size = embedding_descriptor[-1]
                 else:
                     raise RuntimeError('Unknown embedding type:'+embedding_type)
 
-            self._lstm.append( TkStackedLSTM( slice_size, self._prior_steps_count, self._lstm_specification[i]) )
-            self._mlp_input_size = self._mlp_input_size + self._lstm_specification[i][-1]
-            self._fusion_input_dims.append( self._lstm_specification[i][-1] )
+            state_size = self._smm_specification[i][0]
+            model_size = self._smm_specification[i][1]
+            num_layers = self._smm_specification[i][2]
+            self._smm_proj.append( torch.nn.Linear( slice_size, model_size) )
+            self._smm.append( torch.nn.ModuleList( [ TkStateSpaceModule( model_size, state_size, model_size) for _ in range(num_layers) ] ) )
+            self._smm_norm.append( torch.nn.ModuleList( [ torch.nn.LayerNorm( model_size ) for _ in range(num_layers) ] ) )
+            self._mlp_input_size = self._mlp_input_size + model_size
+            self._fusion_input_dims.append( model_size )
 
         self._embedding = torch.nn.ModuleList( self._embedding )
-        self._lstm = torch.nn.ModuleList( self._lstm )
+        self._smm_proj = torch.nn.ModuleList( self._smm_proj )
+        self._smm = torch.nn.ModuleList( self._smm )
+        self._smm_norm = torch.nn.ModuleList( self._smm_norm )
 
         self._fusion = MultiHeadFusionGRF( 
             input_dims=self._fusion_input_dims, 
@@ -290,15 +308,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # self._y_scale = torch.nn.Parameter(torch.tensor(5.0))
         # self._y_regime_scale = torch.nn.Parameter(torch.tensor(5.0))
         
-        self._lstm_output_tensors = None
+        self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, lstm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, lstm_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
 
-        lstm_decay_params = self._lstm.parameters()
-        lstm_no_decay_params = []
+        smm_decay_params = list(self._smm.parameters()) + list(self._smm_proj.parameters())
+        smm_no_decay_params = list(self._smm_norm.parameters())
         
         mlp_decay_params = []
         mlp_no_decay_params = []
@@ -351,8 +369,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate},
             {"params": embedding_no_decay_params, "weight_decay": 0.0, 'lr': embedding_learning_rate},
-            {"params": lstm_decay_params, "weight_decay": lstm_weight_decay, 'lr': lstm_learning_rate},
-            {"params": lstm_no_decay_params, "weight_decay": 0.0, 'lr': lstm_learning_rate},
+            {"params": smm_decay_params, "weight_decay": smm_weight_decay, 'lr': smm_learning_rate},
+            {"params": smm_no_decay_params, "weight_decay": 0.0, 'lr': smm_learning_rate},
             {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate},
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate},
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate},
@@ -366,10 +384,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def embedding_decay_group_indices(self):
         return [0]
     
-    def lstm_group_indices(self):
+    def smm_group_indices(self):
         return [2,3]
     
-    def lstm_decay_group_indices(self):
+    def smm_decay_group_indices(self):
         return [2]
         
     def mlp_group_indices(self):
@@ -384,8 +402,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def fusion_decay_group_indices(self):
         return [6]
 
-    def lstm_output(self):
-        return self._lstm_output_tensors
+    def smm_output(self):
+        return self._smm_output_tensors
 
     def input_slice(self, idx:int):
         return self._input_slice_tensors[idx]
@@ -397,7 +415,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         input = torch.reshape( input, ( batch_size, self._prior_steps_count, self._input_width) )
 
         self._input_slice_tensors = []
-        self._lstm_output_tensors = []
+        self._smm_output_tensors = []
 
         for i in range(len(self._input_slices)):
             ch0 = self._input_slices[i][0]
@@ -406,28 +424,33 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             input_slice_tensor = input[:, :, ch0:ch1]
             input_slice_tensor = self._embedding[i]( input_slice_tensor )
             self._input_slice_tensors.append( input_slice_tensor )
-            lstm_output = self._lstm[i]( input_slice_tensor )
-            lstm_output = torch.nn.functional.layer_norm( lstm_output, [lstm_output.shape[1]] )
-            self._lstm_output_tensors.append( lstm_output )
+            
+            x = self._smm_proj[i]( input_slice_tensor )
+            for ssm, norm in zip(self._smm[i], self._smm_norm[i]):
+                residual = x
+                x = ssm( x )
+                x = norm( x + residual )                
+            smm_output = x[:, -1, :]
+            self._smm_output_tensors.append( smm_output )
         
-        fused, source_attn, gates = self._fusion(self._lstm_output_tensors)
+        #fused, source_attn, gates = self._fusion(self._smm_output_tensors)
 
-        fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
-        # self._lstm_output_tensors.append( fused )
-        # merged = torch.cat( self._lstm_output_tensors, dim=-1)
+        # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
+        # self._smm_output_tensors.append( fused )
+        merged = torch.cat( self._smm_output_tensors, dim=-1)
 
-        y = self._mlp.forward( fused )
+        y = self._mlp.forward( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
         #y = y / self._y_scale.clamp(2.0, 10.0)
 
         # no fusion case
-        # y = self._mlp.forward( torch.cat( self._lstm_output_tensors, dim=-1) )
+        # y = self._mlp.forward( torch.cat( self._smm_output_tensors, dim=-1) )
 
-        y_regime = self._regime_mlp.forward( fused )
+        y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
         #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
 
-        y_aux = self._aux_mlp.forward( self._lstm_output_tensors[self._aux_loss_slice] )
+        y_aux = self._aux_mlp.forward( self._smm_output_tensors[self._aux_loss_slice] )
         y_aux = torch.reshape( y_aux, (y_aux.shape[0],y_aux.shape[1]*y_aux.shape[2]))
 
         #if not self.training:
@@ -435,9 +458,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
 
         # monitoring feedback
-        self._lstm_output_tensors = fused
-        # self._lstm_output_tensors = gates
-        # self._lstm_output_tensors = self._lstm_output_tensors[self._display_slice]        
+        self._smm_output_tensors = merged
+        # self._smm_output_tensors = gates
+        # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
         return y, y_regime, y_aux
 

@@ -176,12 +176,21 @@ class TkTimeSeriesDataPreprocessor():
         regimes = TkStatistics.price_to_market_regimes(price, self._market_regime_steps_count, self._num_market_regimes)
 
         delta_imbalance = [None] * raw_sample_count
+        order_flow_imbalance = [None] * raw_sample_count
+        queue_imbalance = [None] * raw_sample_count
 
         for i in range( raw_sample_count ):
             if i == 0:
                 delta_imbalance[i] = orderbook[i][5]
+                order_flow_imbalance[i] = 0.0
             else:
                 delta_imbalance[i] = np.subtract( orderbook[i][5], orderbook[i-1][5] )
+                order_flow_imbalance[i] = TkStatistics.depth_weighted_order_flow_imbalance( raw_samples[(i-1)*2], raw_samples[i*2], alpha=1.0 ) # TODO: configure alpha
+            queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], min_price_increment, alpha=1.0 ) # TODO: configure alpha
+
+        order_flow_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_flow_imbalance, half_life=self._market_regime_steps_count )
+        cumulative_order_flow_imbalance_log_ema_norm = TkStatistics.rolling_sum( order_flow_imbalance_log_ema_norm, window=self._future_steps_count )
+        queue_imbalance_ema_norm = TkStatistics.ema_normalize( queue_imbalance, half_life=self._market_regime_steps_count )
 
         last_trades = [None] * raw_sample_count
         
@@ -305,11 +314,9 @@ class TkTimeSeriesDataPreprocessor():
                 ts_input[j].append( orderbook_log_ema_norm_volume[k] )                
                 ts_input[j].append( last_trades_log_ema_norm_volume[k] )
                 ts_input[j].append( last_trades_log_ema_norm_num_events[k] )
-
-                # 4th slice
-                ts_input[j].append( 1.0 if ( orderbook_volume[k] > 0 ) else 0.0 )
-                ts_input[j].append( 1.0 if ( last_trades_volume[k] > 0 ) else 0.0 ) 
-
+                ts_input[j].append( cumulative_order_flow_imbalance_log_ema_norm[k] )
+                ts_input[j].append( queue_imbalance_ema_norm[k] )
+                
             # sample similatiry check
             hasheable_sample.extend( future_trades_code[i].copy() )
             lsh_query = sample_lhs.query( hasheable_sample, num_results=1 )

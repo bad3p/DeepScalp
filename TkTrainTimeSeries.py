@@ -252,11 +252,11 @@ training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
 priority_batch_size = int(config['TimeSeries']['PriorityBatchSize'])
 priority_batch_size_multiplier = TkAnnealing(config['TimeSeries']['PriorityBatchSizeMultiplier'])
 embedding_learning_rate = float(config['TimeSeries']['EmbeddingLearningRate'])
-lstm_learning_rate = float(config['TimeSeries']['LSTMLearningRate'])
+smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
 fusion_learning_rate = TkAnnealing(config['TimeSeries']['FusionLearningRate'])
 mlp_learning_rate = float(config['TimeSeries']['MLPLearningRate'])
 embedding_weight_decay = float(config['TimeSeries']['EmbeddingWeightDecay']) 
-lstm_weight_decay = float(config['TimeSeries']['LSTMWeightDecay']) 
+smm_weight_decay = float(config['TimeSeries']['SMMWeightDecay']) 
 fusion_weight_decay = float(config['TimeSeries']['FusionWeightDecay']) 
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
@@ -274,7 +274,7 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.AdamW(     
-    ts_model.get_trainable_parameters(embedding_weight_decay, lstm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, lstm_learning_rate, fusion_learning_rate, mlp_learning_rate ),
+    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, fusion_learning_rate, mlp_learning_rate ),
     betas=(0.9, 0.98)
 )
 if os.path.isfile(ts_optimizer_path): 
@@ -314,11 +314,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_slice_"+ui_tag )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_slice_"+ui_tag )
                     dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Slice", parent="x_axis_slice_"+ui_tag, tag=ui_tag+"_slice_series" )
-                with dpg.plot(label="LSTM", width=512, height=256):
+                with dpg.plot(label="SMM", width=512, height=256):
                     dpg.add_plot_legend()
-                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_lstm_"+ui_tag )
-                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_lstm_"+ui_tag )
-                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="LSTM", parent="x_axis_lstm_"+ui_tag, tag=ui_tag+"_lstm_series" )
+                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_smm_"+ui_tag )
+                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_smm_"+ui_tag )
+                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="SMM", parent="x_axis_smm_"+ui_tag, tag=ui_tag+"_smm_series" )
                 with dpg.plot(label="Aux", width=384, height=256):
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_aux_"+ui_tag )
@@ -357,25 +357,25 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
 
-    def override_learning_rate(embedding_lr:float, lstm_lr:float, fusion_lr:float, mlp_lr:float):
+    def override_learning_rate(embedding_lr:float, smm_lr:float, fusion_lr:float, mlp_lr:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_group_indices():
             ts_optimizer.param_groups[i]['lr'] = embedding_lr
-        for i in ts_model.lstm_group_indices():
-            ts_optimizer.param_groups[i]['lr'] = lstm_lr
+        for i in ts_model.smm_group_indices():
+            ts_optimizer.param_groups[i]['lr'] = smm_lr
         for i in ts_model.mlp_group_indices():
             ts_optimizer.param_groups[i]['lr'] = mlp_lr
         for i in ts_model.fusion_group_indices():
             ts_optimizer.param_groups[i]['lr'] = fusion_lr
 
-    def override_weight_decay(embedding_decay:float, lstm_decay:float, fusion_decay:float, mlp_decay:float):
+    def override_weight_decay(embedding_decay:float, smm_decay:float, fusion_decay:float, mlp_decay:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_decay_group_indices():
             ts_optimizer.param_groups[i]['weight_decay'] = embedding_decay
-        for i in ts_model.lstm_decay_group_indices():
-            ts_optimizer.param_groups[i]['weight_decay'] = lstm_decay
+        for i in ts_model.smm_decay_group_indices():
+            ts_optimizer.param_groups[i]['weight_decay'] = smm_decay
         for i in ts_model.mlp_decay_group_indices():
             ts_optimizer.param_groups[i]['weight_decay'] = mlp_decay
         for i in ts_model.fusion_decay_group_indices():
@@ -391,17 +391,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         lr_multiplier = learning_rate_multiplier.get_value( ts_smooth_epoch )
         embedding_lr = embedding_learning_rate * lr_multiplier
-        lstm_lr = lstm_learning_rate * lr_multiplier
+        smm_lr = smm_learning_rate * lr_multiplier
         fusion_lr = fusion_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
         mlp_lr = mlp_learning_rate * lr_multiplier
-        override_learning_rate( embedding_lr, lstm_lr, fusion_lr, mlp_lr )
+        override_learning_rate( embedding_lr, smm_lr, fusion_lr, mlp_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
         embedding_decay = embedding_weight_decay * decay_multiplier
-        lstm_decay = lstm_weight_decay * decay_multiplier
+        smm_decay = smm_weight_decay * decay_multiplier
         fusion_decay = fusion_weight_decay * decay_multiplier
         mlp_decay = mlp_weight_decay * decay_multiplier
-        override_weight_decay( embedding_decay, lstm_decay, fusion_decay, mlp_decay )
+        override_weight_decay( embedding_decay, smm_decay, fusion_decay, mlp_decay )
 
         show_priority_sample = not show_priority_sample
 
@@ -450,7 +450,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         ts_optimizer.step()
         y_loss_val = y_recon_loss.item()
 
-        TkUI.set_series_from_tensor("x_axis_lstm_training", "y_axis_lstm_training", "training_lstm_series", ts_model.lstm_output(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_smm_training", "y_axis_smm_training", "training_smm_series", ts_model.smm_output(), display_batch_id)
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
@@ -510,7 +510,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         y_accuracy = y_accuracy.mean()
         y_accuracy_val = y_accuracy.item()
         
-        TkUI.set_series_from_tensor("x_axis_lstm_test", "y_axis_lstm_test", "test_lstm_series", ts_model.lstm_output(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_smm_test", "y_axis_smm_test", "test_smm_series", ts_model.smm_output(), display_batch_id)
 
         dpg.render_dearpygui_frame()
 
