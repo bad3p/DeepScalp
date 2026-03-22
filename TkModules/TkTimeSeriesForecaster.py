@@ -192,7 +192,7 @@ class ScalarGroupEmbedding(torch.nn.Module):
             self._proj.append( torch.nn.Linear( in_channels if i == 0 else specification[i-1], specification[i] ) )
             self._proj.append( torch.nn.LayerNorm(specification[i]) )
             if i < len(specification) - 1:
-                self._proj.append( torch.nn.GELU() )
+                self._proj.append( torch.nn.SiLU() )
             if i < len(specification) - 1:
                 self._proj.append( torch.nn.Dropout(dropout) )
         self._proj = torch.nn.ModuleList( self._proj )        
@@ -229,9 +229,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
-        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
-        self._aux_loss_slice = int(_cfg['TimeSeries']['AuxLossSlice']) 
-        self._aux_mlp = TkModel( json.loads(_cfg['TimeSeries']['AuxMLP']) )
+        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])         
@@ -348,14 +346,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 mlp_no_decay_params.append(param)
 
-        for name, param in self._aux_mlp.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
         for name, param in self._fusion.named_parameters():
             if not param.requires_grad:
                 continue
@@ -432,12 +422,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 x = norm( x + residual )                
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
-        
-        #fused, source_attn, gates = self._fusion(self._smm_output_tensors)
+
+        #merged = torch.cat( self._smm_output_tensors, dim=-1)
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors)
+        merged = fused
 
         # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
         # self._smm_output_tensors.append( fused )
-        merged = torch.cat( self._smm_output_tensors, dim=-1)
+        # merged = torch.cat( self._smm_output_tensors, dim=-1)
 
         y = self._mlp.forward( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
@@ -450,19 +442,19 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
         #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
 
-        y_aux = self._aux_mlp.forward( self._smm_output_tensors[self._aux_loss_slice] )
-        y_aux = torch.reshape( y_aux, (y_aux.shape[0],y_aux.shape[1]*y_aux.shape[2]))
-
         #if not self.training:
         #    y = torch.nn.functional.softmax(y, dim=1)
         #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
 
         # monitoring feedback
-        self._smm_output_tensors = merged
+        if self.training:
+            self._smm_output_tensors = merged
+        else:
+            self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)
         # self._smm_output_tensors = gates
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
-        return y, y_regime, y_aux
+        return y, y_regime
 
     @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):

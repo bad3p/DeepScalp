@@ -32,8 +32,6 @@ from TkModules.TkIO import TkIO
 from TkModules.TkInstrument import TkInstrument
 from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
-from TkModules.TkOrderbookAutoencoder import TkOrderbookAutoencoder
-from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -42,41 +40,20 @@ class TkTimeSeriesDataPreprocessor():
     def __init__(self, _cfg : configparser.ConfigParser):
 
         self._cuda = torch.device("cuda")
-
-        orderbook_model_path = join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['OrderbookAutoencoderModelFileName'] )
         
-        if not os.path.isfile(orderbook_model_path):
-            raise RuntimeError('Orderbook autoencoder model is missing!')
-
-        self._orderbook_autoencoder = TkOrderbookAutoencoder(_cfg)
-        self._orderbook_autoencoder.to(self._cuda)
-        self._orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
-        self._orderbook_autoencoder.eval()
-
-        last_trades_model_path = join( _cfg['Paths']['ModelsPath'], _cfg['Paths']['LastTradesAutoencoderModelFileName'] )
-
-        if not os.path.isfile(last_trades_model_path):
-            raise RuntimeError('Last trades autoencoder model is missing!')
-
-        self._last_trades_autoencoder = TkLastTradesAutoencoder(_cfg)
-        self._last_trades_autoencoder.to(self._cuda)
-        self._last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))        
-        self._last_trades_autoencoder.eval()
-
-        self._orderbook_width = int(_cfg['Autoencoders']['OrderbookWidth'])
-        self._orderbook_depth = int(_cfg['Autoencoders']['OrderbookDepth'])
-        self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
-        self._last_trades_depth = int(_cfg['Autoencoders']['LastTradesDepth'])
-        self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])        
-        self._test_data_ratio = float(_cfg['Autoencoders']['TestDataRatio'])
-        self._orderbook_autoencoder_code_layer_size = int(_cfg['Autoencoders']['OrderbookAutoencoderCodeLayerSize'])
-        self._last_trades_autoencoder_code_layer_size = int(_cfg['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
+        self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])                
 
         self._data_path = _cfg['Paths']['DataPath']
         self._time_series_index_filename = _cfg['Paths']['TimeSeriesIndexFileName']
         self._time_series_training_data_filename = _cfg['Paths']['TimeSeriesTrainingDataFileName']
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
 
+        self._orderbook_width = int(_cfg['Autoencoders']['OrderbookWidth'])
+        self._orderbook_depth = int(_cfg['Autoencoders']['OrderbookDepth'])
+        self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
+        self._last_trades_depth = int(_cfg['Autoencoders']['LastTradesDepth'])
+
+        self._test_data_ratio = float(_cfg['TimeSeries']['TestDataRatio'])
         self._lshash_size = int(_cfg['TimeSeries']['LSHashSize'])
         self._ts_sample_similatiry = float(_cfg['TimeSeries']['TSSampleSimilatiry'])
         self._ts_data_stride = int(_cfg['TimeSeries']['TSDataStride'])
@@ -148,43 +125,46 @@ class TkTimeSeriesDataPreprocessor():
         price = [0.0] * raw_sample_count
         spread = [0.0] * raw_sample_count
         orderbook_volume = [0] * raw_sample_count
+        orderbook_slope = [0] * raw_sample_count
+        orderbook_microprice = [0] * raw_sample_count
         last_trades_volume = [0] * raw_sample_count
         last_trades_num_events = [0] * raw_sample_count
-        orderbook = [None] * raw_sample_count
-        last_trades = [None] * raw_sample_count        
+        trade_flow_imbalance = [0] * raw_sample_count
 
         last_trades_time_threshold = None
 
         for i in range( raw_sample_count ):
 
             orderbook_sample = raw_samples[i*2]
-            orderbook_tensor, _, pivot_price, volume = TkStatistics.orderbook_to_tensor( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )            
+            orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )            
             price[i] = pivot_price
             spread[i] = TkStatistics.orderbook_spread( orderbook_sample, self._orderbook_width, min_price_increment * self._min_price_increment_factor )
             orderbook_volume[i] = volume
-            orderbook[i] = orderbook_tensor
+            orderbook_slope[i] = slope
+            orderbook_microprice[i] = microprice
 
             last_trades_samples = [ (raw_samples[i*2+1], last_trades_time_threshold) ]
-            last_trades_tensor, _, num_events, volume, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
+            last_trades_tensor, _, num_events, volume, buy_trades, sell_trades, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor )
             last_trades_volume[i] = volume
             last_trades_num_events[i] = num_events
-            last_trades[i] = last_trades_tensor
+            trade_flow_imbalance[i] = (buy_trades - sell_trades) / max(1.0, buy_trades + sell_trades)
 
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts
 
+        trade_flow_imbalance_ema_norm = TkStatistics.ema_normalize( trade_flow_imbalance, half_life=self._market_regime_steps_count ).tolist()
+        orderbook_slope_ema_norm = TkStatistics.ema_normalize( orderbook_slope, half_life=self._market_regime_steps_count ).tolist()
+        orderbook_microprice_ema_norm = TkStatistics.ema_normalize( orderbook_microprice, half_life=self._market_regime_steps_count ).tolist()
+
         regimes = TkStatistics.price_to_market_regimes(price, self._market_regime_steps_count, self._num_market_regimes)
 
-        delta_imbalance = [None] * raw_sample_count
         order_flow_imbalance = [None] * raw_sample_count
         queue_imbalance = [None] * raw_sample_count
 
         for i in range( raw_sample_count ):
             if i == 0:
-                delta_imbalance[i] = orderbook[i][5]
                 order_flow_imbalance[i] = 0.0
             else:
-                delta_imbalance[i] = np.subtract( orderbook[i][5], orderbook[i-1][5] )
                 order_flow_imbalance[i] = TkStatistics.depth_weighted_order_flow_imbalance( raw_samples[(i-1)*2], raw_samples[i*2], alpha=1.0 ) # TODO: configure alpha
             queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], min_price_increment, alpha=1.0 ) # TODO: configure alpha
 
@@ -192,44 +172,11 @@ class TkTimeSeriesDataPreprocessor():
         cumulative_order_flow_imbalance_log_ema_norm = TkStatistics.rolling_sum( order_flow_imbalance_log_ema_norm, window=self._future_steps_count )
         queue_imbalance_ema_norm = TkStatistics.ema_normalize( queue_imbalance, half_life=self._market_regime_steps_count )
 
-        last_trades = [None] * raw_sample_count
-        
-        # offset last trades per TS sample:
-        # * instead of using the shared array of last trades bound to correlated price level
-        # * made separate array of last trades for each sample and compute last trades in this array with the same pivot price, bound to the base price of whole TS sample
-
-        for i in range( raw_sample_count ):
-            last_trades[i] = []
-            for j in range( self._prior_steps_count ):
-                k = i - self._prior_steps_count + j + 1
-                k = max(0, k)
-                last_trades_time_threshold = raw_samples[(k-1)*2].orderbook_ts if ( k > 0 ) else None
-                last_trades_samples = [ (raw_samples[k*2+1], last_trades_time_threshold) ]
-                last_trades_tensor, _, num_events, volume, last_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, price[i], self._last_trades_width, min_price_increment * self._min_price_increment_factor )
-                last_trades[i].append( last_trades_tensor )
-
-        last_trades = list(itertools.chain.from_iterable(last_trades))
-
         price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( price, half_life=self._market_regime_steps_count ).tolist()
         orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( orderbook_volume, half_life=self._market_regime_steps_count ).tolist()
         last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( last_trades_volume, half_life=self._market_regime_steps_count ).tolist()
         last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( last_trades_num_events, half_life=self._market_regime_steps_count ).tolist()
         spread_log_ema_norm = TkStatistics.log_ema_normalize( spread, half_life=self._market_regime_steps_count ).tolist()
-
-        orderbook_input = torch.Tensor( np.concatenate( orderbook ) )
-        orderbook_input = torch.reshape( orderbook_input, ( raw_sample_count, self._orderbook_depth, self._orderbook_width ) )
-        orderbook_input = orderbook_input.cuda()
-        orderbook_code = self._orderbook_autoencoder.encode(orderbook_input)
-        orderbook_code = torch.reshape( orderbook_code, (raw_sample_count, self._orderbook_autoencoder_code_layer_size ) )
-        orderbook_code = orderbook_code.tolist()
-
-        last_trades_input = torch.Tensor( np.concatenate( last_trades ) )
-        last_trades_input = torch.reshape( last_trades_input, ( raw_sample_count * self._prior_steps_count, self._last_trades_depth, self._last_trades_width ) )
-        last_trades_input = last_trades_input.cuda()
-        last_trades_code = self._last_trades_autoencoder.encode(last_trades_input)
-        last_trades_code = torch.reshape( last_trades_code, (raw_sample_count * self._prior_steps_count, self._last_trades_autoencoder_code_layer_size ) )
-        last_trades_code = last_trades_code.tolist()
-        last_trades_code = TkTimeSeriesDataPreprocessor.to_list_of_lists(last_trades_code, self._prior_steps_count)
 
         start_range = self._prior_steps_count - 1
         end_range = raw_sample_count - self._future_steps_count - 1
@@ -249,28 +196,17 @@ class TkTimeSeriesDataPreprocessor():
                 prev_orderbook_sample = raw_samples[(i+j-1)*2]
                 last_trades_samples.append( ( raw_samples[(i+j)*2+1], prev_orderbook_sample.orderbook_ts ) )
 
-            future_last_trades_tensor, _, num_future_events, future_volume, future_last_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, force_categorical=True )
+            future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, self._last_trades_width, min_price_increment * self._min_price_increment_factor, force_categorical=True )
             
             future_trades[i] = future_last_trades_tensor
             future_trades_volume[i] = future_volume
-            future_trades_tails[i] = future_last_trades_mean_tails
-
-        future_trades_input = [future_trades[i] for i in range(start_range, end_range+1)]
-        future_trades_input = torch.Tensor( np.concatenate( future_trades_input ) )
-        future_trades_input = torch.reshape( future_trades_input, ( (end_range+1-start_range), self._last_trades_depth, self._last_trades_width ) )
-        future_trades_input = future_trades_input.cuda()
-        future_trades_code = self._last_trades_autoencoder.encode(future_trades_input)
-        future_trades_code = torch.reshape( future_trades_code, ( (end_range+1-start_range), self._last_trades_autoencoder_code_layer_size ) )
-        future_trades_code = future_trades_code.tolist()
-
-        for i in range( start_range ):
-            future_trades_code.insert( 0, None )
+            future_trades_tails[i] = future_trades_mean_tails
 
         # combine data samples
 
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
-        hasheable_sample_width = self._orderbook_autoencoder_code_layer_size * self._prior_steps_count + self._last_trades_autoencoder_code_layer_size * ( self._prior_steps_count + 1 )
+        hasheable_sample_width = 11 * self._prior_steps_count # == sizeof ts_input[] 
         sample_lhs = LSHash(self._lshash_size, hasheable_sample_width) 
         step = 0
 
@@ -288,47 +224,41 @@ class TkTimeSeriesDataPreprocessor():
             #ts_base_last_trades_volume = sum( last_trades_volume[i0:i1] ) / self._prior_steps_count
             #ts_base_last_trades_num_events = sum( last_trades_num_events[i0:i1] ) / self._prior_steps_count
 
-            hasheable_sample = []
-
             for j in range( self._prior_steps_count ):
                 k = i-self._prior_steps_count+j+1
 
-                # 1st slice
-                ts_input[j] = orderbook_code[k].copy()
-                hasheable_sample.extend( orderbook_code[k].copy() )
+                ts_input[j] = []
 
-                # 2nd slice
-                if last_trades_volume[k] > 0:
-                    ts_input[j].extend( last_trades_code[i][j].copy() )
-                    hasheable_sample.extend( last_trades_code[i][j].copy() )
-                else:
-                    all_zeroes = [0] * len(last_trades_code[i][j])
-                    ts_input[j].extend( all_zeroes )
-                    hasheable_sample.extend( all_zeroes )
-
-                # 3rd slice
-                ts_sample_price = math.log( price[k] ) - math.log( ts_base_price )
-                ts_input[j].append( ts_sample_price )
+                # slice 1 : price and volatility
+                ts_input[j].append( math.log( price[k] ) - math.log( ts_base_price ) )
                 ts_input[j].append( price_log_ema_volatility[k] )
+
+                # slice 2 : liquidity and spread
                 ts_input[j].append( spread_log_ema_norm[k] )            
-                ts_input[j].append( orderbook_log_ema_norm_volume[k] )                
+                ts_input[j].append( orderbook_log_ema_norm_volume[k] )
+
+                # slice 3 : orderbook structure (shape + microprice)
+                ts_input[j].append( orderbook_slope_ema_norm[k] )
+                ts_input[j].append( orderbook_microprice_ema_norm[k] )
+                ts_input[j].append( queue_imbalance_ema_norm[k] )
+
+                # slice 4 : trade activity / trade flow intensity
                 ts_input[j].append( last_trades_log_ema_norm_volume[k] )
                 ts_input[j].append( last_trades_log_ema_norm_num_events[k] )
-                ts_input[j].append( cumulative_order_flow_imbalance_log_ema_norm[k] )
-                ts_input[j].append( queue_imbalance_ema_norm[k] )
+
+                # slice 5 : flow imbalance
+                ts_input[j].append( cumulative_order_flow_imbalance_log_ema_norm[k] )                
+                ts_input[j].append( trade_flow_imbalance_ema_norm[k] )
                 
+            ts_input = list( itertools.chain.from_iterable(ts_input) )
+            ts_target = future_trades[i].tolist()
+
             # sample similatiry check
-            hasheable_sample.extend( future_trades_code[i].copy() )
-            lsh_query = sample_lhs.query( hasheable_sample, num_results=1 )
+            lsh_query = sample_lhs.query( ts_input, num_results=1 )
             if len(lsh_query) > 0 and lsh_query[0][1] <= self._ts_sample_similatiry:
                 print( "Too similar sample, skipped: ", lsh_query[0][1])
                 continue
-            sample_lhs.index( hasheable_sample )
-                
-            ts_input = list( itertools.chain.from_iterable(ts_input) )        
-            ts_target_code = future_trades_code[i].copy()
-            ts_target = future_trades[i].tolist()
-            ts_aux_target = delta_imbalance[i+1] # safe since we alway have >= 1 steps ahead (it's what we to predict)
+            sample_lhs.index( ts_input )
 
             verbalize = True
             if is_test_data_source:
@@ -338,9 +268,7 @@ class TkTimeSeriesDataPreprocessor():
                 if (step-1) % self._ts_data_stride == 0 or is_priority_sample:
                     self._test_index.append( self._test_data_offset )
                     TkIO.write_to_file( self._test_data_stream, ts_input )
-                    TkIO.write_to_file( self._test_data_stream, ts_target_code )
                     TkIO.write_to_file( self._test_data_stream, ts_target )
-                    TkIO.write_to_file( self._test_data_stream, ts_aux_target )
                     TkIO.write_to_file( self._test_data_stream, ts_regime )
                     self._test_data_offset = self._test_data_stream.tell()
                     verbalize = is_priority_sample
@@ -355,9 +283,7 @@ class TkTimeSeriesDataPreprocessor():
                         self._regular_table.append( len(self._training_index) )
                     self._training_index.append( self._training_data_offset )
                     TkIO.write_to_file( self._training_data_stream, ts_input )
-                    TkIO.write_to_file( self._training_data_stream, ts_target_code )
                     TkIO.write_to_file( self._training_data_stream, ts_target )
-                    TkIO.write_to_file( self._training_data_stream, ts_aux_target )
                     TkIO.write_to_file( self._training_data_stream, ts_regime )
                     self._training_data_offset = self._training_data_stream.tell()
                     verbalize = is_priority_sample

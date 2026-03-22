@@ -33,9 +33,8 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
-from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
-from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 from TkModules.TkSSIM import MS_SSIM_1D_Loss
+from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 from TkModules.TkAnnealing import TkAnnealing
 
 #------------------------------------------------------------------------------------------------------------------------
@@ -81,9 +80,7 @@ class TkTimeSeriesDataLoader():
         self._test_data_stream = open( join(self._data_path, self._time_series_test_data_filename), 'rb+')
 
         self._input_samples = None
-        self._target_code_samples = None
         self._target_true_samples = None
-        self._aux_target_samples = None
         self._regime_samples = None
         self._loading_thread = None
 
@@ -157,20 +154,16 @@ class TkTimeSeriesDataLoader():
     def get_training_sample(self, idx : int):
         self._training_data_stream.seek( self._training_index[idx], 0 )
         input_sample = TkIO.read_from_file( self._training_data_stream )
-        target_code_sample = TkIO.read_from_file( self._training_data_stream )
         target_true_sample = TkIO.read_from_file( self._training_data_stream )
-        aux_target_sample = TkIO.read_from_file( self._training_data_stream )
         regime_sample = TkIO.read_from_file( self._training_data_stream )
-        return input_sample, target_code_sample, target_true_sample, aux_target_sample, regime_sample
+        return input_sample, target_true_sample, regime_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
         input_sample = TkIO.read_from_file( self._test_data_stream )
-        target_code_sample = TkIO.read_from_file( self._test_data_stream )
         target_true_sample = TkIO.read_from_file( self._test_data_stream )
-        aux_target_sample = TkIO.read_from_file( self._test_data_stream )
         regime_sample = TkIO.read_from_file( self._test_data_stream )
-        return input_sample, target_code_sample, target_true_sample, aux_target_sample, regime_sample
+        return input_sample, target_true_sample, regime_sample
 
     def start_load_training_data(self):
         if self._loading_thread != None:
@@ -178,18 +171,14 @@ class TkTimeSeriesDataLoader():
 
         def load_training_data_thread():            
             self._input_samples = [None] * self._training_batch_size
-            self._target_code_samples = [None] * self._training_batch_size
             self._target_true_samples = [None] * self._training_batch_size
-            self._aux_target_samples = [None] * self._training_batch_size
             self._regime_samples = [None] * self._training_batch_size
             indices = self.get_training_indices()
             indices.sort()
             for batch_id in range(self._training_batch_size):
-                input_sample, target_code_sample, target_true_sample, aux_target_sample, regime_sample = self.get_training_sample( indices[batch_id] )
+                input_sample, target_true_sample, regime_sample = self.get_training_sample( indices[batch_id] )
                 self._input_samples[batch_id] = input_sample
-                self._target_code_samples[batch_id] = target_code_sample
                 self._target_true_samples[batch_id] = target_true_sample
-                self._aux_target_samples[batch_id] = aux_target_sample
                 self._regime_samples[batch_id] = [regime_sample]
                         
         self._loading_thread = threading.Thread( target=load_training_data_thread )
@@ -201,19 +190,15 @@ class TkTimeSeriesDataLoader():
 
         def load_test_data_thread():
             self._input_samples = [None] * self._test_batch_size
-            self._target_code_samples = [None] * self._test_batch_size
             self._target_true_samples = [None] * self._test_batch_size
-            self._aux_target_samples = [None] * self._test_batch_size
             self._regime_samples = [None] * self._test_batch_size
             for batch_id in range(self._test_batch_size):
-                input_sample, target_code_sample, target_true_sample, aux_target_sample, regime_sample = self.get_test_sample( self._test_sample_id )
+                input_sample, target_true_sample, regime_sample = self.get_test_sample( self._test_sample_id )
                 self._test_sample_id = self._test_sample_id + 1
                 if self._test_sample_id >= len(self._test_index):
                     self._test_sample_id = 0
-                self._input_samples[batch_id] = input_sample
-                self._target_code_samples[batch_id] = target_code_sample
+                self._input_samples[batch_id] = input_sample                
                 self._target_true_samples[batch_id] = target_true_sample
-                self._aux_target_samples[batch_id] = aux_target_sample
                 self._regime_samples[batch_id] = [regime_sample]
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
@@ -224,7 +209,7 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is not active!')
         self._loading_thread.join()
         self._loading_thread = None
-        return self._input_samples, self._target_code_samples, self._target_true_samples, self._aux_target_samples, self._regime_samples
+        return self._input_samples, self._target_true_samples, self._regime_samples
          
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -261,10 +246,8 @@ fusion_weight_decay = float(config['TimeSeries']['FusionWeightDecay'])
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
 regime_loss_weight = float(config['TimeSeries']['RegimeLossWeight']) 
-aux_loss_weight = float(config['TimeSeries']['AuxLossWeight']) 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
-aux_target_channel = int( config['Autoencoders']['OrderbookAuxTargetChannel'] ) 
 learning_rate_multiplier = TkAnnealing(config['TimeSeries']['LearningRateMultiplier']) 
 weight_decay_multiplier = TkAnnealing(config['TimeSeries']['WeightDecayMultiplier']) 
 cooldown = float( config['TimeSeries']['Cooldown'] )
@@ -280,7 +263,6 @@ ts_optimizer = torch.optim.AdamW(
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
-ts_aux_loss = torch.nn.HuberLoss(reduction="none")
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
@@ -405,7 +387,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         show_priority_sample = not show_priority_sample
 
-        input_samples, target_code_samples, target_true_samples, aux_target_samples, regime_samples = data_loader.complete_loading()
+        input_samples, target_true_samples, regime_samples = data_loader.complete_loading()
         test_batch_size = data_loader.test_batch_size()        
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
@@ -418,13 +400,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
         target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )
 
-        aux_target = torch.Tensor( list( itertools.chain.from_iterable(aux_target_samples) ) )
-        #aux_target = torch.reshape( aux_target, ( training_batch_size, orderbook_depth, orderbook_width) )
-        aux_target = aux_target.to(cuda)
-        #aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
-        aux_target = torch.reshape( aux_target, ( training_batch_size, orderbook_width) )
-        aux_target = aux_target[:, :aux_target.shape[-1] // 2] # imbalance is symmetric, so we only target half of it
-
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
         target_regime = torch.reshape( target_regime, ( training_batch_size, 1) )
         target_regime = target_regime.to(cuda)
@@ -433,17 +408,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y, y_regime, y_aux = ts_model.forward( input )
+        y, y_regime = ts_model.forward( input )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", y_aux, display_batch_id) # torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # 
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", aux_target, display_batch_id) # target_regime, display_batch_id) #
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", target_regime, display_batch_id) 
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
 
         y_recon_loss = ts_loss( y, target_true ).mean()
-        y_loss = y_recon_loss + ts_aux_loss( y_aux, aux_target ).mean() * aux_loss_weight + ts_regime_loss( y_regime, target_regime ).mean() * regime_loss_weight
+        y_loss = y_recon_loss + ts_regime_loss( y_regime, target_regime ).mean() * regime_loss_weight
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
@@ -459,7 +434,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        input_samples, target_code_samples, target_true_samples, aux_target_samples, regime_samples = data_loader.complete_loading()
+        input_samples, target_true_samples, regime_samples = data_loader.complete_loading()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( test_batch_size, prior_steps_count * input_width) )
@@ -469,13 +444,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = torch.reshape( target_true, ( test_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
-
-        aux_target = torch.Tensor( list( itertools.chain.from_iterable(aux_target_samples) ) )
-        #aux_target = torch.reshape( aux_target, ( test_batch_size, orderbook_depth, orderbook_width) )
-        aux_target = aux_target.to(cuda)
-        #aux_target = aux_target[:, (aux_target_channel):(aux_target_channel+1), :]
-        aux_target = torch.reshape( aux_target, ( test_batch_size, orderbook_width) )
-        aux_target = aux_target[:, :aux_target.shape[-1] // 2] # imbalance is symmetric, so we only target half of it
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
         target_regime = torch.reshape( target_regime, ( test_batch_size, 1) )
@@ -488,13 +456,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y, y_regime, y_aux = ts_model.forward( input )
+        y, y_regime = ts_model.forward( input )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", y_aux, display_batch_id) # torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id) # 
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", aux_target, display_batch_id) # target_regime, display_batch_id) # 
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", target_regime, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id) # y, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", target_true, display_batch_id)        
 
@@ -504,7 +472,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
 
         y = torch.reshape( y, (y.shape[0],1,y.shape[1]) )
-        y_aux = torch.reshape( y_aux, (y_aux.shape[0],1,y_aux.shape[1]) )
         
         y_accuracy = ts_recon_accuracy( y, target_true ).detach()
         y_accuracy = y_accuracy.mean()

@@ -145,6 +145,9 @@ class TkModel(torch.nn.Module):
         def create_gelu_layer(params : list):
             return torch.nn.GELU()
 
+        def create_silu_layer(params : list):
+            return torch.nn.SiLU()
+
         def create_prelu_layer(params : list):
             channels = params[0]
             alpha = params[1]
@@ -230,6 +233,8 @@ class TkModel(torch.nn.Module):
                 return create_elu_layer( layer_descriptor[layer_type] )
             if layer_type == 'GELU':
                 return create_gelu_layer( layer_descriptor[layer_type] )
+            if layer_type == 'SiLU':
+                return create_silu_layer( layer_descriptor[layer_type] )
             if layer_type == 'PReLU':
                 return create_prelu_layer( layer_descriptor[layer_type] )
             if layer_type == 'Sigmoid':

@@ -459,11 +459,13 @@ class TkStatistics():
         bid_delta_price = [ math.log( price / pivot_price ) for price in bid_price]
         ask_delta_price = [ math.log( price / pivot_price ) for price in ask_price]
 
-        total_bid_volume = 0        
+        order_book_slope = 0
+        total_bid_volume = 0
+        weighted_bid = 0        
 
         bid_volume = np.empty( len(bid_price), dtype=float)
         bid_volume.fill(0)
-        
+
         for bid in orderbook.bids:
             price = quotation_to_float( bid.price )
             if price > pivot_price:
@@ -473,8 +475,11 @@ class TkStatistics():
             assert almost_equal(price, bid_price[index]) if index < int(orderbook_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
             total_bid_volume = total_bid_volume + bid.quantity
             bid_volume[index] = bid_volume[index] + bid.quantity
+            weighted_bid = weighted_bid + price * bid.quantity
+            order_book_slope = order_book_slope + bid.quantity * (price - pivot_price)
 
-        total_ask_volume = 0            
+        total_ask_volume = 0
+        weighted_ask = 0
 
         ask_volume = np.empty( len(ask_price), dtype=float)
         ask_volume.fill(0) 
@@ -488,6 +493,8 @@ class TkStatistics():
             assert almost_equal(price, ask_price[index]) if index < int(orderbook_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
             total_ask_volume = total_ask_volume + ask.quantity
             ask_volume[index] = ask_volume[index] + ask.quantity
+            weighted_ask = weighted_ask + price * ask.quantity
+            order_book_slope = order_book_slope + ask.quantity * (price - pivot_price)
 
         bid_imbalance = np.empty( len(bid_volume), dtype=float)
         bid_imbalance.fill(0)
@@ -552,8 +559,24 @@ class TkStatistics():
 
         hasheable_tensor = np.multiply( delta_price_tensor, np.add( bid_volume_tensor, ask_volume_tensor ) )
 
+        order_book_slope = order_book_slope / max(1, total_bid_volume + total_ask_volume)
+
+        microprice = 0.0
+
+        if len(orderbook.bids) > 0 and len(orderbook.asks) > 0:
+
+            best_bid_volume = orderbook.bids[0].quantity
+            best_bid_price = quotation_to_float( orderbook.bids[0].price )
+
+            best_ask_volume = orderbook.asks[0].quantity
+            best_ask_price = quotation_to_float( orderbook.asks[0].price )
+        
+            midprice = ( best_bid_price + best_ask_price ) / 2            
+            microprice = ( best_ask_price * best_bid_volume + best_bid_price * best_ask_volume ) / ( best_bid_volume + best_ask_volume )
+            microprice = midprice - microprice
+
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
-        return result_tensor.T, hasheable_tensor, pivot_price, (total_bid_volume + total_ask_volume)
+        return result_tensor.T, hasheable_tensor, pivot_price, (total_bid_volume + total_ask_volume), order_book_slope, microprice
 
     #------------------------------------------------------------------------------------------------------------------------
     # For the given list of anonymized trades, the method returns distrubution of order volumes,
@@ -588,6 +611,9 @@ class TkStatistics():
         ask_volume = np.empty( len(ask_price), dtype=float)
         ask_volume.fill( 0 )
 
+        total_buy_trades = 0
+        total_sell_trades = 0
+
         for i in range(len(trades_with_time_threshold)):
 
             trades = trades_with_time_threshold[i][0]
@@ -604,11 +630,13 @@ class TkStatistics():
                     assert almost_equal(price, bid_price[index]) if index < int(distribution_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
                     total_volume = total_volume + trade.quantity
                     bid_volume[index] = bid_volume[index] + trade.quantity
+                    total_sell_trades = total_sell_trades + trade.quantity
                 else:
                     index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 )
                     assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
                     total_volume = total_volume + trade.quantity
                     ask_volume[index] = ask_volume[index] + trade.quantity
+                    total_buy_trades = total_buy_trades + trade.quantity
 
         if total_volume == 0 and force_categorical:
             total_volume = 1
@@ -638,7 +666,7 @@ class TkStatistics():
         left_tail, right_tail = TkStatistics.get_distribution_tail_means( normalized_volume_tensor, abs_delta_price_tensor, measure_distribution_tail_order )
 
         # transpose result_tensor to make it ready to be pytorch-convertible (1,C,W)
-        return result_tensor.T, hasheable_tensor, total_event_count, total_volume, (left_tail, right_tail)
+        return result_tensor.T, hasheable_tensor, total_event_count, total_volume, total_buy_trades, total_sell_trades, (left_tail, right_tail)
 
     #------------------------------------------------------------------------------------------------------------------------
     # Performs EMA normalization for the given sequence
