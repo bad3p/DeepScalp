@@ -444,6 +444,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = torch.reshape( target_true, ( test_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        target_true = torch.reshape( target_true, (test_batch_size, target_true_width) )
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
         target_regime = torch.reshape( target_regime, ( test_batch_size, 1) )

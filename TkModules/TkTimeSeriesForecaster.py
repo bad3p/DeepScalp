@@ -57,7 +57,15 @@ class MultiHeadFusionGRF(torch.nn.Module):
         self.norm = torch.nn.LayerNorm(embed_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, inputs):
+        # 5) Positional Encoding
+
+        self.pos_fusion = torch.nn.Linear(embed_dim * 2, embed_dim)
+
+        # 6) CLS token
+        self.cls_token = torch.nn.Parameter( torch.randn(1, 1, embed_dim) * 0.02 )
+        self.cls_pos = torch.nn.Parameter( torch.randn(1, 1, embed_dim) * 0.02 )
+
+    def forward(self, inputs, pos_encoding = None):
 
         # Project to shared embedding
         x = torch.stack(
@@ -65,45 +73,36 @@ class MultiHeadFusionGRF(torch.nn.Module):
             dim=1
         )  # (B, N, D)
 
-        # Build global context 
-        context_scores = self.context_attn(x).squeeze(-1)
-        context_weights = torch.softmax(context_scores, dim=1)
-        context = torch.sum(x * context_weights.unsqueeze(-1), dim=1, keepdim=True)
+        if pos_encoding is not None:
+            x = torch.cat([x, pos_encoding.expand(x.size(0), -1, -1)], dim=-1)
+            x = self.pos_fusion(x)
 
-        # Contextual attention
-        # Q = context, K/V = sources
-        attn_out, attn_weights = self.mha(context, x, x, need_weights=True)
+        # Build global context with CLS
+        B = x.size(0)
+        cls = self.cls_token.expand(B, -1, -1)
+        cls_pos = self.cls_pos.expand(B, -1, -1)
+        cls = torch.cat([cls, cls_pos], dim=-1)
+        cls = self.pos_fusion(cls)
+        x_with_cls = torch.cat([cls, x], dim=1)  # (B, N+1, D)
 
-        # Broadcast attended context back to tokens
-        attn_out = attn_out.expand(-1, x.size(1), -1)  # (B, N, D)
+        # Full self-attention (CLS attends to all)
+        attn_out, attn_weights = self.mha( x_with_cls, x_with_cls, x_with_cls, need_weights=True )
+
+        # Split back
+        cls_out = attn_out[:, 0:1, :]   # (B, 1, D)
+        token_out = attn_out[:, 1:, :]  # (B, N, D)
 
         # Gated residual fusion
-        gate_input = torch.cat([x, attn_out], dim=-1)  # (B, N, 2D)
-        g = self.gate(gate_input)                      # (B, N, D)
-
-        fused_tokens = g * attn_out + (1.0 - g) * x
+        gate_input = torch.cat([x, token_out], dim=-1)
+        g = self.gate(gate_input)
+        fused_tokens = g * token_out + (1.0 - g) * x
 
         # Normalize
         fused_tokens = self.norm(fused_tokens)
         fused_tokens = self.dropout(fused_tokens)
 
-        # Pool across inputs
-        if self.pooling == "mean":
-            fused = fused_tokens.mean(dim=1)
-
-        elif self.pooling == "max":
-            fused, _ = fused_tokens.max(dim=1)
-
-        elif self.pooling == "attn":
-            scores = self.pool_attn(fused_tokens).squeeze(-1)
-            weights = torch.softmax(scores, dim=1)
-            fused = torch.sum(
-                fused_tokens * weights.unsqueeze(-1),
-                dim=1
-            )
-
-        else:
-            raise ValueError(f"Unknown pooling: {self.pooling}")
+        # CLS-pool across inputs
+        fused = cls_out.squeeze(1)  # (B, D)
 
         return fused, attn_weights, g
 
@@ -236,6 +235,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
+
+        self._source_pos_embedding = torch.nn.Parameter( torch.randn(1, len(self._input_slices), self._fusion_embedding_dims) * 0.02 )
         
         self._fusion_input_dims = []
 
@@ -354,7 +355,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 fusion_no_decay_params.append(param)
 
-        # other = [ self._y_scale, self._y_regime_scale ]
+        other = [ self._source_pos_embedding ]
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate},
@@ -365,7 +366,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate},
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate},
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate},
-            #{"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
+            {"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
         ]
     
     def embedding_group_indices(self):
@@ -424,7 +425,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._smm_output_tensors.append( smm_output )
 
         #merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors)
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         merged = fused
 
         # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
