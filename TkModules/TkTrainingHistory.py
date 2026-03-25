@@ -201,6 +201,10 @@ class TkTimeSeriesTrainingHistory():
     def epoch_accuracy_history(self):
         return [self._epoch_accuracy_history[i][0] for i in range(0, len(self._epoch_accuracy_history))]
 
+    def crop_front(self):
+        del self._epoch_loss_history[0]
+        del self._epoch_accuracy_history[0]
+
     def save(self):
         TkIO.write_at_path(self._history_path, self._priority_sample_id)
         TkIO.append_at_path(self._history_path, self._regular_sample_id)

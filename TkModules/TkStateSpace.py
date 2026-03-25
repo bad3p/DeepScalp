@@ -1,74 +1,104 @@
 
 import torch
+import torch.nn as nn
 
-# --------------------------------------------------------------------------------------------------------------
-# State space module with HiPPO matrix
-# --------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------
+# S4D (Diagonal State Space Model) with PER-STATE dt
+# - Each state learns its own timescale
+# - Stable (negative real spectrum + bilinear discretization)
+# - Better suited for heterogeneous time series (e.g., trading signals)
+# --------------------------------------------------------------------------------------------------
+
 
 class TkStateSpaceModule(torch.nn.Module):
-
-    @staticmethod
-    def make_hippo(d_state):
-        """
-        Generates the HiPPO-LegS matrix for optimal long-term memory.
-        """
-        q = torch.arange(d_state, dtype=torch.float32)
-        # Create a grid of n and k indices
-        n, k = torch.meshgrid(q, q, indexing="ij")
-    
-        # Apply the HiPPO-LegS formula
-        # Condition 1: n > k
-        A = torch.where(n > k, -torch.sqrt(2 * n + 1) * torch.sqrt(2 * k + 1), torch.zeros_like(n))
-        # Condition 2: n == k
-        A = torch.where(n == k, -(n + 1), A)
-    
-        return A
 
     def __init__(self, d_input, d_state, d_output):
         super().__init__()
         self.d_input = d_input
         self.d_state = d_state
         self.d_output = d_output
-        
-        # 1. State Space Matrices
-        # Initialize A with the HiPPO matrix
-        # self.A = torch.nn.Parameter(TkStateSpaceModule.make_hippo(d_state))
-        self.A = torch.nn.Parameter(torch.randn(d_state, d_state) / d_state)
-        
-        # B is typically initialized as a uniform vector or ones when using HiPPO
-        self.B = torch.nn.Parameter(torch.ones(d_state, d_input))
-        
-        # C and D remain randomly initialized
-        self.C = torch.nn.Parameter(torch.randn(d_output, d_state) / d_state)
-        self.D = torch.nn.Parameter(torch.randn(d_output, d_input) / d_input)
-        
-        # 2. Time Step
-        self.log_dt = torch.nn.Parameter(torch.log(torch.ones(1) * 0.1))
+
+        # ------------------------------------------------------------------
+        # 1. Diagonal complex spectrum
+        # λ = -exp(real) + i * imag  (stable)
+        # ------------------------------------------------------------------
+        self.log_lambda_real = nn.Parameter(torch.randn(d_state))
+        self.lambda_imag = nn.Parameter(torch.randn(d_state))
+
+        # ------------------------------------------------------------------
+        # 2. Per-state timestep (KEY UPGRADE)
+        # each state learns its own dt
+        # ------------------------------------------------------------------
+        dt = 0.01 + torch.randn(d_state) * 0.01 # todo: configure
+        dt = dt.clamp(0.005, 0.1) # todo: configure
+        log_dt = torch.log(dt)
+        self.log_dt = nn.Parameter( log_dt )
+
+        # ------------------------------------------------------------------
+        # 3. Input / Output projections
+        # ------------------------------------------------------------------
+        self.B = nn.Parameter(torch.randn(d_state, d_input) / d_state**0.5)
+        self.C = nn.Parameter(torch.randn(d_output, d_state) / d_state**0.5)
+        self.D = nn.Parameter(torch.randn(d_output, d_input) / d_input**0.5)
+
+    def _get_lambda(self):
+        """Stable complex eigenvalues"""
+        real = -torch.exp(self.log_lambda_real)
+        imag = self.lambda_imag
+        return torch.complex(real, imag)
+
+    def _get_dt(self):
+        """Per-state timestep (clamped for stability)"""
+        return torch.exp(self.log_dt).clamp(0.005, 0.1) # TODO: configure
+
+    def _discretize(self, Lambda, B, dt):
+        """
+        Elementwise bilinear transform (per-state)
+        """
+        # reshape for broadcasting
+        dt = dt.to(Lambda.device)
+
+        denom = (1 - 0.5 * dt * Lambda)
+        A_bar = (1 + 0.5 * dt * Lambda) / denom
+
+        # B_bar per state
+        B_bar = (dt / denom).unsqueeze(-1) * B
+
+        return A_bar, B_bar
 
     def forward(self, x):
         """
-        Expects x of shape: (batch_size, seq_len, d_input)
-        Returns y of shape: (batch_size, seq_len, d_output)
+        x: (batch, seq, d_input)
         """
         batch_size, seq_len, _ = x.shape
         device = x.device
-        
-        # 3. Discretization Step (Euler Method)
-        dt = torch.exp(self.log_dt)
-        I = torch.eye(self.d_state, device=device)
-        
-        A_bar = I + dt * self.A
-        B_bar = dt * self.B
-        
-        # 4. Sequential Scan
-        h = torch.zeros(batch_size, self.d_state, device=device)
+
+        Lambda = self._get_lambda()
+        dt = self._get_dt()
+
+        A_bar, B_bar = self._discretize(Lambda, self.B, dt)
+
+        # complex hidden state
+        h = torch.zeros(batch_size, self.d_state, dtype=torch.cfloat, device=device)
         outputs = []
-        
+
         for t in range(seq_len):
             x_t = x[:, t, :]
-            
-            h = torch.matmul(h, A_bar.t()) + torch.matmul(x_t, B_bar.t())
-            y_t = torch.matmul(h, self.C.t()) + torch.matmul(x_t, self.D.t())
+
+            # project input → state space
+            u_real = torch.einsum('bd,sd->bs', x_t, B_bar.real)
+            u_imag = torch.einsum('bd,sd->bs', x_t, B_bar.imag)
+            u = torch.complex(u_real, u_imag)
+
+            # diagonal recurrence
+            h = h * A_bar + u
+
+            # project back to real output
+            y_t = (h.real @ self.C.T) + (x_t @ self.D.T)
             outputs.append(y_t)
-            
+
         return torch.stack(outputs, dim=1)
+
+
+
+

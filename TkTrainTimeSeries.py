@@ -238,6 +238,8 @@ priority_batch_size = int(config['TimeSeries']['PriorityBatchSize'])
 priority_batch_size_multiplier = TkAnnealing(config['TimeSeries']['PriorityBatchSizeMultiplier'])
 embedding_learning_rate = float(config['TimeSeries']['EmbeddingLearningRate'])
 smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
+smm_ev_learning_rate = float(config['TimeSeries']['SMMEVLearningRate'])
+smm_dt_learning_rate = float(config['TimeSeries']['SMMDTLearningRate'])
 fusion_learning_rate = TkAnnealing(config['TimeSeries']['FusionLearningRate'])
 mlp_learning_rate = float(config['TimeSeries']['MLPLearningRate'])
 embedding_weight_decay = float(config['TimeSeries']['EmbeddingWeightDecay']) 
@@ -257,8 +259,8 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.AdamW(     
-    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, fusion_learning_rate, mlp_learning_rate ),
-    betas=(0.9, 0.98)
+    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate ),
+    betas=(0.9, 0.95)
 )
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
@@ -266,6 +268,7 @@ ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
+#ts_training_history.crop_front()
 
 data_loader = TkTimeSeriesDataLoader(
     config,
@@ -339,13 +342,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
 
-    def override_learning_rate(embedding_lr:float, smm_lr:float, fusion_lr:float, mlp_lr:float):
+    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_group_indices():
             ts_optimizer.param_groups[i]['lr'] = embedding_lr
         for i in ts_model.smm_group_indices():
             ts_optimizer.param_groups[i]['lr'] = smm_lr
+        for i in ts_model.smm_ev_group_indices():
+            ts_optimizer.param_groups[i]['lr'] = smm_ev_lr
+        for i in ts_model.smm_dt_group_indices():
+            ts_optimizer.param_groups[i]['lr'] = smm_dt_lr
         for i in ts_model.mlp_group_indices():
             ts_optimizer.param_groups[i]['lr'] = mlp_lr
         for i in ts_model.fusion_group_indices():
@@ -374,9 +381,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         lr_multiplier = learning_rate_multiplier.get_value( ts_smooth_epoch )
         embedding_lr = embedding_learning_rate * lr_multiplier
         smm_lr = smm_learning_rate * lr_multiplier
+        smm_ev_lr = smm_ev_learning_rate * lr_multiplier
+        smm_dt_lr = smm_dt_learning_rate * lr_multiplier
         fusion_lr = fusion_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
         mlp_lr = mlp_learning_rate * lr_multiplier
-        override_learning_rate( embedding_lr, smm_lr, fusion_lr, mlp_lr )
+        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
         embedding_decay = embedding_weight_decay * decay_multiplier
@@ -444,6 +453,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_true = torch.reshape( target_true, ( test_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        target_true = torch.reshape( target_true, (test_batch_size, target_true_width) )
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
         target_regime = torch.reshape( target_regime, ( test_batch_size, 1) )

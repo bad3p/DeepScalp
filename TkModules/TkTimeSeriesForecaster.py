@@ -265,7 +265,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                     self._embedding.append( VQCodeEmbedding( num_codes, code_dim, embed_dim, hidden_dim, out_dim, dropout ) )
                     slice_size = out_dim
                 elif embedding_type == 'MLP':
-                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, 0.01 ) )
+                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, 0.0 ) )
                     slice_size = embedding_descriptor[-1]
                 else:
                     raise RuntimeError('Unknown embedding type:'+embedding_type)
@@ -308,13 +308,24 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
 
-        smm_decay_params = list(self._smm.parameters()) + list(self._smm_proj.parameters())
         smm_no_decay_params = list(self._smm_norm.parameters())
+        smm_decay_params = list(self._smm_proj.parameters())        
+        smm_ev_params = []
+        smm_dt_params = []
+
+        for smm_module in self._smm:
+            for smm in smm_module:
+                smm_ev_params.append( smm.log_lambda_real )
+                smm_ev_params.append( smm.lambda_imag )
+                smm_dt_params.append( smm.log_dt )
+                smm_decay_params.append( smm.B )
+                smm_decay_params.append( smm.C )
+                smm_decay_params.append( smm.D )
         
         mlp_decay_params = []
         mlp_no_decay_params = []
@@ -357,14 +368,16 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # other = [ self._y_scale, self._y_regime_scale ]
 
         return [
-            {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate},
-            {"params": embedding_no_decay_params, "weight_decay": 0.0, 'lr': embedding_learning_rate},
-            {"params": smm_decay_params, "weight_decay": smm_weight_decay, 'lr': smm_learning_rate},
-            {"params": smm_no_decay_params, "weight_decay": 0.0, 'lr': smm_learning_rate},
-            {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate},
-            {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate},
-            {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate},
-            {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate},
+            {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
+            {"params": embedding_no_decay_params, "weight_decay": 0.0, 'lr': embedding_learning_rate}, #1
+            {"params": smm_decay_params, "weight_decay": smm_weight_decay, 'lr': smm_learning_rate}, #2
+            {"params": smm_ev_params, "weight_decay": smm_weight_decay, 'lr': smm_ev_learning_rate}, #3
+            {"params": smm_dt_params, "weight_decay": smm_weight_decay, 'lr': smm_dt_learning_rate}, #4
+            {"params": smm_no_decay_params, "weight_decay": 0.0, 'lr': smm_learning_rate}, #5
+            {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate}, #6
+            {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
+            {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
+            {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
             #{"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
         ]
     
@@ -375,22 +388,28 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         return [0]
     
     def smm_group_indices(self):
-        return [2,3]
+        return [2,5]
+    
+    def smm_ev_group_indices(self):
+        return [3]
+    
+    def smm_dt_group_indices(self):
+        return [4]
     
     def smm_decay_group_indices(self):
-        return [2]
+        return [2,3,4]
         
     def mlp_group_indices(self):
-        return [4,5]
-    
-    def mlp_decay_group_indices(self):
-        return [4]
-
-    def fusion_group_indices(self):
         return [6,7]
     
-    def fusion_decay_group_indices(self):
+    def mlp_decay_group_indices(self):
         return [6]
+
+    def fusion_group_indices(self):
+        return [8,9]
+    
+    def fusion_decay_group_indices(self):
+        return [8]
 
     def smm_output(self):
         return self._smm_output_tensors
@@ -423,9 +442,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 
-        #merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors)
-        merged = fused
+        merged = torch.cat( self._smm_output_tensors, dim=-1)
+        #fused, source_attn, gates = self._fusion(self._smm_output_tensors)
+        #merged = fused
 
         # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
         # self._smm_output_tensors.append( fused )
