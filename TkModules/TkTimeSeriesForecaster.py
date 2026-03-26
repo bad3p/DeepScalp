@@ -57,33 +57,47 @@ class MultiHeadFusionGRF(torch.nn.Module):
         self.norm = torch.nn.LayerNorm(embed_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, inputs):
+    def forward(self, inputs, pos_encoding = None):
 
-        # Project to shared embedding
+        # 1. Project to shared embedding (Pure Data)
         x = torch.stack(
             [proj(h) for proj, h in zip(self.projections, inputs)],
             dim=1
         )  # (B, N, D)
 
-        # Build global context 
+        # 2. Create position-infused keys/queries
+        if pos_encoding is not None:
+            # Simple addition is mathematically equivalent to your previous linear collapse, 
+            # but much more efficient.
+            x_attn = x + pos_encoding.expand(x.size(0), -1, -1)
+        else:
+            x_attn = x
+
+        # 3. Build global context using pure data
         context_scores = self.context_attn(x).squeeze(-1)
         context_weights = torch.softmax(context_scores, dim=1)
         context = torch.sum(x * context_weights.unsqueeze(-1), dim=1, keepdim=True)
+        
+        # (Optional) Inject position into the context if you want the query to know "where" it came from
+        if pos_encoding is not None:
+            context_attn = context + pos_encoding.mean(dim=1, keepdim=True) # or a learned global pos
+        else:
+            context_attn = context
 
-        # Contextual attention
-        # Q = context, K/V = sources
-        attn_out, attn_weights = self.mha(context, x, x, need_weights=True)
+        # 4. Contextual attention
+        # Q = Context (with pos), K = x_attn (with pos), V = x (PURE DATA)
+        attn_out, attn_weights = self.mha(context_attn, x_attn, x, need_weights=True)
 
         # Broadcast attended context back to tokens
         attn_out = attn_out.expand(-1, x.size(1), -1)  # (B, N, D)
 
-        # Gated residual fusion
+        # 5. Gated residual fusion (using pure data for the residual)
         gate_input = torch.cat([x, attn_out], dim=-1)  # (B, N, 2D)
         g = self.gate(gate_input)                      # (B, N, D)
 
         fused_tokens = g * attn_out + (1.0 - g) * x
 
-        # Normalize
+        # Normalize & Dropout
         fused_tokens = self.norm(fused_tokens)
         fused_tokens = self.dropout(fused_tokens)
 
@@ -236,6 +250,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
+        self._source_pos_embedding = torch.nn.Parameter( torch.randn(1, len(self._input_slices), self._fusion_embedding_dims) * 0.02 )
         
         self._fusion_input_dims = []
 
@@ -324,13 +339,13 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 smm_ev_params.append( smm.lambda_imag )
                 smm_dt_params.append( smm.log_dt )
                 smm_decay_params.append( smm.B )
-                smm_decay_params.append( smm.C )
-                smm_decay_params.append( smm.D )
+                smm_decay_params.append( smm.C_real )
+                smm_decay_params.append( smm.C_imag )
         
         mlp_decay_params = []
         mlp_no_decay_params = []
 
-        fusion_decay_params = []
+        fusion_decay_params = [ self._source_pos_embedding ]
         fusion_no_decay_params = []
 
         for name, param in self._embedding.named_parameters():
@@ -437,13 +452,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             x = self._smm_proj[i]( input_slice_tensor )
             for ssm, norm in zip(self._smm[i], self._smm_norm[i]):
                 residual = x
-                x = ssm( x )
-                x = norm( x + residual )                
+                x = norm(x)
+                x = ssm(x)
+                x = torch.nn.functional.silu(x)
+                x = x + residual
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 
         merged = torch.cat( self._smm_output_tensors, dim=-1)
-        #fused, source_attn, gates = self._fusion(self._smm_output_tensors)
+        #fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         #merged = fused
 
         # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )

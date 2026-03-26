@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 
@@ -6,9 +5,8 @@ import torch.nn as nn
 # S4D (Diagonal State Space Model) with PER-STATE dt
 # - Each state learns its own timescale
 # - Stable (negative real spectrum + bilinear discretization)
-# - Better suited for heterogeneous time series (e.g., trading signals)
+# - Optimized: D matrix removed in favor of explicit outer residual connections
 # --------------------------------------------------------------------------------------------------
-
 
 class TkStateSpaceModule(torch.nn.Module):
 
@@ -36,10 +34,11 @@ class TkStateSpaceModule(torch.nn.Module):
 
         # ------------------------------------------------------------------
         # 3. Input / Output projections
+        # D matrix removed; feed-through is handled by external residual
         # ------------------------------------------------------------------
         self.B = nn.Parameter(torch.randn(d_state, d_input) / d_state**0.5)
-        self.C = nn.Parameter(torch.randn(d_output, d_state) / d_state**0.5)
-        self.D = nn.Parameter(torch.randn(d_output, d_input) / d_input**0.5)
+        self.C_real = nn.Parameter(torch.randn(d_output, d_state) / d_state**0.5)
+        self.C_imag = nn.Parameter(torch.randn(d_output, d_state) / d_state**0.5)
 
     def _get_lambda(self):
         """Stable complex eigenvalues"""
@@ -93,12 +92,8 @@ class TkStateSpaceModule(torch.nn.Module):
             # diagonal recurrence
             h = h * A_bar + u
 
-            # project back to real output
-            y_t = (h.real @ self.C.T) + (x_t @ self.D.T)
+            # project back to real output (D matrix feed-through removed)
+            y_t = (h.real @ self.C_real.T) - (h.imag @ self.C_imag.T)
             outputs.append(y_t)
 
         return torch.stack(outputs, dim=1)
-
-
-
-
