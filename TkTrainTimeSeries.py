@@ -33,7 +33,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
-from TkModules.TkSSIM import MS_SSIM_1D_Loss
+from TkModules.TkMeanDistance import mean_distance
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 from TkModules.TkAnnealing import TkAnnealing
 
@@ -266,7 +266,7 @@ if os.path.isfile(ts_optimizer_path):
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
-ts_recon_accuracy = lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
+ts_recon_accuracy = lambda x,y: mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 #ts_training_history.crop_front()
 
@@ -481,7 +481,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
 
-        y = torch.reshape( y, (y.shape[0],1,y.shape[1]) )
+        y = torch.reshape( y, (y.shape[0],y.shape[1]) )
+        y = torch.nn.functional.softmax(y,dim=-1).detach()
         
         y_accuracy = ts_recon_accuracy( y, target_true ).detach()
         y_accuracy = y_accuracy.mean()
