@@ -204,7 +204,8 @@ class ScalarGroupEmbedding(torch.nn.Module):
         self._proj = []
         for i in range(len(specification)):
             self._proj.append( torch.nn.Linear( in_channels if i == 0 else specification[i-1], specification[i] ) )
-            self._proj.append( torch.nn.LayerNorm(specification[i]) )
+            if i < len(specification) - 1:
+                self._proj.append( torch.nn.LayerNorm(specification[i]) )
             if i < len(specification) - 1:
                 self._proj.append( torch.nn.SiLU() )
             if i < len(specification) - 1:
@@ -290,7 +291,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             num_layers = self._smm_specification[i][2]
             self._smm_proj.append( torch.nn.Linear( slice_size, model_size) )
             self._smm.append( torch.nn.ModuleList( [ TkStateSpaceModule( model_size, state_size, model_size) for _ in range(num_layers) ] ) )
-            self._smm_norm.append( torch.nn.ModuleList( [ torch.nn.LayerNorm( model_size ) for _ in range(num_layers) ] ) )
+            self._smm_norm.append( torch.nn.ModuleList( [ torch.nn.LayerNorm( model_size ) for _ in range(num_layers+1) ] ) )
             self._mlp_input_size = self._mlp_input_size + model_size
             self._fusion_input_dims.append( model_size )
 
@@ -455,7 +456,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 x = norm(x)
                 x = ssm(x)
                 x = torch.nn.functional.silu(x)
-                x = x + residual
+                x = x + residual            
+            s = self._smm_norm[i][-1]( x )
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 
