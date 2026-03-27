@@ -457,7 +457,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 x = ssm(x)
                 x = torch.nn.functional.silu(x)
                 x = x + residual            
-            s = self._smm_norm[i][-1]( x )
+            x = self._smm_norm[i][-1]( x )
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 

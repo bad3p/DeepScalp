@@ -268,7 +268,7 @@ ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
-ts_training_history.crop_front()
+#ts_training_history.crop_front()
 
 data_loader = TkTimeSeriesDataLoader(
     config,
