@@ -242,6 +242,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
+        self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
@@ -281,7 +282,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                     self._embedding.append( VQCodeEmbedding( num_codes, code_dim, embed_dim, hidden_dim, out_dim, dropout ) )
                     slice_size = out_dim
                 elif embedding_type == 'MLP':
-                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, 0.0 ) )
+                    self._embedding.append( ScalarGroupEmbedding( slice_size, embedding_descriptor, self._embedding_dropout ) )
                     slice_size = embedding_descriptor[-1]
                 else:
                     raise RuntimeError('Unknown embedding type:'+embedding_type)
@@ -330,7 +331,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         embedding_no_decay_params = []
 
         smm_no_decay_params = list(self._smm_norm.parameters())
-        smm_decay_params = list(self._smm_proj.parameters())        
+        smm_decay_params = list(self._smm_proj.parameters())
         smm_ev_params = []
         smm_dt_params = []
 
@@ -346,8 +347,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         mlp_decay_params = []
         mlp_no_decay_params = []
 
-        fusion_decay_params = [ self._source_pos_embedding ]
-        fusion_no_decay_params = []
+        fusion_decay_params = [ ]
+        fusion_no_decay_params = [ self._source_pos_embedding ]
 
         for name, param in self._embedding.named_parameters():
             if not param.requires_grad:
@@ -464,10 +465,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         merged = torch.cat( self._smm_output_tensors, dim=-1)
         #fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         #merged = fused
-
-        # fused = torch.nn.functional.layer_norm( fused, [fused.shape[1]] )
-        # self._smm_output_tensors.append( fused )
-        # merged = torch.cat( self._smm_output_tensors, dim=-1)
 
         y = self._mlp.forward( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))

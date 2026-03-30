@@ -33,7 +33,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
-from TkModules.TkMeanDistance import mean_distance
+from TkModules.TkMeanDistance import mean_distance, tail_mean_distance
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 from TkModules.TkAnnealing import TkAnnealing
 
@@ -266,7 +266,7 @@ if os.path.isfile(ts_optimizer_path):
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
-ts_recon_accuracy = lambda x,y: mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
+ts_recon_accuracy = lambda x,y: tail_mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 #ts_training_history.crop_front()
 
