@@ -214,7 +214,7 @@ class TkTimeSeriesTrainingHistory():
         TkIO.append_at_path(self._history_path,self._epoch_loss_history)
         TkIO.append_at_path(self._history_path,self._epoch_accuracy_history)
 
-    def log(self, priority_sample_id:int, regular_sample_id:int, test_sample_id:int, loss:float, accuracy:float):
+    def log(self, priority_sample_id:int, regular_sample_id:int, test_sample_id:int, loss:float, accuracy:float, end_of_training_epoch_callback = None):
 
         def accumulate_epoch_data(epoch_data:list, value:float, is_end_of_epoch:bool):
             if math.isnan(value) or math.isinf(value):
@@ -244,3 +244,6 @@ class TkTimeSeriesTrainingHistory():
 
         accumulate_epoch_data( self._epoch_loss_history, loss, is_end_of_training_epoch )
         accumulate_epoch_data( self._epoch_accuracy_history, accuracy, is_end_of_test_epoch )
+
+        if is_end_of_training_epoch and end_of_training_epoch_callback != None :
+            end_of_training_epoch_callback()

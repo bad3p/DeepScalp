@@ -150,28 +150,56 @@ class TkTimeSeriesDataPreprocessor():
             trade_flow_imbalance[i] = (buy_trades - sell_trades) / max(1.0, buy_trades + sell_trades)
 
             # adjust minimal time for next last trades sample
-            last_trades_time_threshold = orderbook_sample.orderbook_ts
+            last_trades_time_threshold = orderbook_sample.orderbook_ts       
+
 
         trade_flow_imbalance_ema_norm = TkStatistics.ema_normalize( trade_flow_imbalance, half_life=self._market_regime_steps_count ).tolist()
         orderbook_slope_ema_norm = TkStatistics.ema_normalize( orderbook_slope, half_life=self._market_regime_steps_count ).tolist()
         orderbook_microprice_ema_norm = TkStatistics.ema_normalize( orderbook_microprice, half_life=self._market_regime_steps_count ).tolist()
 
+        price_change = [0.0] * raw_sample_count
+        for i in range( raw_sample_count ):
+            if i == 0:
+                price_change[i] = 0.0
+            else:
+                price_change[i] = price[i] - price[i-1]
+
+        price_change_log_ema_norm = TkStatistics.log_ema_normalize( price_change, half_life=self._market_regime_steps_count )
+
         regimes = TkStatistics.price_to_market_regimes(price, self._market_regime_steps_count, self._num_market_regimes)
 
         order_flow_imbalance = [None] * raw_sample_count
         queue_imbalance = [None] * raw_sample_count
+        queue_depletion_intensity = [None] * raw_sample_count
+        queue_depletion_imbalance = [None] * raw_sample_count
+        order_arrival_intensity = [None] * raw_sample_count
+        order_arrival_imbalance = [None] * raw_sample_count
 
         for i in range( raw_sample_count ):
             if i == 0:
                 order_flow_imbalance[i] = 0.0
+                order_arrival_intensity[i] = 0.0
+                order_arrival_imbalance[i] = 0.0
             else:
                 order_flow_imbalance[i] = TkStatistics.depth_weighted_order_flow_imbalance( raw_samples[(i-1)*2], raw_samples[i*2], alpha=1.0 ) # TODO: configure alpha
+                bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=1.0, dt = 60.0 ) # TODO: configure alpha & dt
+                order_arrival_intensity[i] = bid_intensity + ask_intensity
+                order_arrival_imbalance[i] = bid_intensity - ask_intensity
             queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], min_price_increment, alpha=1.0 ) # TODO: configure alpha
+            bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], alpha=1.0 ) # TODO: configure alpha
+            queue_depletion_intensity[i] = bid_depletion + ask_depletion
+            queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
 
         order_flow_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_flow_imbalance, half_life=self._market_regime_steps_count )
         cumulative_order_flow_imbalance_log_ema_norm = TkStatistics.rolling_sum( order_flow_imbalance_log_ema_norm, window=self._future_steps_count )
         queue_imbalance_ema_norm = TkStatistics.ema_normalize( queue_imbalance, half_life=self._market_regime_steps_count )
 
+        queue_depletion_intensity_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_intensity, half_life=self._market_regime_steps_count )
+        queue_depletion_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_imbalance, half_life=self._market_regime_steps_count )
+
+        order_arrival_intensity_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_intensity, half_life=self._market_regime_steps_count )
+        order_arrival_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_imbalance, half_life=self._market_regime_steps_count )
+        
         price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( price, half_life=self._market_regime_steps_count ).tolist()
         orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( orderbook_volume, half_life=self._market_regime_steps_count ).tolist()
         last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( last_trades_volume, half_life=self._market_regime_steps_count ).tolist()
@@ -206,7 +234,7 @@ class TkTimeSeriesDataPreprocessor():
 
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
-        hasheable_sample_width = 11 * self._prior_steps_count # == sizeof ts_input[] 
+        hasheable_sample_width = 37 * self._prior_steps_count # 37 == sizeof ts_input[] 
         sample_lhs = LSHash(self._lshash_size, hasheable_sample_width) 
         step = 0
 
@@ -230,7 +258,7 @@ class TkTimeSeriesDataPreprocessor():
                 ts_input[j] = []
 
                 # slice 1 : price and volatility
-                ts_input[j].append( math.log( price[k] ) - math.log( ts_base_price ) )
+                ts_input[j].append( price_change_log_ema_norm[k] )
                 ts_input[j].append( price_log_ema_volatility[k] )
 
                 # slice 2 : liquidity and spread
@@ -245,10 +273,55 @@ class TkTimeSeriesDataPreprocessor():
                 # slice 4 : trade activity / trade flow intensity
                 ts_input[j].append( last_trades_log_ema_norm_volume[k] )
                 ts_input[j].append( last_trades_log_ema_norm_num_events[k] )
-
+                ts_input[j].append( queue_depletion_intensity_log_ema_norm[k] )
+                ts_input[j].append( order_arrival_intensity_log_ema_norm[k] )        
+        
                 # slice 5 : flow imbalance
                 ts_input[j].append( cumulative_order_flow_imbalance_log_ema_norm[k] )                
                 ts_input[j].append( trade_flow_imbalance_ema_norm[k] )
+                ts_input[j].append( queue_depletion_imbalance_log_ema_norm[k] )
+                ts_input[j].append( order_arrival_imbalance_log_ema_norm[k] )
+
+                # slice 6 : price x liquidity / Spread
+                ts_input[j].append( price_change_log_ema_norm[k] * spread_log_ema_norm[k] )
+                ts_input[j].append( price_log_ema_volatility[k] * spread_log_ema_norm[k] )
+                ts_input[j].append( price_change_log_ema_norm[k] * orderbook_log_ema_norm_volume[k] )
+
+                # slice 7 : price x orderbook structure
+                ts_input[j].append( price_change_log_ema_norm[k] * queue_imbalance_ema_norm[k] )
+                ts_input[j].append( orderbook_microprice_ema_norm[k] - price_change_log_ema_norm[k] )
+                ts_input[j].append( orderbook_slope_ema_norm[k] * price_change_log_ema_norm[k] )
+
+                # slice 8 : liquidity x orderbook structure
+                ts_input[j].append( spread_log_ema_norm[k] * queue_imbalance_ema_norm[k] )
+                ts_input[j].append( orderbook_log_ema_norm_volume[k] * orderbook_slope_ema_norm[k] )
+
+                # slice 9 : trade activity × liquidity
+                ts_input[j].append( last_trades_log_ema_norm_volume[k] * spread_log_ema_norm[k] )
+                ts_input[j].append( last_trades_log_ema_norm_num_events[k] * orderbook_log_ema_norm_volume[k] )
+                ts_input[j].append( queue_depletion_intensity_log_ema_norm[k] * spread_log_ema_norm[k] )
+
+                # slice 10 : trade Activity x orderbook structure
+                ts_input[j].append( last_trades_log_ema_norm_volume[k] * queue_imbalance_ema_norm[k] )
+                ts_input[j].append( order_arrival_intensity_log_ema_norm[k] * orderbook_slope_ema_norm[k] )
+                ts_input[j].append( queue_depletion_intensity_log_ema_norm[k] * orderbook_microprice_ema_norm[k] )
+
+                # slice 11 : flow imbalance x price
+                ts_input[j].append( price_change_log_ema_norm[k] * trade_flow_imbalance_ema_norm[k] )
+                ts_input[j].append( price_change_log_ema_norm[k] * cumulative_order_flow_imbalance_log_ema_norm[k] )
+
+                # slice 12 : flow imbalance x orderbook
+                ts_input[j].append( queue_imbalance_ema_norm[k] * trade_flow_imbalance_ema_norm[k] )
+                ts_input[j].append( orderbook_microprice_ema_norm[k] * cumulative_order_flow_imbalance_log_ema_norm[k] )
+
+                # slice 13 : flow imbalance x trade activity
+                ts_input[j].append( last_trades_log_ema_norm_volume[k] * trade_flow_imbalance_ema_norm[k] )
+                ts_input[j].append( order_arrival_imbalance_log_ema_norm[k] * last_trades_log_ema_norm_num_events[k] )
+
+                # slice 14 : higher order nonlinear interactions
+                ts_input[j].append( spread_log_ema_norm[k] * price_log_ema_volatility[k] * queue_depletion_intensity[k] )
+                ts_input[j].append( queue_imbalance_ema_norm[k] * trade_flow_imbalance_ema_norm[k] * orderbook_microprice_ema_norm[k] )
+                
                 
             ts_input = list( itertools.chain.from_iterable(ts_input) )
             ts_target = future_trades[i].tolist()

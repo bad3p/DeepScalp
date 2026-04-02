@@ -264,7 +264,7 @@ ts_optimizer = torch.optim.AdamW(
 )
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
+ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.wasserstein_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
 ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)

@@ -524,3 +524,74 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         emd = torch.abs(cdf_q - cdf_t).sum(dim=-1)
         return emd.mean()
+
+
+    @staticmethod
+    def crps_from_logits(logits, target_dist):
+
+        """
+        logits: (B, K) - raw outputs
+        target_dist: (B, K) - normalized centered probability distributions (sum to 1)
+        """
+
+        # Predicted probabilities
+        pred_probs = torch.nn.functional.softmax(logits, dim=-1)
+
+        # Standard CDFs
+        pred_cdf = torch.cumsum(pred_probs, dim=-1)
+        target_cdf = torch.cumsum(target_dist, dim=-1)
+
+        # Midpoint correction (center mass within bins)
+        pred_cdf_mid = pred_cdf - 0.5 * pred_probs
+        target_cdf_mid = target_cdf - 0.5 * target_dist
+
+        # CRPS
+        crps = torch.mean((pred_cdf_mid - target_cdf_mid) ** 2, dim=-1)
+
+        return crps
+    
+    @staticmethod
+    def tail_weight_vector(K, gamma=1.0, device='cpu'):
+        """
+        Generate weight vector for W1 loss emphasizing tails
+        relative to the center of K bins.
+
+        Args:
+            K (int): number of bins
+            gamma (float): exponent to emphasize tails (>1 stronger)
+            device: torch device
+
+        Returns:
+            torch.Tensor: shape (K,)
+        """
+        center = (K - 1) / 2
+        idx = torch.arange(K, device=device)
+        weights = torch.abs(idx - center) / center  # normalized distance from center
+        weights = weights ** gamma  # optional exponent
+        return weights
+
+    @staticmethod
+    def wasserstein_1d_from_logits(logits, target_dist):
+
+        """
+        logits: (B, K) - raw outputs
+        target_dist: (B, K) - target probability distribution (sum to 1)
+        """        
+
+        # Predicted probabilities
+        pred_probs = torch.nn.functional.softmax(logits, dim=-1)
+
+        # Compute CDFs
+        pred_cdf = torch.cumsum(pred_probs, dim=-1)
+        target_cdf = torch.cumsum(target_dist, dim=-1)
+
+        # Midpoint correction (optional, similar to CRPS)
+        pred_cdf_mid = pred_cdf - 0.5 * pred_probs
+        target_cdf_mid = target_cdf - 0.5 * target_dist
+        #weights = TkTimeSeriesForecaster.tail_weight_vector( logits.shape[-1], gamma=0.5, device=logits.device)
+
+        # Wasserstein-1 (L1 distance of CDFs)
+        #w1 = torch.sum( weights * torch.abs(pred_cdf_mid - target_cdf_mid), dim=-1)  # per sample
+        w1 = torch.sum( torch.abs(pred_cdf_mid - target_cdf_mid), dim=-1)  # per sample
+
+        return w1
