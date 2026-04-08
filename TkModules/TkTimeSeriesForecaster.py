@@ -204,12 +204,8 @@ class ScalarGroupEmbedding(torch.nn.Module):
         self._proj = []
         for i in range(len(specification)):
             self._proj.append( torch.nn.Linear( in_channels if i == 0 else specification[i-1], specification[i] ) )
-            if i < len(specification) - 1:
-                self._proj.append( torch.nn.LayerNorm(specification[i]) )
-            if i < len(specification) - 1:
-                self._proj.append( torch.nn.SiLU() )
-            if i < len(specification) - 1:
-                self._proj.append( torch.nn.Dropout(dropout) )
+            self._proj.append( torch.nn.SiLU() )
+        self._proj.append( torch.nn.Dropout(dropout) )
         self._proj = torch.nn.ModuleList( self._proj )        
         self._init_weights()
 
@@ -462,9 +458,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 
-        merged = torch.cat( self._smm_output_tensors, dim=-1)
-        #fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
-        #merged = fused
+        #merged = torch.cat( self._smm_output_tensors, dim=-1)
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
+        merged = fused
 
         y = self._mlp.forward( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
@@ -595,3 +591,39 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         w1 = torch.sum( torch.abs(pred_cdf_mid - target_cdf_mid), dim=-1)  # per sample
 
         return w1
+    
+    @staticmethod
+    def gaussian_kernel1d(sigma, kernel_size=None, device=None, dtype=torch.float32):
+        # choose kernel size if not provided
+        if kernel_size is None:
+            kernel_size = int(6 * sigma + 1)
+            if kernel_size % 2 == 0:
+                kernel_size += 1  # ensure odd size
+
+        # index
+        half = kernel_size // 2
+        x = torch.arange(-half, half + 1, device=device, dtype=dtype)
+
+        # Gaussian formula
+        kernel = torch.exp(-(x ** 2) / (2 * sigma ** 2))
+
+        # normalize to sum = 1
+        kernel = kernel / kernel.sum()
+
+        # reshape for conv1d: (out_channels, in_channels, kernel_size)
+        kernel = kernel.view(1, 1, -1)
+
+        return kernel
+
+    @staticmethod
+    def gaussian_smooth(y, kernel):
+        k = kernel.shape[-1] // 2
+        y = y.unsqueeze(1)  # (B, 1, D)
+
+        # reflect padding
+        y = torch.nn.functional.pad(y, (k, k), mode='reflect')
+
+        y = torch.nn.functional.conv1d(y, kernel)
+        y = y.squeeze(1)
+
+        return y / y.sum(dim=-1, keepdim=True)
