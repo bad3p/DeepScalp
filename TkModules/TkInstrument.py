@@ -1,4 +1,5 @@
 import configparser
+import jsonpickle
 from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
 from collections import defaultdict
@@ -49,25 +50,25 @@ class TkInstrument():
             shares = TkIO.read_at_path( sharePath )
             if len(shares) == 0:
                 self._share = self._client.instruments.share_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.write_at_path( sharePath, self._share )
+                TkIO.write_at_path( sharePath, jsonpickle.encode(self._share) )
             else:
-                self._share = shares[0]
+                self._share = jsonpickle.decode(shares[0])
         elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
             bondPath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['BondFileExtension']
             bonds = TkIO.read_at_path( bondPath )
             if len(bonds) == 0:
                 self._bond = self._client.instruments.bond_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.writeToFile( bondPath, self._bond )
+                TkIO.writeToFile( bondPath, jsonpickle.encode(self._bond) )
             else:
-                self._bond = bonds[0]
+                self._bond = jsonpickle.decode(bonds[0])
         elif self._type == InstrumentType.INSTRUMENT_TYPE_ETF:
             etfPath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['EtfFileExtension']
             etfs = TkIO.write_at_path( etfPath )
             if len(etfs) == 0:
                 self._etf = self._client.instruments.etf_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.write_at_path( etfPath, self._etf )
+                TkIO.write_at_path( etfPath, jsonpickle.encode(self._etf) )
             else:
-                self._etf = etfs[0]
+                self._etf = jsonpickle.decode(etfs[0])
 
     def trading_status(self):
         statusResponse = self._client.market_data.get_trading_statuses( instrument_ids=[self._instrument.figi] ).trading_statuses[0]
