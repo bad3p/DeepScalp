@@ -164,7 +164,7 @@ class TkTimeSeriesDataPreprocessor():
             else:
                 price_change[i] = price[i] - price[i-1]
 
-        price_change_log_ema_norm = TkStatistics.log_ema_normalize( price_change, half_life=self._market_regime_steps_count )
+        price_change_log_ema_norm = TkStatistics.log_ema_normalize( price_change, half_life=self._market_regime_steps_count ).tolist()
 
         regimes = TkStatistics.price_to_market_regimes(price, self._market_regime_steps_count, self._num_market_regimes)
 
@@ -190,21 +190,33 @@ class TkTimeSeriesDataPreprocessor():
             queue_depletion_intensity[i] = bid_depletion + ask_depletion
             queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
 
-        order_flow_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_flow_imbalance, half_life=self._market_regime_steps_count )
+        order_flow_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_flow_imbalance, half_life=self._market_regime_steps_count ).tolist()
         cumulative_order_flow_imbalance_log_ema_norm = TkStatistics.rolling_sum( order_flow_imbalance_log_ema_norm, window=self._future_steps_count )
-        queue_imbalance_ema_norm = TkStatistics.ema_normalize( queue_imbalance, half_life=self._market_regime_steps_count )
+        queue_imbalance_ema_norm = TkStatistics.ema_normalize( queue_imbalance, half_life=self._market_regime_steps_count ).tolist()
 
-        queue_depletion_intensity_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_intensity, half_life=self._market_regime_steps_count )
-        queue_depletion_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_imbalance, half_life=self._market_regime_steps_count )
+        queue_depletion_intensity_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_intensity, half_life=self._market_regime_steps_count ).tolist()
+        queue_depletion_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( queue_depletion_imbalance, half_life=self._market_regime_steps_count ).tolist()
 
-        order_arrival_intensity_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_intensity, half_life=self._market_regime_steps_count )
-        order_arrival_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_imbalance, half_life=self._market_regime_steps_count )
+        order_arrival_intensity_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_intensity, half_life=self._market_regime_steps_count ).tolist()
+        order_arrival_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( order_arrival_imbalance, half_life=self._market_regime_steps_count ).tolist()
         
         price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( price, half_life=self._market_regime_steps_count ).tolist()
         orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( orderbook_volume, half_life=self._market_regime_steps_count ).tolist()
         last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( last_trades_volume, half_life=self._market_regime_steps_count ).tolist()
         last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( last_trades_num_events, half_life=self._market_regime_steps_count ).tolist()
         spread_log_ema_norm = TkStatistics.log_ema_normalize( spread, half_life=self._market_regime_steps_count ).tolist()
+
+        orderbook_slope_delta = TkStatistics.compute_delta( orderbook_slope )
+        queue_imbalance_delta = TkStatistics.compute_delta( queue_imbalance )
+        microprice_delta = TkStatistics.compute_delta( orderbook_microprice )
+        queue_imbalance_acceleration = TkStatistics.compute_delta( queue_imbalance_delta )
+        microprice_acceleration = TkStatistics.compute_delta( microprice_delta )
+
+        orderbook_slope_delta_ema_norm = TkStatistics.ema_normalize( orderbook_slope_delta, half_life=self._market_regime_steps_count ).tolist()
+        queue_imbalance_delta_ema_norm = TkStatistics.ema_normalize( queue_imbalance_delta, half_life=self._market_regime_steps_count ).tolist()
+        microprice_delta_ema_norm = TkStatistics.ema_normalize( microprice_delta, half_life=self._market_regime_steps_count ).tolist()
+        queue_imbalance_acceleration_ema_norm = TkStatistics.ema_normalize( queue_imbalance_acceleration, half_life=self._market_regime_steps_count ).tolist()
+        microprice_acceleration_ema_norm = TkStatistics.ema_normalize( microprice_acceleration, half_life=self._market_regime_steps_count ).tolist()
 
         start_range = self._prior_steps_count - 1
         end_range = raw_sample_count - self._future_steps_count - 1
@@ -234,7 +246,7 @@ class TkTimeSeriesDataPreprocessor():
 
         callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
-        hasheable_sample_width = 37 * self._prior_steps_count # 37 == sizeof ts_input[] 
+        hasheable_sample_width = 42 * self._prior_steps_count # 42 == sizeof ts_input[] 
         sample_lhs = LSHash(self._lshash_size, hasheable_sample_width) 
         step = 0
 
@@ -321,6 +333,13 @@ class TkTimeSeriesDataPreprocessor():
                 # slice 14 : higher order nonlinear interactions
                 ts_input[j].append( spread_log_ema_norm[k] * price_log_ema_volatility[k] * queue_depletion_intensity[k] )
                 ts_input[j].append( queue_imbalance_ema_norm[k] * trade_flow_imbalance_ema_norm[k] * orderbook_microprice_ema_norm[k] )
+
+                # slice 15 : orderbook dynamics
+                ts_input[j].append( orderbook_slope_delta_ema_norm[k] )
+                ts_input[j].append( queue_imbalance_delta_ema_norm[k] )
+                ts_input[j].append( microprice_delta_ema_norm[k] )
+                ts_input[j].append( queue_imbalance_acceleration_ema_norm[k] )
+                ts_input[j].append( microprice_acceleration_ema_norm[k] )
                 
                 
             ts_input = list( itertools.chain.from_iterable(ts_input) )

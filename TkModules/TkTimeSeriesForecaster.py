@@ -480,10 +480,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # monitoring feedback
         if self.training:
             self._smm_output_tensors = merged
+            # self._smm_output_tensors = gates
+            # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
         else:
-            self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)
-        # self._smm_output_tensors = gates
-        # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
+            self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)            
 
         return y, y_regime
 

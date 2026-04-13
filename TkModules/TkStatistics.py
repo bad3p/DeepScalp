@@ -1134,3 +1134,11 @@ class TkStatistics():
         assert not math.isnan(ask_intensity) , "Ask intensity is NaN!"
         
         return float(bid_intensity), float(ask_intensity)
+    
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes deltas for the given sequence
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def compute_delta(values):
+        return [0.0] + [b - a for a, b in zip(values, values[1:])]
