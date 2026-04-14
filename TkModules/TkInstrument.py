@@ -23,12 +23,14 @@ class TkInstrument():
         self._cfg = _cfg
         self._type = _type
         self._ticker = _ticker
-        self._classCode = _classCode
+        self._classCode = _classCode        
 
         instrumentPath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['InstrumentFileExtension']
-        instruments = TkIO.read_at_path( instrumentPath )
+        instrumentData = TkIO.read_at_path( instrumentPath )
 
-        if len(instruments) == 0:
+        if len( instrumentData ) != 0:
+            self._data = instrumentData[0]
+        else:
             instruments = self._client.instruments.find_instrument( query=_ticker, instrument_kind=_type ).instruments
             instruments = [instrument for instrument in instruments if instrument.ticker == _ticker]
             instruments = [instrument for instrument in instruments if instrument.class_code == _classCode]
@@ -36,91 +38,179 @@ class TkInstrument():
                 raise RuntimeError('Unable to find instrument with given ticker and type: ' + _ticker + ', ' + _classCode)
             if len(instruments) > 1:
                 raise RuntimeError('Multiple instruments found with given ticker and type: ' + _ticker + ', ' + _classCode)
-            self._instrument = instruments[0]
-            TkIO.write_at_path( instrumentPath, self._instrument )
-        else:
-            self._instrument = instruments[0]
+            
+            self._data = {}
+            self._data['api_trade_available_flag'] = instruments[0].api_trade_available_flag
+            self._data['blocked_tca_flag'] = instruments[0].blocked_tca_flag
+            self._data['class_code'] = instruments[0].class_code
+            self._data['figi'] = instruments[0].figi
+            self._data['first_1day_candle_date'] = instruments[0].first_1day_candle_date
+            self._data['first_1min_candle_date'] = instruments[0].first_1min_candle_date
+            self._data['for_iis_flag'] = instruments[0].for_iis_flag
+            self._data['for_qual_investor_flag'] = instruments[0].for_qual_investor_flag
+            self._data['instrument_kind'] = instruments[0].instrument_kind
+            self._data['instrument_type'] = instruments[0].instrument_type
+            self._data['isin'] = instruments[0].isin
+            self._data['lot'] = instruments[0].lot
+            self._data['name'] = instruments[0].name
+            self._data['position_uid'] = instruments[0].position_uid
+            self._data['ticker'] = instruments[0].ticker
+            self._data['uid'] = instruments[0].uid
+            self._data['weekend_flag'] = instruments[0].weekend_flag
 
-        self._share = None
-        self._bond = None
-        self._etf = None
-
-        if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            sharePath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['ShareFileExtension']
-            shares = TkIO.read_at_path( sharePath )
-            if len(shares) == 0:
-                self._share = self._client.instruments.share_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.write_at_path( sharePath, jsonpickle.encode(self._share) )
+            if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
+                share = self._client.instruments.share_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = instruments[0].figi )
+                self._data['share'] = {}
+                self._data['share']['asset_uid'] = share.instrument.asset_uid
+                self._data['share']['buy_available_flag'] = share.instrument.buy_available_flag
+                self._data['share']['country_of_risk'] = share.instrument.country_of_risk
+                self._data['share']['country_of_risk_name'] = share.instrument.country_of_risk_name
+                self._data['share']['currency'] = share.instrument.currency
+                self._data['share']['div_yield_flag'] = share.instrument.div_yield_flag
+                self._data['share']['dlong'] = share.instrument.dlong
+                self._data['share']['dlong_client'] = share.instrument.dlong_client
+                self._data['share']['dlong_min'] = share.instrument.dlong_min
+                self._data['share']['dshort'] = share.instrument.dshort
+                self._data['share']['dshort_client'] = share.instrument.dshort_client
+                self._data['share']['dshort_min'] = share.instrument.dshort_min
+                self._data['share']['exchange'] = share.instrument.exchange
+                self._data['share']['instrument_exchange'] = share.instrument.instrument_exchange
+                self._data['share']['ipo_date'] = share.instrument.ipo_date
+                self._data['share']['issue_size'] = share.instrument.issue_size
+                self._data['share']['issue_size_plan'] = share.instrument.issue_size_plan
+                self._data['share']['klong'] = share.instrument.klong
+                self._data['share']['kshort'] = share.instrument.kshort
+                self._data['share']['liquidity_flag'] = share.instrument.liquidity_flag
+                self._data['share']['min_price_increment'] = share.instrument.min_price_increment
+                self._data['share']['nominal'] = share.instrument.nominal
+                self._data['share']['otc_flag'] = share.instrument.otc_flag
+                self._data['share']['real_exchange'] = share.instrument.real_exchange
+                self._data['share']['sector'] = share.instrument.sector
+                self._data['share']['sell_available_flag'] = share.instrument.sell_available_flag
+                self._data['share']['share_type'] = share.instrument.share_type
+                self._data['share']['short_enabled_flag'] = share.instrument.short_enabled_flag
+                self._data['share']['trading_status'] = share.instrument.trading_status
+            elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
+                bond = self._client.instruments.bond_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = instruments[0].figi )
+                self._data['bond'] = {}
+                self._data['bond']['aci_value'] = bond.instrument.aci_value
+                self._data['bond']['amortization_flag'] = bond.instrument.amortization_flag
+                self._data['bond']['asset_uid'] = bond.instrument.asset_uid
+                self._data['bond']['bond_type'] = bond.instrument.bond_type
+                self._data['bond']['call_date'] = bond.instrument.call_date
+                self._data['bond']['country_of_risk'] = bond.instrument.country_of_risk
+                self._data['bond']['country_of_risk_name'] = bond.instrument.country_of_risk_name
+                self._data['bond']['coupon_quantity_per_year'] = bond.instrument.coupon_quantity_per_year
+                self._data['bond']['currency'] = bond.instrument.currency
+                self._data['bond']['dlong'] = bond.instrument.dlong
+                self._data['bond']['dlong_client'] = bond.instrument.dlong_client
+                self._data['bond']['dlong_min'] = bond.instrument.dlong_min
+                self._data['bond']['dshort'] = bond.instrument.dshort
+                self._data['bond']['dshort_client'] = bond.instrument.dshort_client
+                self._data['bond']['dshort_min'] = bond.instrument.dshort_min
+                self._data['bond']['exchange'] = bond.instrument.exchange
+                self._data['bond']['floating_coupon_flag'] = bond.instrument.floating_coupon_flag
+                self._data['bond']['initial_nominal'] = bond.instrument.initial_nominal
+                self._data['bond']['issue_kind'] = bond.instrument.issue_kind
+                self._data['bond']['issue_size'] = bond.instrument.issue_size
+                self._data['bond']['issue_size_plan'] = bond.instrument.issue_size_plan
+                self._data['bond']['klong'] = bond.instrument.klong
+                self._data['bond']['kshort'] = bond.instrument.kshort
+                self._data['bond']['liquidity_flag'] = bond.instrument.liquidity_flag
+                self._data['bond']['maturity_date'] = bond.instrument.maturity_date
+                self._data['bond']['min_price_increment'] = bond.instrument.min_price_increment
+                self._data['bond']['nominal'] = bond.instrument.nominal
+                self._data['bond']['otc_flag'] = bond.instrument.otc_flag
+                self._data['bond']['perpetual_flag'] = bond.instrument.perpetual_flag
+                self._data['bond']['placement_date'] = bond.instrument.placement_date
+                self._data['bond']['real_exchange'] = bond.instrument.real_exchange
+                self._data['bond']['risk_level'] = bond.instrument.risk_level
+                self._data['bond']['sector'] = bond.instrument.sector
+                self._data['bond']['sell_available_flag'] = bond.instrument.sell_available_flag
+                self._data['bond']['short_enabled_flag'] = bond.instrument.short_enabled_flag
+                self._data['bond']['state_reg_date'] = bond.instrument.state_reg_date
+                self._data['bond']['subordinated_flag'] = bond.instrument.subordinated_flag
+                self._data['bond']['trading_status'] = bond.instrument.trading_status
+            elif self._type == InstrumentType.INSTRUMENT_TYPE_ETF:
+                etf = self._client.instruments.etf_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = instruments[0].figi )
+                self._data['etf'] = {}
+                self._data['etf']['api_trade_available_flag'] = etf.instrument.api_trade_available_flag
+                self._data['etf']['asset_uid'] = etf.instrument.asset_uid
+                self._data['etf']['buy_available_flag'] = etf.instrument.buy_available_flag
+                self._data['etf']['country_of_risk'] = etf.instrument.country_of_risk
+                self._data['etf']['country_of_risk_name'] = etf.instrument.country_of_risk_name
+                self._data['etf']['currency'] = etf.instrument.currency
+                self._data['etf']['currency'] = etf.instrument.currency
+                self._data['etf']['dlong'] = etf.instrument.dlong
+                self._data['etf']['dlong_client'] = etf.instrument.dlong_client
+                self._data['etf']['dlong_min'] = etf.instrument.dlong_min
+                self._data['etf']['dshort'] = etf.instrument.dshort
+                self._data['etf']['dshort_client'] = etf.instrument.dshort_client
+                self._data['etf']['dshort_min'] = etf.instrument.dshort_min
+                self._data['etf']['exchange'] = etf.instrument.exchange
+                self._data['etf']['fixed_commission'] = etf.instrument.fixed_commission
+                self._data['etf']['focus_type'] = etf.instrument.focus_type
+                self._data['etf']['instrument_exchange'] = etf.instrument.instrument_exchange
+                self._data['etf']['instrument_exchange'] = etf.instrument.instrument_exchange
+                self._data['etf']['klong'] = etf.instrument.klong
+                self._data['etf']['kshort'] = etf.instrument.kshort
+                self._data['etf']['liquidity_flag'] = etf.instrument.liquidity_flag
+                self._data['etf']['min_price_increment'] = etf.instrument.min_price_increment
+                self._data['etf']['num_shares'] = etf.instrument.num_shares
+                self._data['etf']['otc_flag'] = etf.instrument.otc_flag
+                self._data['etf']['position_uid'] = etf.instrument.position_uid
+                self._data['etf']['real_exchange'] = etf.instrument.real_exchange
+                self._data['etf']['rebalancing_freq'] = etf.instrument.rebalancing_freq
+                self._data['etf']['released_date'] = etf.instrument.released_date
+                self._data['etf']['sector'] = etf.instrument.sector
+                self._data['etf']['sell_available_flag'] = etf.instrument.sell_available_flag
+                self._data['etf']['short_enabled_flag'] = etf.instrument.short_enabled_flag
+                self._data['etf']['trading_status'] = etf.instrument.trading_status
             else:
-                self._share = jsonpickle.decode(shares[0])
-        elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            bondPath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['BondFileExtension']
-            bonds = TkIO.read_at_path( bondPath )
-            if len(bonds) == 0:
-                self._bond = self._client.instruments.bond_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.writeToFile( bondPath, jsonpickle.encode(self._bond) )
-            else:
-                self._bond = jsonpickle.decode(bonds[0])
-        elif self._type == InstrumentType.INSTRUMENT_TYPE_ETF:
-            etfPath = _cfg['Paths']['InstrumentsPath'] + _ticker + _cfg['Paths']['EtfFileExtension']
-            etfs = TkIO.write_at_path( etfPath )
-            if len(etfs) == 0:
-                self._etf = self._client.instruments.etf_by( id_type = InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id = self._instrument.figi )
-                TkIO.write_at_path( etfPath, jsonpickle.encode(self._etf) )
-            else:
-                self._etf = jsonpickle.decode(etfs[0])
+                raise RuntimeError('Unsupported instrument: ' + _ticker + ', ' + _type + ', ' + _classCode)
+            
+            TkIO.write_at_path( instrumentPath, self._data )
+        
 
     def trading_status(self):
-        statusResponse = self._client.market_data.get_trading_statuses( instrument_ids=[self._instrument.figi] ).trading_statuses[0]
+        statusResponse = self._client.market_data.get_trading_statuses( instrument_ids=[self.figi()] ).trading_statuses[0]
         return statusResponse.trading_status
 
     def uid(self):        
-        return self._instrument.uid
+        return self._data['uid']
     
     def ticker(self):
         return self._ticker
 
     def figi(self):
-        if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            return self._share.instrument.figi
-        elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            return self._bond.instrument.figi
-        elif self._type == InstrumentType.INSTRUMENT_TYPE_ETF:
-            return self._etf.instrument.figi            
-        else:
-            raise RuntimeError('Unsupported instrument type')
+        return self._data['figi']
 
     def sector(self):
         if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            return self._share.instrument.sector
+            return self._data['share']['sector']
         elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            return self._bond.instrument.sector
+            return self._data['bond']['sector']
         else:
             raise RuntimeError('Unsupported instrument type')
 
     def lot(self):
-        if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            return int(self._share.instrument.lot)
-        elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            return int(self._bond.instrument.lot)
-        else:
-            raise RuntimeError('Unsupported instrument type')
+        return int(self._data['lot'])        
 
     def min_price_increment(self):
         if self._type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            return self._share.instrument.min_price_increment
+            return self._data['share']['min_price_increment']
         elif self._type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            return self._bond.instrument.min_price_increment
+            return self._data['bond']['min_price_increment']
         elif self._type == InstrumentType.INSTRUMENT_TYPE_ETF:
-            return self._etf.instrument.min_price_increment
+            return self._data['etf']['min_price_increment']
         else:
             raise RuntimeError('Unsupported instrument type')
 
     def get_order_book(self, depth : int):
-        return self._client.market_data.get_order_book( figi = self._instrument.figi, depth = depth )
+        return self._client.market_data.get_order_book( figi = self.figi(), depth = depth )
 
     def get_last_trades(self, _from, _to, _tradeSourceType):
-        return self._client.market_data.get_last_trades( figi = self._instrument.figi, from_=_from, to=_to, trade_source=_tradeSourceType)
+        return self._client.market_data.get_last_trades( figi = self.figi(), from_=_from, to=_to, trade_source=_tradeSourceType)
     
     def get_last_price(self):
         result = self._client.market_data.get_last_prices(figi=[self.figi()]).last_prices[0].price
