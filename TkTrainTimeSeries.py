@@ -153,16 +153,18 @@ class TkTimeSeriesDataLoader():
 
     def get_training_sample(self, idx : int):
         self._training_data_stream.seek( self._training_index[idx], 0 )
-        input_sample = TkIO.read_from_file( self._training_data_stream )
-        target_true_sample = TkIO.read_from_file( self._training_data_stream )
-        regime_sample = TkIO.read_from_file( self._training_data_stream )
+        data_chunk = TkIO.read_from_file( self._training_data_stream )
+        input_sample = data_chunk[0]
+        target_true_sample = data_chunk[1]
+        regime_sample = data_chunk[2]
         return input_sample, target_true_sample, regime_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
-        input_sample = TkIO.read_from_file( self._test_data_stream )
-        target_true_sample = TkIO.read_from_file( self._test_data_stream )
-        regime_sample = TkIO.read_from_file( self._test_data_stream )
+        data_chunk = TkIO.read_from_file( self._test_data_stream )
+        input_sample = data_chunk[0]
+        target_true_sample = data_chunk[1]
+        regime_sample = data_chunk[2]
         return input_sample, target_true_sample, regime_sample
 
     def start_load_training_data(self):
@@ -281,7 +283,7 @@ test_batch_size = data_loader.test_batch_size()
 with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     dpg.create_context()
-    dpg.create_viewport(title='Time series training', width=2392, height=936)
+    dpg.create_viewport(title='Time series training', width=2502, height=936)
     dpg.setup_dearpygui()
 
     with dpg.window(tag="primary_window", label="Training"):

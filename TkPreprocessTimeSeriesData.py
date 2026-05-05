@@ -340,9 +340,7 @@ class TkTimeSeriesDataPreprocessor():
                 is_priority_sample = ( ts_target_left_tail <= -self._priority_tail_threshold ) or ( ts_target_right_tail >= self._priority_tail_threshold )
                 if (step-1) % self._ts_data_stride == 0 or is_priority_sample:
                     self._test_index.append( self._test_data_offset )
-                    TkIO.write_to_file( self._test_data_stream, ts_input )
-                    TkIO.write_to_file( self._test_data_stream, ts_target )
-                    TkIO.write_to_file( self._test_data_stream, ts_regime )
+                    TkIO.write_to_file( self._test_data_stream, [ts_input, ts_target, ts_regime] )
                     self._test_data_offset = self._test_data_stream.tell()
                     verbalize = is_priority_sample
             else:
@@ -355,9 +353,7 @@ class TkTimeSeriesDataPreprocessor():
                     else:
                         self._regular_table.append( len(self._training_index) )
                     self._training_index.append( self._training_data_offset )
-                    TkIO.write_to_file( self._training_data_stream, ts_input )
-                    TkIO.write_to_file( self._training_data_stream, ts_target )
-                    TkIO.write_to_file( self._training_data_stream, ts_regime )
+                    TkIO.write_to_file( self._training_data_stream, [ts_input, ts_target, ts_regime] )
                     self._training_data_offset = self._training_data_stream.tell()
                     verbalize = is_priority_sample
 
