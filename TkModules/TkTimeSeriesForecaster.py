@@ -471,6 +471,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
+        y_regime = torch.nn.functional.softmax(y_regime, dim=-1)
         #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
 
         #if not self.training:

@@ -33,7 +33,7 @@ from TkModules.TkUI import TkUI
 from TkModules.TkTrainingHistory import TkTimeSeriesTrainingHistory
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
-from TkModules.TkMeanDistance import mean_distance, tail_mean_distance
+from TkModules.TkMeanDistance import mean_distance, tail_mean_distance, tail_mean_distance_with_center
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
 from TkModules.TkAnnealing import TkAnnealing
 
@@ -264,9 +264,9 @@ ts_optimizer = torch.optim.AdamW(
 )
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.wasserstein_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
-ts_regime_loss = torch.nn.CrossEntropyLoss(reduction="none")
-ts_recon_accuracy = lambda x,y: tail_mean_distance(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
+ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
+ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1).mean() # torch.nn.CrossEntropyLoss(reduction="none")
+ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 #ts_training_history.crop_front()
 
@@ -338,6 +338,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy_epoch" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy_epoch" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="KL-Div", parent="x_axis_accuracy_epoch", tag="accuracy_series_epoch" )
+            with dpg.plot(label="Input gradient", width=384, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_input_grad" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_input_grad" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Log(Abs(Grad))", parent="x_axis_input_grad", tag="input_grad" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -402,12 +407,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( training_batch_size, prior_steps_count * input_width) )
         input = input.to(cuda)
+        input = input.requires_grad_()
 
         target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
         target_true = torch.reshape( target_true, ( training_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
         target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
-        target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )
+        target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )        
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
         target_regime = torch.reshape( target_regime, ( training_batch_size, 1) )
@@ -421,7 +427,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", y_regime, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", target_regime, display_batch_id) 
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
@@ -440,6 +446,16 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = ts_model.input_slice(display_slice)
         input_slice = torch.reshape( input_slice, ( training_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_training", "y_axis_slice_training", "training_slice_series", input_slice, display_batch_id)
+        
+        input_grad = input.grad
+        input_grad = torch.reshape( input_grad, ( training_batch_size, prior_steps_count, input_width) )
+        input_grad = input_grad.reshape( -1, input_grad.shape[-1])  # (B*T, F)
+        input_grad = torch.abs(input_grad)        
+        input_grad_mean = input_grad.mean(dim=0)
+        input_grad_mean = input_grad_mean + 1e-16
+        input_grad_mean = torch.log(input_grad_mean)
+
+        TkUI.set_series_from_tensor("x_axis_input_grad", "y_axis_input_grad", "input_grad", input_grad_mean, 0)
 
         dpg.render_dearpygui_frame()
 
@@ -471,7 +487,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", y_regime, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", target_regime, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id) # y, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", target_true, display_batch_id)        

@@ -43,9 +43,12 @@ class TkUI():
         if len(t.size()) > 2:
             for i in range(t.size(dim=2)):
                 series.append( t[batch_id,0,i].item() )
-        else:
+        elif len(t.size()) > 1:
             for i in range(t.size(dim=1)):
                 series.append( t[batch_id,i].item() )
+        else:
+            for i in range(t.size()[0]):
+                series.append( t[i].item() )
         dpg.set_value( series_tag, [[i for i in range(0, len(series))], series])
         if TkUI.need_fit_axis( series_tag ):
             dpg.fit_axis_data( x_axis_tag )
