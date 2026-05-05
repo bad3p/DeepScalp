@@ -67,8 +67,6 @@ class TkTimeSeriesDataPreprocessor():
              os.path.isfile( join(self._data_path, self._time_series_test_data_filename)) ):
             raise RuntimeError('Preprocessed data already exists! Delete it manually.')
 
-        self._priority_table = []
-        self._regular_table = []
         self._training_index = []
         self._test_index = []
         self._training_data_offset = 0
@@ -79,18 +77,10 @@ class TkTimeSeriesDataPreprocessor():
     def num_training_samples(self):
         return len(self._training_index)
 
-    def num_priority_samples(self):
-        return len(self._priority_table)
-
-    def num_regular_samples(self):
-        return len(self._regular_table)
-
     def num_test_samples(self):
         return len(self._test_index)
 
     def flush(self):
-        TkIO.write_at_path( join(self._data_path, self._time_series_index_filename), self._priority_table )
-        TkIO.append_at_path( join(self._data_path, self._time_series_index_filename), self._regular_table )
         TkIO.append_at_path( join(self._data_path, self._time_series_index_filename), self._training_index )
         TkIO.append_at_path( join(self._data_path, self._time_series_index_filename), self._test_index )
         self._training_data_stream.close()
@@ -348,10 +338,6 @@ class TkTimeSeriesDataPreprocessor():
                 ts_target_right_tail = future_trades_tails[i][1]
                 is_priority_sample = ( ts_target_left_tail <= -self._priority_tail_threshold ) or ( ts_target_right_tail >= self._priority_tail_threshold )
                 if (step-1) % self._ts_data_stride == 0 or is_priority_sample:
-                    if is_priority_sample:
-                        self._priority_table.append( len(self._training_index) )
-                    else:
-                        self._regular_table.append( len(self._training_index) )
                     self._training_index.append( self._training_data_offset )
                     TkIO.write_to_file( self._training_data_stream, [ts_input, ts_target, ts_regime] )
                     self._training_data_offset = self._training_data_stream.tell()
@@ -426,7 +412,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             dpg.add_text( default_value="Files processed: " )
             dpg.add_text( tag="files_processed", default_value="0/0", color=[255, 254, 255])
         with dpg.group(horizontal=True):
-            dpg.add_text( default_value="Samples processed (total/regular/priority): " )
+            dpg.add_text( default_value="Samples processed (training/test): " )
             dpg.add_text( tag="samples_processed", default_value="0/0/0", color=[255, 254, 255])
         with dpg.group(horizontal=True):
             dpg.add_text( default_value="Filename: " )
@@ -487,11 +473,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             files_processed = files_processed + 1
             
             num_training_samples = preprocessor.num_training_samples()
-            num_regular_samples = preprocessor.num_regular_samples()
-            num_priority_samples = preprocessor.num_priority_samples()
             num_test_samples = preprocessor.num_test_samples()
             dpg.set_value("files_processed", str(files_processed)+"/"+str(len(data_files)))
-            dpg.set_value("samples_processed", str(num_training_samples)+"/"+str(num_regular_samples)+"/"+str(num_priority_samples)+"/"+str(num_test_samples))
+            dpg.set_value("samples_processed", str(num_training_samples) + "/" + str(num_test_samples))
 
             dpg.render_dearpygui_frame()
             if not dpg.is_dearpygui_running():

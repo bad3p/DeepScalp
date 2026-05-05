@@ -41,7 +41,7 @@ from TkModules.TkAnnealing import TkAnnealing
 
 class TkTimeSeriesDataLoader():
 
-    def __init__(self, _cfg : configparser.ConfigParser, _priority_sample_id = 0, _regular_sample_id = 0, _test_sample_id = 0):
+    def __init__(self, _cfg : configparser.ConfigParser, _training_sample_id = 0, _test_sample_id = 0):
         
         self._data_path = _cfg['Paths']['DataPath']
         self._time_series_index_filename = _cfg['Paths']['TimeSeriesIndexFileName']
@@ -49,32 +49,21 @@ class TkTimeSeriesDataLoader():
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
         
         self._training_batch_size = int(_cfg['TimeSeries']['TrainingBatchSize'])
-        self._priority_batch_size = int(_cfg['TimeSeries']['PriorityBatchSize'])
 
-        self._regular_sample_id = _regular_sample_id
-        self._priority_sample_id = _priority_sample_id
+        self._training_sample_id = _training_sample_id
         self._test_sample_id = _test_sample_id
 
         self._index_content = TkIO.read_at_path( join(self._data_path, self._time_series_index_filename) )
+        self._training_index = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])
+        self._test_index = self._index_content[1]
 
-        self._priority_table = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])
-        self._regular_table = TkTimeSeriesDataLoader.shuffle_table(self._index_content[1])
-        #self._priority_table = self._index_content[0]
-        #self._regular_table = self._index_content[1]
-        #random.shuffle(self._priority_table)
-        #random.shuffle(self._regular_table)
-
-        self._training_index = self._index_content[2]
-        self._test_index = self._index_content[3]
-
-        priority_sample_count = len(self._priority_table) 
-        regular_sample_count = len(self._regular_table)
+        training_sample_count = len(self._training_index) 
         test_sample_count = len(self._test_index)
-        print( '\nPriority samples:', priority_sample_count, 'Regular samples:', regular_sample_count, ', Test samples:', test_sample_count)
-        regular_epoch_size = int(regular_sample_count/(self._training_batch_size-self._priority_batch_size))
-        print( 'Regular epoch size:', regular_epoch_size )
-        self._test_batch_size = int(test_sample_count/regular_epoch_size)
-        print( 'Balanced test batch size:', self._test_batch_size )
+        print( 'Training samples:', training_sample_count, ', Test samples:', test_sample_count)
+        self._training_epoch_size = int( training_sample_count / self._training_batch_size )
+        print( 'Training epoch size:', self._training_epoch_size )
+        self._test_batch_size = int( test_sample_count / self._training_epoch_size )
+        print( 'Test batch size:', self._test_batch_size )
 
         self._training_data_stream = open( join(self._data_path, self._time_series_training_data_filename), 'rb+')
         self._test_data_stream = open( join(self._data_path, self._time_series_test_data_filename), 'rb+')
@@ -113,43 +102,17 @@ class TkTimeSeriesDataLoader():
         self._training_data_stream.close()
         self._test_data_stream.close()
 
-    def set_priority_batch_size(self, priority_batch_size:int):
-        self._priority_batch_size = int(priority_batch_size)
+    def training_epoch_size(self):
+        return self._training_epoch_size
 
     def test_batch_size(self):
         return self._test_batch_size
 
-    def regular_epoch_size(self):
-        return len(self._regular_table)
-
-    def regular_sample_id(self):
-        return self._regular_sample_id
-
-    def priority_sample_id(self):
-        return self._priority_sample_id
+    def training_sample_id(self):
+        return self._training_sample_id
 
     def test_sample_id(self):
         return self._test_sample_id
-
-    def get_training_indices(self):
-        result = []
-        for batchId in range(self._training_batch_size):
-            isPrioritySample = batchId < self._priority_batch_size
-            if isPrioritySample:
-                result.append( self._priority_table[self._priority_sample_id] )
-                self._priority_sample_id = self._priority_sample_id + 1
-                if self._priority_sample_id >= len(self._priority_table):
-                    self._priority_sample_id = 0
-                    self._priority_table = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])                    
-                    #random.shuffle(self._priority_table)        
-            else:
-                result.append( self._regular_table[self._regular_sample_id] )
-                self._regular_sample_id = self._regular_sample_id + 1
-                if self._regular_sample_id >= len(self._regular_table):
-                    self._regular_sample_id = 0
-                    self._regular_table = TkTimeSeriesDataLoader.shuffle_table(self._index_content[1])
-                    #random.shuffle(self._regular_table)
-        return result
 
     def get_training_sample(self, idx : int):
         self._training_data_stream.seek( self._training_index[idx], 0 )
@@ -175,10 +138,12 @@ class TkTimeSeriesDataLoader():
             self._input_samples = [None] * self._training_batch_size
             self._target_true_samples = [None] * self._training_batch_size
             self._regime_samples = [None] * self._training_batch_size
-            indices = self.get_training_indices()
-            indices.sort()
             for batch_id in range(self._training_batch_size):
-                input_sample, target_true_sample, regime_sample = self.get_training_sample( indices[batch_id] )
+                input_sample, target_true_sample, regime_sample = self.get_training_sample( self._training_sample_id )
+                self._training_sample_id = self._training_sample_id + 1
+                if self._training_sample_id >= len(self._training_index):
+                    self._training_sample_id = 0
+                    self._training_index = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])                    
                 self._input_samples[batch_id] = input_sample
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
@@ -236,8 +201,6 @@ target_true_depth = int(config['Autoencoders']['LastTradesDepth'])
 input_slices = json.loads(config['TimeSeries']['InputSlices'])
 display_slice = int(config['TimeSeries']['DisplaySlice'])
 training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
-priority_batch_size = int(config['TimeSeries']['PriorityBatchSize'])
-priority_batch_size_multiplier = TkAnnealing(config['TimeSeries']['PriorityBatchSizeMultiplier'])
 embedding_learning_rate = float(config['TimeSeries']['EmbeddingLearningRate'])
 smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
 smm_ev_learning_rate = float(config['TimeSeries']['SMMEVLearningRate'])
@@ -274,8 +237,7 @@ ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
 data_loader = TkTimeSeriesDataLoader(
     config,
-    ts_training_history.priority_sample_id(),
-    ts_training_history.regular_sample_id(),
+    ts_training_history.training_sample_id(),
     ts_training_history.test_sample_id()
 )
 test_batch_size = data_loader.test_batch_size()
@@ -377,8 +339,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         for i in ts_model.fusion_decay_group_indices():
             ts_optimizer.param_groups[i]['weight_decay'] = fusion_decay
     
-    ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.regular_epoch_size() )
-    data_loader.set_priority_batch_size(  priority_batch_size * priority_batch_size_multiplier.get_value(ts_smooth_epoch) )    
+    ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() )
     data_loader.start_load_training_data()
 
     show_priority_sample = False
@@ -479,8 +440,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_regime = torch.nn.functional.one_hot(target_regime.long(), num_classes=num_market_regimes)
         target_regime = torch.reshape( target_regime, ( test_batch_size, num_market_regimes) ).float()
 
-        ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.regular_epoch_size() )
-        data_loader.set_priority_batch_size(  priority_batch_size * priority_batch_size_multiplier.get_value(ts_smooth_epoch) ) 
+        ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() )
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
@@ -510,7 +470,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        ts_training_history.log(data_loader.priority_sample_id(), data_loader.regular_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy_val)
+        ts_training_history.log(data_loader.training_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy_val)
 
         TkUI.set_series("x_axis_training", "y_axis_training", "loss_series", ts_training_history.loss_history())
         TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history())

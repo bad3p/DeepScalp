@@ -161,16 +161,14 @@ class TkTimeSeriesTrainingHistory():
 
         if os.path.isfile(self._history_path):
             file_content = TkIO.read_at_path(self._history_path)
-            self._priority_sample_id = file_content[0]
-            self._regular_sample_id = file_content[1]
-            self._test_sample_id = file_content[2]
-            self._loss_history = file_content[3]
-            self._accuracy_history = file_content[4]
-            self._epoch_loss_history = file_content[5]
-            self._epoch_accuracy_history = file_content[6]
+            self._training_sample_id = file_content[0]
+            self._test_sample_id = file_content[1]
+            self._loss_history = file_content[2]
+            self._accuracy_history = file_content[3]
+            self._epoch_loss_history = file_content[4]
+            self._epoch_accuracy_history = file_content[5]
         else:
-            self._priority_sample_id = 0
-            self._regular_sample_id = 0
+            self._training_sample_id = 0
             self._test_sample_id = 0
             self._loss_history = []
             self._accuracy_history = []
@@ -178,13 +176,10 @@ class TkTimeSeriesTrainingHistory():
             self._epoch_accuracy_history = [(0.0,0,0)]
 
     def get_smooth_epoch(self,epoch_size:int):
-        return len(self._epoch_loss_history) - 1 + self._regular_sample_id / epoch_size
+        return len(self._epoch_loss_history) - 1 + self._training_sample_id / epoch_size
 
-    def priority_sample_id(self):
-        return self._priority_sample_id
-
-    def regular_sample_id(self):
-        return self._regular_sample_id
+    def training_sample_id(self):
+        return self._training_sample_id
 
     def test_sample_id(self):
         return self._test_sample_id
@@ -206,15 +201,14 @@ class TkTimeSeriesTrainingHistory():
         del self._epoch_accuracy_history[0]
 
     def save(self):
-        TkIO.write_at_path(self._history_path, self._priority_sample_id)
-        TkIO.append_at_path(self._history_path, self._regular_sample_id)
+        TkIO.append_at_path(self._history_path, self._training_sample_id)
         TkIO.append_at_path(self._history_path, self._test_sample_id)
         TkIO.append_at_path(self._history_path, self._loss_history)
         TkIO.append_at_path(self._history_path,self._accuracy_history)
         TkIO.append_at_path(self._history_path,self._epoch_loss_history)
         TkIO.append_at_path(self._history_path,self._epoch_accuracy_history)
 
-    def log(self, priority_sample_id:int, regular_sample_id:int, test_sample_id:int, loss:float, accuracy:float, end_of_training_epoch_callback = None):
+    def log(self, training_sample_id:int, test_sample_id:int, loss:float, accuracy:float, end_of_training_epoch_callback = None):
 
         def accumulate_epoch_data(epoch_data:list, value:float, is_end_of_epoch:bool):
             if math.isnan(value) or math.isinf(value):
@@ -228,10 +222,9 @@ class TkTimeSeriesTrainingHistory():
                 next_avg = (prev_avg * prev_avg_norm + value) / next_avg_norm
                 epoch_data[-1] = (next_avg, next_avg_norm)
         
-        is_end_of_training_epoch = regular_sample_id < self._regular_sample_id
+        is_end_of_training_epoch = training_sample_id < self._training_sample_id
         is_end_of_test_epoch = test_sample_id < self._test_sample_id
-        self._priority_sample_id = priority_sample_id
-        self._regular_sample_id = regular_sample_id
+        self._training_sample_id = training_sample_id
         self._test_sample_id = test_sample_id
 
         self._loss_history.append( loss )
