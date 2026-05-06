@@ -327,6 +327,7 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
                 
                 if (step-1) % ts_data_stride == 0 or is_priority_sample:                    
                     output_queue.put( (pid, [ts_input, ts_target, ts_regime], is_priority_sample, is_test_data_source, False) )
+                    time.sleep( 0.0 )
     
     output_queue.put( (pid, [0], False, is_test_data_source, True) )
 
@@ -401,6 +402,7 @@ if __name__ == "__main__":
         total_samples = 0
         files_processed = 0
         start_time = time.time()
+        feedback_time = time.time()
 
         # prepare list of data sources
 
@@ -427,8 +429,9 @@ if __name__ == "__main__":
 
         # preprocess data sources
 
-        max_num_processes = 16
-        max_queue_size = 128
+        max_num_processes = 12
+        max_queue_size = 8192
+        max_queue_fetch_steps = int( max_queue_size / max_num_processes )
 
         output_queue = mp.Queue( maxsize=max_queue_size )
         processes = []
@@ -447,6 +450,7 @@ if __name__ == "__main__":
             global training_index
             global training_data_offset
             global training_data_stream
+            global feedback_time
             if is_test_data_source:
                 test_index.append( test_data_offset )
                 TkIO.write_to_file( test_data_stream, sample )
@@ -455,7 +459,8 @@ if __name__ == "__main__":
                 training_index.append( training_data_offset )
                 TkIO.write_to_file( training_data_stream, sample )
                 training_data_offset = training_data_stream.tell()
-            if is_priority_sample:
+            if is_priority_sample and (time.time() - feedback_time) > 1.0:
+                feedback_time = time.time()
                 ts_input = sample[0]
                 ts_target = sample[1]
                 TkUI.set_series("x_axis_input","y_axis_input","input_series", ts_input)
@@ -464,7 +469,8 @@ if __name__ == "__main__":
                 dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
 
         while len(data_sources) > 0 or len(processes) > 0:
-            if len(processes) < max_num_processes and len(data_sources) > 0:
+
+            while len(processes) < max_num_processes and len(data_sources) > 0:
                 data_source = data_sources[0]
                 del data_sources[0]
 
@@ -478,8 +484,9 @@ if __name__ == "__main__":
 
                 dpg.set_value("filename", filename)
                 dpg.set_value("files_remaining", str(len(data_sources)))
+                dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
 
-            for step in range(max_num_processes):
+            for step in range(max_queue_fetch_steps):
                 try:
                     tuple = output_queue.get_nowait()
                     pid = tuple[0]
@@ -493,7 +500,7 @@ if __name__ == "__main__":
                         append_sample(sample,is_priority_sample,is_test_data_source)
                 except Empty:
                     time.sleep( 0.0 )
-                    pass  # nothing in the queue right now
+                    break  # nothing in the queue right now
 
             dpg.render_dearpygui_frame()
             if not dpg.is_dearpygui_running():
@@ -515,6 +522,11 @@ if __name__ == "__main__":
                     append_sample(sample,is_priority_sample,is_test_data_source)
             except Empty:
                 pass  # nothing in the queue right now
+            if not dpg.is_dearpygui_running():
+                break
+
+        for i in range(len(processes) - 1, -1, -1):
+            processes[i].terminate()
 
         end_time = time.time()
         print('Elapsed time:',end_time-start_time)

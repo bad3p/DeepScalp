@@ -469,7 +469,7 @@ class TkStatistics():
         for bid in orderbook.bids:
             price = quotation_to_float( bid.price )
             if price > pivot_price:
-                print( 'Bid overlapping asks: ', pivot_price, price )
+                #print( 'Bid overlapping asks: ', pivot_price, price )
                 continue
             index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(orderbook_width/2)-1 )
             assert almost_equal(price, bid_price[index]) if index < int(orderbook_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
@@ -487,7 +487,7 @@ class TkStatistics():
         for ask in orderbook.asks:
             price = quotation_to_float( ask.price )
             if price <= pivot_price:
-                print( 'Ask overlapping bids: ', pivot_price, price )
+                #print( 'Ask overlapping bids: ', pivot_price, price )
                 continue
             index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(orderbook_width/2)-1 )
             assert almost_equal(price, ask_price[index]) if index < int(orderbook_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
