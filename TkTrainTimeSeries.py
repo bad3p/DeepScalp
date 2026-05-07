@@ -302,11 +302,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_accuracy_epoch" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_accuracy_epoch" )
                 dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="KL-Div", parent="x_axis_accuracy_epoch", tag="accuracy_series_epoch" )
-            with dpg.plot(label="Input gradient", width=384, height=256):
+            with dpg.plot(label="Feature importance", width=384, height=256):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_input_grad" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_input_grad" )
-                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Log(Abs(Grad))", parent="x_axis_input_grad", tag="input_grad" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Log(Abs(InputGrad*Input))", parent="x_axis_input_grad", tag="input_grad" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -410,10 +410,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_slice = torch.reshape( input_slice, ( training_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_training", "y_axis_slice_training", "training_slice_series", input_slice, display_batch_id)
         
-        input_grad = input.grad
+        input_grad = input.grad * input
         input_grad = torch.reshape( input_grad, ( training_batch_size, prior_steps_count, input_width) )
         input_grad = input_grad.reshape( -1, input_grad.shape[-1])  # (B*T, F)
-        input_grad = torch.abs(input_grad)        
+        input_grad = torch.abs(input_grad) 
+
         input_grad_mean = input_grad.mean(dim=0)
         input_grad_mean = input_grad_mean + 1e-16
         input_grad_mean = torch.log(input_grad_mean)
