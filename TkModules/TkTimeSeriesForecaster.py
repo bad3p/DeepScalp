@@ -2,6 +2,7 @@
 import configparser
 import torch
 import json
+from torch.distributions import Gamma, Dirichlet
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkSelfAttention import TkSelfAttention
@@ -240,11 +241,30 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
-        self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
+        self._encoder_mlp = TkModel( json.loads(_cfg['TimeSeries']['EncoderMLP']) )
+        self._decoder_mlp = TkModel( json.loads(_cfg['TimeSeries']['DecoderMLP']) )
+        self._autoencoder_hidden_layer_size = int(_cfg['TimeSeries']['AutoencoderHiddenLayerSize'])
+        self._autoencoder_code_layer_size = int(_cfg['TimeSeries']['AutoencoderCodeLayerSize'])
+        self._autoencoder_min_alpha = float(_cfg['TimeSeries']['AutoencoderMinAlpha'])
+        self._autoencoder_max_alpha = float(_cfg['TimeSeries']['AutoencoderMaxAlpha'])
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
-        self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])         
+        self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
+
+        # Learnable Dirichlet prior
+        initial_prior_alpha = 0.9 # TODO: configure
+        self._autoencoder_prior_log_alpha = torch.nn.Parameter( torch.log(torch.full((1, self._autoencoder_code_layer_size), initial_prior_alpha)))
+
+        # Dirichlet parameter layer (log-alpha)
+        self._autoencoder_log_alpha_layer = torch.nn.Linear(
+            self._autoencoder_hidden_layer_size,
+            self._autoencoder_code_layer_size
+        )
+        self._autoencoder_reparametrization_layer = torch.nn.Linear(
+            self._autoencoder_code_layer_size,
+            self._autoencoder_hidden_layer_size
+        )
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -310,7 +330,11 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._fusion.gate[0].bias.fill_(-2.0)
 
         # reinitialize MLP weights
-        for m in self._mlp.modules():            
+        for m in self._encoder_mlp.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                torch.nn.init.constant_(m.bias, 0)
+        for m in self._decoder_mlp.modules():
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
                 torch.nn.init.constant_(m.bias, 0)
@@ -321,7 +345,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float, prior_log_alpha_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
@@ -354,7 +378,31 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 embedding_no_decay_params.append(param)
 
-        for name, param in self._mlp.named_parameters():
+        for name, param in self._encoder_mlp.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
+        for name, param in self._decoder_mlp.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
+        for name, param in self._autoencoder_log_alpha_layer.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
+        for name, param in self._autoencoder_reparametrization_layer.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -378,7 +426,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 fusion_no_decay_params.append(param)
 
-        # other = [ self._y_scale, self._y_regime_scale ]
+        prior_log_alpha_params = [ self._autoencoder_prior_log_alpha ]
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
@@ -391,7 +439,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
-            #{"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
+            {"params": prior_log_alpha_params, "weight_decay": 0.0, 'lr': prior_log_alpha_learning_rate},
         ]
     
     def embedding_group_indices(self):
@@ -423,6 +471,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     
     def fusion_decay_group_indices(self):
         return [8]
+    
+    def prior_log_alpha_group_indices(self):
+        return [10]
 
     def smm_output(self):
         return self._smm_output_tensors
@@ -458,20 +509,41 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             smm_output = x[:, -1, :]
             self._smm_output_tensors.append( smm_output )
 
-        #merged = torch.cat( self._smm_output_tensors, dim=-1)
+        # no fusion case
+        # merged = torch.cat( self._smm_output_tensors, dim=-1)
         fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         merged = fused
 
-        y = self._mlp.forward( merged )
-        y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
-        #y = y / self._y_scale.clamp(2.0, 10.0)
+        y_encoded = self._encoder_mlp.forward( merged )
 
-        # no fusion case
-        # y = self._mlp.forward( torch.cat( self._smm_output_tensors, dim=-1) )
+        log_alpha = self._autoencoder_log_alpha_layer( y_encoded ).clamp(-10.0, 10.0) # TODO: configure
+        alpha = torch.exp(log_alpha)
+        alpha_sum = alpha.sum(dim=1, keepdim=True)
+        alpha = alpha * (alpha_sum.clamp(min=self._autoencoder_min_alpha, max=self._autoencoder_max_alpha) / (alpha_sum + 1e-8))
+
+        # KLD loss
+        y_kld_loss = self.kl_divergence(alpha)
+
+        # Dirichlet reparameterization
+        if self.training:
+            gamma_dist = Gamma(alpha, torch.ones_like(alpha))
+            g = gamma_dist.rsample()
+            y = g / ( g.sum(dim=1, keepdim=True) + 1e-8)
+        else:
+            # Inference Mode: Deterministic expected value
+            current_alpha_sum = alpha.sum(dim=1, keepdim=True)
+            y = alpha / current_alpha_sum
+        
+        # monitoring feedback
+        self._smm_output_tensors = y
+
+        y = self._autoencoder_reparametrization_layer(y)
+        y = self._decoder_mlp(y)
+        y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
 
         y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
-        y_regime = torch.nn.functional.softmax(y_regime, dim=-1)
+        #y_regime = torch.nn.functional.softmax(y_regime, dim=-1)
         #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
 
         #if not self.training:
@@ -479,14 +551,25 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
 
         # monitoring feedback
-        if self.training:
-            self._smm_output_tensors = merged
-        else:
-            self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)
+        # if self.training:
+        #     self._smm_output_tensors = merged
+        # else:
+        #     self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)
         # self._smm_output_tensors = gates
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
-        return y, y_regime
+        return y, y_regime, y_kld_loss
+
+    def kl_divergence(self, alpha):
+        # Exponentiate to guarantee strict positivity
+        prior_alpha = torch.exp(self._autoencoder_prior_log_alpha)
+        
+        # Expand the (1, K) prior to match the (Batch_Size, K) posterior
+        prior_alpha = prior_alpha.expand_as(alpha)
+        
+        prior = Dirichlet( prior_alpha )
+        posterior = Dirichlet( alpha )
+        return torch.distributions.kl_divergence(posterior, prior).mean()
 
     @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):
@@ -508,7 +591,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         js = 0.5 * (kl_pm + kl_qm)
 
-        return js.mean()        
+        return js
     
     @staticmethod
     def emd_1d_from_logits(logits, target):
@@ -520,111 +603,5 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         cdf_t = torch.cumsum(target, dim=-1)
 
         emd = torch.abs(cdf_q - cdf_t).sum(dim=-1)
-        return emd.mean()
+        return emd
 
-
-    @staticmethod
-    def crps_from_logits(logits, target_dist):
-
-        """
-        logits: (B, K) - raw outputs
-        target_dist: (B, K) - normalized centered probability distributions (sum to 1)
-        """
-
-        # Predicted probabilities
-        pred_probs = torch.nn.functional.softmax(logits, dim=-1)
-
-        # Standard CDFs
-        pred_cdf = torch.cumsum(pred_probs, dim=-1)
-        target_cdf = torch.cumsum(target_dist, dim=-1)
-
-        # Midpoint correction (center mass within bins)
-        pred_cdf_mid = pred_cdf - 0.5 * pred_probs
-        target_cdf_mid = target_cdf - 0.5 * target_dist
-
-        # CRPS
-        crps = torch.mean((pred_cdf_mid - target_cdf_mid) ** 2, dim=-1)
-
-        return crps
-    
-    @staticmethod
-    def tail_weight_vector(K, gamma=1.0, device='cpu'):
-        """
-        Generate weight vector for W1 loss emphasizing tails
-        relative to the center of K bins.
-
-        Args:
-            K (int): number of bins
-            gamma (float): exponent to emphasize tails (>1 stronger)
-            device: torch device
-
-        Returns:
-            torch.Tensor: shape (K,)
-        """
-        center = (K - 1) / 2
-        idx = torch.arange(K, device=device)
-        weights = torch.abs(idx - center) / center  # normalized distance from center
-        weights = weights ** gamma  # optional exponent
-        return weights
-
-    @staticmethod
-    def wasserstein_1d_from_logits(logits, target_dist):
-
-        """
-        logits: (B, K) - raw outputs
-        target_dist: (B, K) - target probability distribution (sum to 1)
-        """        
-
-        # Predicted probabilities
-        pred_probs = torch.nn.functional.softmax(logits, dim=-1)
-
-        # Compute CDFs
-        pred_cdf = torch.cumsum(pred_probs, dim=-1)
-        target_cdf = torch.cumsum(target_dist, dim=-1)
-
-        # Midpoint correction (optional, similar to CRPS)
-        pred_cdf_mid = pred_cdf - 0.5 * pred_probs
-        target_cdf_mid = target_cdf - 0.5 * target_dist
-        #weights = TkTimeSeriesForecaster.tail_weight_vector( logits.shape[-1], gamma=0.5, device=logits.device)
-
-        # Wasserstein-1 (L1 distance of CDFs)
-        #w1 = torch.sum( weights * torch.abs(pred_cdf_mid - target_cdf_mid), dim=-1)  # per sample
-        w1 = torch.sum( torch.abs(pred_cdf_mid - target_cdf_mid), dim=-1)  # per sample
-
-        return w1
-    
-    @staticmethod
-    def gaussian_kernel1d(sigma, kernel_size=None, device=None, dtype=torch.float32):
-        # choose kernel size if not provided
-        if kernel_size is None:
-            kernel_size = int(6 * sigma + 1)
-            if kernel_size % 2 == 0:
-                kernel_size += 1  # ensure odd size
-
-        # index
-        half = kernel_size // 2
-        x = torch.arange(-half, half + 1, device=device, dtype=dtype)
-
-        # Gaussian formula
-        kernel = torch.exp(-(x ** 2) / (2 * sigma ** 2))
-
-        # normalize to sum = 1
-        kernel = kernel / kernel.sum()
-
-        # reshape for conv1d: (out_channels, in_channels, kernel_size)
-        kernel = kernel.view(1, 1, -1)
-
-        return kernel
-
-    @staticmethod
-    def gaussian_smooth(y, kernel):
-        k = kernel.shape[-1] // 2
-        y = y.unsqueeze(1)  # (B, 1, D)
-
-        # reflect padding
-        y = torch.nn.functional.pad(y, (k, k), mode='reflect')
-
-        y = torch.nn.functional.conv1d(y, kernel)
-        y = y.squeeze(1)
-
-        return y / y.sum(dim=-1, keepdim=True)

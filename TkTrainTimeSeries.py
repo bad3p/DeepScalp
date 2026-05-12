@@ -206,6 +206,7 @@ smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
 smm_ev_learning_rate = float(config['TimeSeries']['SMMEVLearningRate'])
 smm_dt_learning_rate = float(config['TimeSeries']['SMMDTLearningRate'])
 fusion_learning_rate = TkAnnealing(config['TimeSeries']['FusionLearningRate'])
+prior_log_alpha_learning_rate = TkAnnealing(config['TimeSeries']['PriorLogAlphaLearningRate'])
 mlp_learning_rate = float(config['TimeSeries']['MLPLearningRate'])
 embedding_weight_decay = float(config['TimeSeries']['EmbeddingWeightDecay']) 
 smm_weight_decay = float(config['TimeSeries']['SMMWeightDecay']) 
@@ -217,6 +218,7 @@ orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
 learning_rate_multiplier = TkAnnealing(config['TimeSeries']['LearningRateMultiplier']) 
 weight_decay_multiplier = TkAnnealing(config['TimeSeries']['WeightDecayMultiplier']) 
+autoencoder_beta = TkAnnealing(config['TimeSeries']['AutoencoderBeta'])
 cooldown = float( config['TimeSeries']['Cooldown'] )
 
 ts_model = TkTimeSeriesForecaster(config)
@@ -224,16 +226,15 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.AdamW(     
-    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate ),
+    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate, prior_log_alpha_learning_rate ),
     betas=(0.9, 0.95)
 )
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
-ts_loss = lambda x,y: (TkTimeSeriesForecaster.js_divergence_from_logits(x, y) * 0.05 + TkTimeSeriesForecaster.emd_1d_from_logits(x, y) * 1.0) # torch.nn.HuberLoss(reduction="none") # MS_SSIM_1D_Loss(window_size=11)
-ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1).mean() # torch.nn.CrossEntropyLoss(reduction="none")
+ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
-#ts_training_history.crop_front()
+ts_regime_error_weights = torch.tensor([1.0, 2.0, 4.0], device=cuda) # TODO: configure
 
 data_loader = TkTimeSeriesDataLoader(
     config,
@@ -311,7 +312,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
 
-    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float):
+    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float, pla_lr:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_group_indices():
@@ -326,6 +327,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             ts_optimizer.param_groups[i]['lr'] = mlp_lr
         for i in ts_model.fusion_group_indices():
             ts_optimizer.param_groups[i]['lr'] = fusion_lr
+        for i in ts_model.prior_log_alpha_group_indices():
+            ts_optimizer.param_groups[i]['lr'] = pla_lr
 
     def override_weight_decay(embedding_decay:float, smm_decay:float, fusion_decay:float, mlp_decay:float):
         global ts_model
@@ -339,7 +342,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         for i in ts_model.fusion_decay_group_indices():
             ts_optimizer.param_groups[i]['weight_decay'] = fusion_decay
     
-    ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() )
+    ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() * training_batch_size )
     data_loader.start_load_training_data()
 
     show_priority_sample = False
@@ -353,9 +356,11 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         smm_dt_lr = smm_dt_learning_rate * lr_multiplier
         fusion_lr = fusion_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
         mlp_lr = mlp_learning_rate * lr_multiplier
-        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr )
+        pla_lr = prior_log_alpha_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
+        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr, pla_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
+        kld_loss_multiplier = autoencoder_beta.get_value( ts_smooth_epoch )
         embedding_decay = embedding_weight_decay * decay_multiplier
         smm_decay = smm_weight_decay * decay_multiplier
         fusion_decay = fusion_weight_decay * decay_multiplier
@@ -386,17 +391,24 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y, y_regime = ts_model.forward( input )
+        y, y_regime, y_kld_loss = ts_model.forward( input )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", y_regime, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", target_regime, display_batch_id) 
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
 
-        y_recon_loss = ts_loss( y, target_true ).mean()
-        y_loss = y_recon_loss + ts_regime_loss( y_regime, target_regime ).mean() * regime_loss_weight
+        js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
+        emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)
+        recon_loss = (js_loss * 0.05) + (emd_loss ** 1.5)
+        sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1) # Shape: (Batch_Size,)
+        y_recon_loss = (recon_loss * sample_regime_weights).mean()
+
+        y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_regime_weights).mean()
+
+        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight + y_kld_loss * kld_loss_multiplier
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
@@ -441,16 +453,16 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_regime = torch.nn.functional.one_hot(target_regime.long(), num_classes=num_market_regimes)
         target_regime = torch.reshape( target_regime, ( test_batch_size, num_market_regimes) ).float()
 
-        ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() )
+        ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() * training_batch_size )
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y, y_regime = ts_model.forward( input )
+        y, y_regime, y_kld_loss = ts_model.forward( input )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", y_regime, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", target_regime, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id) # y, display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", target_true, display_batch_id)        
