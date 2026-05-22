@@ -207,7 +207,7 @@ class TkTimeSeriesTrainingHistory():
         del self._epoch_accuracy_history[0]
 
     def save(self):
-        TkIO.append_at_path(self._history_path, self._training_sample_id)
+        TkIO.write_at_path(self._history_path, self._training_sample_id)
         TkIO.append_at_path(self._history_path, self._test_sample_id)
         TkIO.append_at_path(self._history_path, self._loss_history)
         TkIO.append_at_path(self._history_path,self._accuracy_history)

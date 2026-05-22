@@ -245,26 +245,17 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._decoder_mlp = TkModel( json.loads(_cfg['TimeSeries']['DecoderMLP']) )
         self._autoencoder_hidden_layer_size = int(_cfg['TimeSeries']['AutoencoderHiddenLayerSize'])
         self._autoencoder_code_layer_size = int(_cfg['TimeSeries']['AutoencoderCodeLayerSize'])
-        self._autoencoder_min_alpha = float(_cfg['TimeSeries']['AutoencoderMinAlpha'])
-        self._autoencoder_max_alpha = float(_cfg['TimeSeries']['AutoencoderMaxAlpha'])
+        self._autoencoder_free_bits_threshold = float(_cfg['TimeSeries']['AutoencoderFreeBitsThreshold'])
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
 
-        # Learnable Dirichlet prior
-        initial_prior_alpha = 0.9 # TODO: configure
-        self._autoencoder_prior_log_alpha = torch.nn.Parameter( torch.log(torch.full((1, self._autoencoder_code_layer_size), initial_prior_alpha)))
-
-        # Dirichlet parameter layer (log-alpha)
-        self._autoencoder_log_alpha_layer = torch.nn.Linear(
-            self._autoencoder_hidden_layer_size,
-            self._autoencoder_code_layer_size
-        )
-        self._autoencoder_reparametrization_layer = torch.nn.Linear(
-            self._autoencoder_code_layer_size,
-            self._autoencoder_hidden_layer_size
-        )
+        # VAE layers
+        self._autoencoder_mu_layer = torch.nn.Linear(self._autoencoder_hidden_layer_size, self._autoencoder_code_layer_size)
+        self._autoencoder_logvar_layer = torch.nn.Linear(self._autoencoder_hidden_layer_size, self._autoencoder_code_layer_size)
+        self._autoencoder_reparametrization_layer = torch.nn.Linear( self._autoencoder_code_layer_size + self._num_market_regimes, self._autoencoder_hidden_layer_size )
+        #self._autoencoder_reparametrization_layer = torch.nn.Linear( self._autoencoder_code_layer_size, self._autoencoder_hidden_layer_size )
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -345,7 +336,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float, prior_log_alpha_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
@@ -394,7 +385,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 mlp_no_decay_params.append(param)
 
-        for name, param in self._autoencoder_log_alpha_layer.named_parameters():
+        for name, param in self._autoencoder_mu_layer.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
+        for name, param in self._autoencoder_logvar_layer.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -426,7 +425,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 fusion_no_decay_params.append(param)
 
-        prior_log_alpha_params = [ self._autoencoder_prior_log_alpha ]
+        # other = [ ]
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
@@ -439,7 +438,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
-            {"params": prior_log_alpha_params, "weight_decay": 0.0, 'lr': prior_log_alpha_learning_rate},
+            # {"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
         ]
     
     def embedding_group_indices(self):
@@ -471,9 +470,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     
     def fusion_decay_group_indices(self):
         return [8]
-    
-    def prior_log_alpha_group_indices(self):
-        return [10]
 
     def smm_output(self):
         return self._smm_output_tensors
@@ -514,37 +510,38 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         merged = fused
 
-        y_encoded = self._encoder_mlp.forward( merged )
-
-        log_alpha = self._autoencoder_log_alpha_layer( y_encoded ).clamp(-10.0, 10.0) # TODO: configure
-        alpha = torch.exp(log_alpha)
-        alpha_sum = alpha.sum(dim=1, keepdim=True)
-        alpha = alpha * (alpha_sum.clamp(min=self._autoencoder_min_alpha, max=self._autoencoder_max_alpha) / (alpha_sum + 1e-8))
-
-        # KLD loss
-        y_kld_loss = self.kl_divergence(alpha)
-
-        # Dirichlet reparameterization
-        if self.training:
-            gamma_dist = Gamma(alpha, torch.ones_like(alpha))
-            g = gamma_dist.rsample()
-            y = g / ( g.sum(dim=1, keepdim=True) + 1e-8)
-        else:
-            # Inference Mode: Deterministic expected value
-            current_alpha_sum = alpha.sum(dim=1, keepdim=True)
-            y = alpha / current_alpha_sum
-        
-        # monitoring feedback
-        self._smm_output_tensors = y
-
-        y = self._autoencoder_reparametrization_layer(y)
-        y = self._decoder_mlp(y)
-        y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
-
+        # regime prediction branch
         y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
-        #y_regime = torch.nn.functional.softmax(y_regime, dim=-1)
-        #y_regime = y_regime / self._y_regime_scale.clamp(2.0, 10.0)
+        y_regime_probs = torch.nn.functional.softmax(y_regime, dim=-1)
+
+        y_encoded = self._encoder_mlp.forward( merged )
+
+        mu = self._autoencoder_mu_layer(y_encoded)
+        logvar = self._autoencoder_logvar_layer(y_encoded)
+        y_kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+        y_kld_loss = torch.clamp(y_kld_per_dim, min=self._autoencoder_free_bits_threshold).sum(dim=-1).mean()
+
+        # VAE reparameterization
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z = mu + eps * std
+        else:
+            z = mu  # Deterministic expected value for inference
+
+        # Detach prevents the reconstruction loss from ruining the regime classifier.
+        # We only want the true labels (via cross-entropy) training the _regime_mlp.
+        condition = y_regime_probs.detach()
+        z_conditioned = torch.cat([z, condition], dim=-1)
+
+        # monitoring feedback
+        self._smm_output_tensors = z_conditioned
+        # self._smm_output_tensors = z
+
+        y = self._autoencoder_reparametrization_layer(z_conditioned)
+        y = self._decoder_mlp(y)
+        y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
 
         #if not self.training:
         #    y = torch.nn.functional.softmax(y, dim=1)
@@ -559,17 +556,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
         return y, y_regime, y_kld_loss
-
-    def kl_divergence(self, alpha):
-        # Exponentiate to guarantee strict positivity
-        prior_alpha = torch.exp(self._autoencoder_prior_log_alpha)
-        
-        # Expand the (1, K) prior to match the (Batch_Size, K) posterior
-        prior_alpha = prior_alpha.expand_as(alpha)
-        
-        prior = Dirichlet( prior_alpha )
-        posterior = Dirichlet( alpha )
-        return torch.distributions.kl_divergence(posterior, prior).mean()
 
     @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):

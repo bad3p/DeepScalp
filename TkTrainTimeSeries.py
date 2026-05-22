@@ -16,6 +16,7 @@ from dateutil import parser
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
+from typing import List, Any
 from joblib import Parallel, delayed
 from tinkoff.invest.constants import INVEST_GRPC_API
 from tinkoff.invest import Client
@@ -47,7 +48,8 @@ class TkTimeSeriesDataLoader():
         self._time_series_index_filename = _cfg['Paths']['TimeSeriesIndexFileName']
         self._time_series_training_data_filename = _cfg['Paths']['TimeSeriesTrainingDataFileName']
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
-        
+        self._num_market_regimes = int(_cfg['TimeSeries']['NumMarketRegimes'])
+                
         self._training_batch_size = int(_cfg['TimeSeries']['TrainingBatchSize'])
 
         self._training_sample_id = _training_sample_id
@@ -72,6 +74,25 @@ class TkTimeSeriesDataLoader():
         self._target_true_samples = None
         self._regime_samples = None
         self._loading_thread = None
+
+        # print( self.get_regime_distribution() )
+
+    def get_regime_distribution(self):
+
+        regimes = [0] * self._num_market_regimes
+
+        for i in range( len(self._training_index) ):
+            _, _, regime_sample = self.get_training_sample( i )
+            regimes[regime_sample] = regimes[regime_sample] + 1
+
+        norm = 0
+        for i in range( self._num_market_regimes ):
+            norm = norm + regimes[i]
+
+        for i in range( self._num_market_regimes ):
+            regimes[i] = regimes[i] / norm
+
+        return regimes
 
     @staticmethod
     def shuffle_table(table):
@@ -129,6 +150,17 @@ class TkTimeSeriesDataLoader():
         target_true_sample = data_chunk[1]
         regime_sample = data_chunk[2]
         return input_sample, target_true_sample, regime_sample
+    
+    @staticmethod
+    def sort_mutual(*lists: List[Any]) -> tuple[List[Any], ...]:
+        length = len(lists[0])
+        if any(len(lst) != length for lst in lists):
+            raise RuntimeError("All lists must have the same length")
+        # Zip lists together, sort by first element descending
+        combined = list(zip(*lists))
+        combined.sort(key=lambda x: x[0], reverse=True)
+        # Unzip back into separate lists
+        return tuple(map(list, zip(*combined)))
 
     def start_load_training_data(self):
         if self._loading_thread != None:
@@ -147,6 +179,10 @@ class TkTimeSeriesDataLoader():
                 self._input_samples[batch_id] = input_sample
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
+
+            # sort arrays mutually by regime, in descending order
+            # this will push volative samples to the front of the list, therefore allowing GUI to display them rather than quitet samples
+            self._regime_samples, self._input_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._input_samples, self._target_true_samples )
                         
         self._loading_thread = threading.Thread( target=load_training_data_thread )
         self._loading_thread.start()
@@ -206,7 +242,6 @@ smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
 smm_ev_learning_rate = float(config['TimeSeries']['SMMEVLearningRate'])
 smm_dt_learning_rate = float(config['TimeSeries']['SMMDTLearningRate'])
 fusion_learning_rate = TkAnnealing(config['TimeSeries']['FusionLearningRate'])
-prior_log_alpha_learning_rate = TkAnnealing(config['TimeSeries']['PriorLogAlphaLearningRate'])
 mlp_learning_rate = float(config['TimeSeries']['MLPLearningRate'])
 embedding_weight_decay = float(config['TimeSeries']['EmbeddingWeightDecay']) 
 smm_weight_decay = float(config['TimeSeries']['SMMWeightDecay']) 
@@ -226,7 +261,7 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.AdamW(     
-    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate, prior_log_alpha_learning_rate ),
+    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate ),
     betas=(0.9, 0.95)
 )
 if os.path.isfile(ts_optimizer_path): 
@@ -234,7 +269,7 @@ if os.path.isfile(ts_optimizer_path):
 ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
-ts_regime_error_weights = torch.tensor([1.0, 2.0, 4.0], device=cuda) # TODO: configure
+ts_regime_error_weights = torch.tensor([1, 2, 4], device=cuda) # TODO: configure
 
 data_loader = TkTimeSeriesDataLoader(
     config,
@@ -312,7 +347,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
 
-    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float, pla_lr:float):
+    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_group_indices():
@@ -327,8 +362,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             ts_optimizer.param_groups[i]['lr'] = mlp_lr
         for i in ts_model.fusion_group_indices():
             ts_optimizer.param_groups[i]['lr'] = fusion_lr
-        for i in ts_model.prior_log_alpha_group_indices():
-            ts_optimizer.param_groups[i]['lr'] = pla_lr
 
     def override_weight_decay(embedding_decay:float, smm_decay:float, fusion_decay:float, mlp_decay:float):
         global ts_model
@@ -356,8 +389,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         smm_dt_lr = smm_dt_learning_rate * lr_multiplier
         fusion_lr = fusion_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
         mlp_lr = mlp_learning_rate * lr_multiplier
-        pla_lr = prior_log_alpha_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
-        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr, pla_lr )
+        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
         kld_loss_multiplier = autoencoder_beta.get_value( ts_smooth_epoch )
@@ -403,7 +435,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
         emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)
         recon_loss = (js_loss * 0.05) + (emd_loss ** 1.5)
-        sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1) # Shape: (Batch_Size,)
+        sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1)
         y_recon_loss = (recon_loss * sample_regime_weights).mean()
 
         y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_regime_weights).mean()

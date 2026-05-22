@@ -139,3 +139,60 @@ def tail_mean_distance_with_center(p: torch.Tensor, q: torch.Tensor, eps: float 
     right_diff = torch.abs(p_right_mean - q_right_mean)
 
     return center_diff + left_diff + right_diff  # (N,)
+
+
+def tail_mean_distance_with_center_soft(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8, tau: float = 0.5) -> torch.Tensor:
+    """
+    Compare distributions using distances between tail means:
+    (mean below mean) and (mean above mean), summed.
+
+    Args:
+        p, q: shape (N, D)
+        eps: numerical stability
+        tau: Temperature for soft masking. Lower = harder step, Higher = smoother gradient.
+
+    Returns:
+        Tensor of shape (N,)
+    """
+    assert p.shape == q.shape, "Shapes must match"
+    assert p.dim() == 2, "Expected (N, D)"
+
+    N, D = p.shape
+
+    # Centered support
+    center = (D - 1) / 2
+    support = torch.arange(D, device=p.device, dtype=p.dtype) - center  # (D,)
+    support = support.unsqueeze(0)  # (1, D)
+
+    # ---- Means ----
+    mean_p = (p * support).sum(dim=1, keepdim=True)  # (N, 1)
+    mean_q = (q * support).sum(dim=1, keepdim=True)  # (N, 1)
+
+    # ---- Soft Masks (Differentiable) ----
+    # Using Sigmoid to create a smooth transition around the mean
+    left_mask_p  = torch.sigmoid((mean_p - support) / tau)
+    right_mask_p = torch.sigmoid((support - mean_p) / tau)
+
+    left_mask_q  = torch.sigmoid((mean_q - support) / tau)
+    right_mask_q = torch.sigmoid((support - mean_q) / tau)
+
+    # ---- Tail probabilities ----
+    p_left_mass  = (p * left_mask_p).sum(dim=1, keepdim=True) + eps
+    p_right_mass = (p * right_mask_p).sum(dim=1, keepdim=True) + eps
+
+    q_left_mass  = (q * left_mask_q).sum(dim=1, keepdim=True) + eps
+    q_right_mass = (q * right_mask_q).sum(dim=1, keepdim=True) + eps
+
+    # ---- Tail means ----
+    p_left_mean = (p * support * left_mask_p).sum(dim=1) / p_left_mass.squeeze(1)
+    p_right_mean = (p * support * right_mask_p).sum(dim=1) / p_right_mass.squeeze(1)
+
+    q_left_mean = (q * support * left_mask_q).sum(dim=1) / q_left_mass.squeeze(1)
+    q_right_mean = (q * support * right_mask_q).sum(dim=1) / q_right_mass.squeeze(1)
+
+    # ---- Distance ----
+    center_diff = torch.abs(mean_p.squeeze(1) - mean_q.squeeze(1))
+    left_diff = torch.abs(p_left_mean - q_left_mean)
+    right_diff = torch.abs(p_right_mean - q_right_mean)
+
+    return center_diff + left_diff + right_diff  # (N,)
