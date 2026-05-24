@@ -253,7 +253,6 @@ orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
 learning_rate_multiplier = TkAnnealing(config['TimeSeries']['LearningRateMultiplier']) 
 weight_decay_multiplier = TkAnnealing(config['TimeSeries']['WeightDecayMultiplier']) 
-autoencoder_beta = TkAnnealing(config['TimeSeries']['AutoencoderBeta'])
 cooldown = float( config['TimeSeries']['Cooldown'] )
 
 ts_model = TkTimeSeriesForecaster(config)
@@ -269,7 +268,7 @@ if os.path.isfile(ts_optimizer_path):
 ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
-ts_regime_error_weights = torch.tensor([1, 2, 4], device=cuda) # TODO: configure
+ts_regime_error_weights = torch.tensor([1, 1, 1], device=cuda) # TODO: configure
 
 data_loader = TkTimeSeriesDataLoader(
     config,
@@ -392,7 +391,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
-        kld_loss_multiplier = autoencoder_beta.get_value( ts_smooth_epoch )
         embedding_decay = embedding_weight_decay * decay_multiplier
         smm_decay = smm_weight_decay * decay_multiplier
         fusion_decay = fusion_weight_decay * decay_multiplier
@@ -423,7 +421,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y, y_regime, y_kld_loss = ts_model.forward( input )
+        y, y_regime = ts_model.forward( input )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
@@ -434,13 +432,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
         emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)
-        recon_loss = (js_loss * 0.05) + (emd_loss ** 1.5)
+        recon_loss = (js_loss * 0.05) + (emd_loss * 1.0)
         sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1)
         y_recon_loss = (recon_loss * sample_regime_weights).mean()
 
         y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_regime_weights).mean()
 
-        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight + y_kld_loss * kld_loss_multiplier
+        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
@@ -489,7 +487,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y, y_regime, y_kld_loss = ts_model.forward( input )
+        y, y_regime = ts_model.forward( input )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1

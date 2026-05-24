@@ -241,21 +241,11 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
-        self._encoder_mlp = TkModel( json.loads(_cfg['TimeSeries']['EncoderMLP']) )
-        self._decoder_mlp = TkModel( json.loads(_cfg['TimeSeries']['DecoderMLP']) )
-        self._autoencoder_hidden_layer_size = int(_cfg['TimeSeries']['AutoencoderHiddenLayerSize'])
-        self._autoencoder_code_layer_size = int(_cfg['TimeSeries']['AutoencoderCodeLayerSize'])
-        self._autoencoder_free_bits_threshold = float(_cfg['TimeSeries']['AutoencoderFreeBitsThreshold'])
+        self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
-
-        # VAE layers
-        self._autoencoder_mu_layer = torch.nn.Linear(self._autoencoder_hidden_layer_size, self._autoencoder_code_layer_size)
-        self._autoencoder_logvar_layer = torch.nn.Linear(self._autoencoder_hidden_layer_size, self._autoencoder_code_layer_size)
-        self._autoencoder_reparametrization_layer = torch.nn.Linear( self._autoencoder_code_layer_size + self._num_market_regimes, self._autoencoder_hidden_layer_size )
-        #self._autoencoder_reparametrization_layer = torch.nn.Linear( self._autoencoder_code_layer_size, self._autoencoder_hidden_layer_size )
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -321,18 +311,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._fusion.gate[0].bias.fill_(-2.0)
 
         # reinitialize MLP weights
-        for m in self._encoder_mlp.modules():
+        for m in self._mlp.modules():
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                torch.nn.init.constant_(m.bias, 0)
-        for m in self._decoder_mlp.modules():
-            if isinstance(m, torch.nn.Linear):
-                torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                torch.nn.init.constant_(m.bias, 0)
-
-        # learnable normalization temperature
-        # self._y_scale = torch.nn.Parameter(torch.tensor(5.0))
-        # self._y_regime_scale = torch.nn.Parameter(torch.tensor(5.0))
+                torch.nn.init.constant_(m.bias, 0)        
         
         self._smm_output_tensors = None
 
@@ -369,39 +351,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 embedding_no_decay_params.append(param)
 
-        for name, param in self._encoder_mlp.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
-        for name, param in self._decoder_mlp.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
-        for name, param in self._autoencoder_mu_layer.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
-        for name, param in self._autoencoder_logvar_layer.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
-        for name, param in self._autoencoder_reparametrization_layer.named_parameters():
+        for name, param in self._mlp.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -510,37 +460,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
         merged = fused
 
+        # monitoring feedback
+        self._smm_output_tensors = merged
+
         # regime prediction branch
         y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
-        y_regime_probs = torch.nn.functional.softmax(y_regime, dim=-1)
 
-        y_encoded = self._encoder_mlp.forward( merged )
-
-        mu = self._autoencoder_mu_layer(y_encoded)
-        logvar = self._autoencoder_logvar_layer(y_encoded)
-        y_kld_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        y_kld_loss = torch.clamp(y_kld_per_dim, min=self._autoencoder_free_bits_threshold).sum(dim=-1).mean()
-
-        # VAE reparameterization
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            z = mu + eps * std
-        else:
-            z = mu  # Deterministic expected value for inference
-
-        # Detach prevents the reconstruction loss from ruining the regime classifier.
-        # We only want the true labels (via cross-entropy) training the _regime_mlp.
-        condition = y_regime_probs.detach()
-        z_conditioned = torch.cat([z, condition], dim=-1)
-
-        # monitoring feedback
-        self._smm_output_tensors = z_conditioned
-        # self._smm_output_tensors = z
-
-        y = self._autoencoder_reparametrization_layer(z_conditioned)
-        y = self._decoder_mlp(y)
+        y = self._mlp( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
 
         #if not self.training:
@@ -555,7 +482,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # self._smm_output_tensors = gates
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
-        return y, y_regime, y_kld_loss
+        return y, y_regime
 
     @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):
