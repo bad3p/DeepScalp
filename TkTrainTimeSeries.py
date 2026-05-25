@@ -179,10 +179,6 @@ class TkTimeSeriesDataLoader():
                 self._input_samples[batch_id] = input_sample
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
-
-            # sort arrays mutually by regime, in descending order
-            # this will push volative samples to the front of the list, therefore allowing GUI to display them rather than quitet samples
-            self._regime_samples, self._input_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._input_samples, self._target_true_samples )
                         
         self._loading_thread = threading.Thread( target=load_training_data_thread )
         self._loading_thread.start()
@@ -203,6 +199,10 @@ class TkTimeSeriesDataLoader():
                 self._input_samples[batch_id] = input_sample                
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
+
+            # sort arrays mutually by regime, in descending order
+            # this will push volative samples to the front of the list, therefore allowing GUI to display *them* rather than quitet samples
+            self._regime_samples, self._input_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._input_samples, self._target_true_samples )
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
         self._loading_thread.start()
