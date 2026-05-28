@@ -485,6 +485,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         return y, y_regime
 
     @staticmethod    
+    def kl_divergence_from_logits(logits, target, eps=1e-8):
+        log_preds = torch.nn.functional.log_softmax(logits, dim=-1)
+        # reduction='none' returns a tensor of shape (batch_size, num_bins)
+        kld_matrix = torch.nn.functional.kl_div(log_preds, target, reduction='none')    
+        # Sum across the bins to get the total KLD for each individual sample
+        kld_loss = torch.sum(kld_matrix, dim=-1) # Shape: (batch_size,)
+        return kld_loss
+
+    @staticmethod    
     def js_divergence_from_logits(logits, target, eps=1e-8):
 
         # Ensure numerical safety for target
@@ -517,4 +526,17 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         emd = torch.abs(cdf_q - cdf_t).sum(dim=-1)
         return emd
+    
+    @staticmethod
+    def emd_mse_1d_from_logits(logits, target):
+    
+        q = torch.nn.functional.softmax(logits, dim=-1)
+
+        # cumulative distributions
+        cdf_q = torch.cumsum(q, dim=-1)
+        cdf_t = torch.cumsum(target, dim=-1)
+
+        emd_mse = (cdf_q - cdf_t) ** 2
+        emd_mse = emd_mse.sum(dim=-1)
+        return emd_mse
 

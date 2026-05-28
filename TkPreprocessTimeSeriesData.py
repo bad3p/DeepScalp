@@ -129,7 +129,10 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
             for i in range( raw_sample_count ):
 
                 orderbook_sample = raw_samples[i*2]
-                orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment * min_price_increment_factor )            
+
+                # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment * min_price_increment_factor )            
+                volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, min_price_increment * min_price_increment_factor )
+
                 price[i] = pivot_price
                 spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, min_price_increment * min_price_increment_factor )
                 orderbook_volume[i] = volume
@@ -172,9 +175,9 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
                     order_flow_imbalance[i] = 0.0
                     order_arrival_intensity[i] = 0.0
                     order_arrival_imbalance[i] = 0.0
-                else:
+                else:                    
                     order_flow_imbalance[i] = TkStatistics.depth_weighted_order_flow_imbalance( raw_samples[(i-1)*2], raw_samples[i*2], alpha=1.0 ) # TODO: configure alpha
-                    bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=1.0, dt = 60.0 ) # TODO: configure alpha & dt
+                    bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=1.0, dt=60.0 ) # TODO: configure alpha & dt
                     order_arrival_intensity[i] = bid_intensity + ask_intensity
                     order_arrival_imbalance[i] = bid_intensity - ask_intensity
                 queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], min_price_increment, alpha=1.0 ) # TODO: configure alpha
@@ -308,7 +311,7 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
                     ts_input[j].append( order_arrival_imbalance_log_ema_norm[k] * last_trades_log_ema_norm_num_events[k] )
 
                     # slice 14 : higher order nonlinear interactions
-                    ts_input[j].append( spread_log_ema_norm[k] * price_log_ema_volatility[k] * queue_depletion_intensity[k] )
+                    ts_input[j].append( spread_log_ema_norm[k] * price_log_ema_volatility[k] * queue_depletion_intensity_log_ema_norm[k] )
                     ts_input[j].append( queue_imbalance_ema_norm[k] * trade_flow_imbalance_ema_norm[k] * orderbook_microprice_ema_norm[k] )
                                 
                 ts_input = list( itertools.chain.from_iterable(ts_input) )

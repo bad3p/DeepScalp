@@ -268,7 +268,7 @@ if os.path.isfile(ts_optimizer_path):
 ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
-ts_regime_error_weights = torch.tensor([1, 1, 1], device=cuda) # TODO: configure
+ts_regime_error_weights = torch.tensor([1, 2, 4], device=cuda) # TODO: configure
 
 data_loader = TkTimeSeriesDataLoader(
     config,
@@ -430,11 +430,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
         TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
 
-        js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
-        emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)
-        recon_loss = (js_loss * 0.05) + (emd_loss * 1.0)
+        #js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
+        kl_loss = TkTimeSeriesForecaster.kl_divergence_from_logits(y, target_true)
+        #emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)        
+        emd_mse_loss = TkTimeSeriesForecaster.emd_mse_1d_from_logits(y, target_true)
         sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1)
-        y_recon_loss = (recon_loss * sample_regime_weights).mean()
+        y_recon_loss = ( ( emd_mse_loss + kl_loss * 0.05 ) * sample_regime_weights ).mean() # TODO: configure kl_loss weight
+        #print( kl_loss.mean().item(), emd_mse_loss.mean().item() )
 
         y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_regime_weights).mean()
 

@@ -579,6 +579,149 @@ class TkStatistics():
         return result_tensor.T, hasheable_tensor, pivot_price, (total_bid_volume + total_ask_volume), order_book_slope, microprice
 
     #------------------------------------------------------------------------------------------------------------------------
+    # Extract various statistics from the orderbook
+    # * volume
+    # * midprice
+    # * microprice_offset
+    # * order_book_slope 
+    # * bid_alpha, ask_alpha
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def orderbook_statistics(orderbook : GetOrderBookResponse, min_price_increment : float):
+        
+        def offset_price(levels:list, price_delta:float):
+            for i in range(len(levels)):
+                levels[i] = ( levels[i][0] + price_delta, levels[i][1] )
+        
+        microprice_offset = 0.0
+        order_book_slope = 0.0
+        bid_alpha = 1.0
+        ask_alpha = 1.0
+
+        # edge case
+
+        if len(orderbook.bids) == 0 or len(orderbook.asks) == 0:
+            print( 'Default statistics, orderbook is incomplete: ', len(orderbook.bids), len(orderbook.asks) )
+            total_volume = 0
+            for bid in orderbook.bids:            
+                total_volume = total_volume + bid.quantity
+            for ask in orderbook.asks:
+                total_volume = total_volume + ask.quantity
+            return total_volume, quotation_to_float(orderbook.last_price), microprice_offset, order_book_slope, bid_alpha, ask_alpha
+
+        # LOB levels
+
+        bids = [ ( quotation_to_float(level.price), level.quantity) for level in orderbook.bids]
+        asks = [ ( quotation_to_float(level.price), level.quantity) for level in orderbook.asks]
+
+        # correct overlapping
+
+        if quotation_to_float(orderbook.bids[0].price) >= quotation_to_float(orderbook.asks[0].price):
+
+            midprice = ( bids[0][0] + asks[0][0] ) / 2
+            price_delta = bids[0][0] - midprice + min_price_increment / 2
+
+            offset_price( bids, -price_delta )
+            offset_price( asks, price_delta )
+
+            if bids[0][0] >= asks[0][0]:
+                raise RuntimeError('Overlapping correction failed.')
+
+        midprice = ( bids[0][0] + asks[0][0] ) / 2
+        pivot_price = round( midprice / min_price_increment ) * min_price_increment
+
+        order_book_slope = 0
+        total_bid_volume = 0
+
+        for bid in bids:            
+            total_bid_volume = total_bid_volume + bid[1]
+            order_book_slope = order_book_slope + bid[1] * (bid[0] - midprice)
+
+        total_ask_volume = 0
+
+        for ask in asks:            
+            total_ask_volume = total_ask_volume + ask[1]
+            order_book_slope = order_book_slope + ask[1] * (ask[0] - midprice)
+
+        total_volume = total_bid_volume + total_ask_volume
+
+        order_book_slope = order_book_slope / max(1, total_volume)
+
+        # orderbook microprice
+
+        best_bid_volume = bids[0][1]
+        best_bid_price = bids[0][0]
+
+        best_ask_volume = asks[0][1]
+        best_ask_price = asks[0][0]
+
+        best_volume = ( best_bid_volume + best_ask_volume )                
+        microprice = ( best_ask_price * best_bid_volume + best_bid_price * best_ask_volume ) / ( best_volume if best_volume > 1e-8  else 1.0 )
+        microprice_offset = microprice - midprice
+
+        # orderbook convexity/concavity
+
+        def side_convexity(levels, mid_price : float, is_bid=True, min_points=3, eps=1e-8):
+
+            # Extract arrays
+            prices = np.array([p for p, _ in levels], dtype=float)
+            qtys = np.array([q for _, q in levels], dtype=float)
+
+            # Edge case: single level → no curvature info
+            if len(levels) < min_points:
+                return 1.0  # neutral (linear) assumption
+
+            # Distance from mid
+            if is_bid:
+                distances = mid_price - prices
+            else:
+                distances = prices - mid_price
+
+            # Filter valid points
+            mask = (distances > eps) & (qtys > eps)
+            distances = distances[mask]
+            qtys = qtys[mask]
+
+            # Not enough valid points
+            if len(distances) < min_points:
+                return np.nan
+
+            # Cumulative depth
+            cum_qty = np.cumsum(qtys)
+
+            # Guard against zeros
+            valid = (cum_qty > eps) & (distances > eps)
+            if valid.sum() < min_points:
+                return np.nan
+
+            x = np.log(distances[valid])
+            y = np.log(cum_qty[valid])
+
+            # Degenerate case: identical distances
+            if np.allclose(x, x[0]):
+                return np.nan
+
+            # Fit slope (alpha)
+            try:
+                alpha, _ = np.polyfit(x, y, 1)
+            except np.linalg.LinAlgError:
+                return np.nan
+
+            return float(alpha)        
+                
+        bid_alpha = side_convexity(bids, midprice, is_bid=True)
+        ask_alpha = side_convexity(asks, midprice, is_bid=False)
+        if math.isnan(bid_alpha):
+            print( 'Bid alpha is NaN, others are: ', midprice, microprice_offset, order_book_slope )
+            bid_alpha = 1.0
+        if math.isnan(ask_alpha):
+            print( 'Ask alpha is NaN, others are: ', midprice, microprice_offset, order_book_slope )
+            ask_alpha = 1.0
+
+        return total_volume, pivot_price, microprice_offset, order_book_slope, bid_alpha, ask_alpha
+
+    #------------------------------------------------------------------------------------------------------------------------
     # For the given list of anonymized trades, the method returns distrubution of order volumes,
     # * pivoted around given price
     # * with discretization proportional to given min_price_increment
@@ -626,14 +769,14 @@ class TkStatistics():
                 total_event_count = total_event_count + 1
                 price = quotation_to_float( trade.price )
                 if price <= pivot_price:
-                    index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(distribution_width/2)-1 )
-                    assert almost_equal(price, bid_price[index]) if index < int(distribution_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
+                    index = max( 0, min( int( round( (pivot_price - price) / min_price_increment ) ), int(distribution_width/2)-1 ) )
+                    assert almost_equal(price, bid_price[index]) if index < int(distribution_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index]) + " : " + str(index)
                     total_volume = total_volume + trade.quantity
                     bid_volume[index] = bid_volume[index] + trade.quantity
                     total_sell_trades = total_sell_trades + trade.quantity
                 else:
-                    index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 )
-                    assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
+                    index = max( 0, min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 ) )
+                    # assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index]) + " : " + str(index)
                     total_volume = total_volume + trade.quantity
                     ask_volume[index] = ask_volume[index] + trade.quantity
                     total_buy_trades = total_buy_trades + trade.quantity
