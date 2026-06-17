@@ -70,7 +70,7 @@ def group_by_ticker(filenames:list):
 # Worker process
 #------------------------------------------------------------------------------------------------------------------------
 
-def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename:str):
+def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename:str, market_regimes:list):
 
     pid = os.getpid()
 
@@ -120,6 +120,10 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
             orderbook_volume = [0] * raw_sample_count
             orderbook_slope = [0] * raw_sample_count
             orderbook_microprice = [0] * raw_sample_count
+            orderbook_bid_alpha = [0] * raw_sample_count
+            orderbook_ask_alpha = [0] * raw_sample_count
+            orderbook_alpha_imbalance = [0] * raw_sample_count
+            orderbook_mean_alpha = [0] * raw_sample_count
             last_trades_volume = [0] * raw_sample_count
             last_trades_num_events = [0] * raw_sample_count
             trade_flow_imbalance = [0] * raw_sample_count
@@ -138,6 +142,10 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
                 orderbook_volume[i] = volume
                 orderbook_slope[i] = slope
                 orderbook_microprice[i] = microprice
+                orderbook_bid_alpha[i] = bid_alpha
+                orderbook_ask_alpha[i] = ask_alpha
+                orderbook_alpha_imbalance[i] = (bid_alpha - ask_alpha) / max(1.0, bid_alpha + ask_alpha)
+                orderbook_mean_alpha[i] = (bid_alpha + ask_alpha) / 2.0
 
                 last_trades_samples = [ (raw_samples[i*2+1], last_trades_time_threshold) ]
                 last_trades_tensor, _, num_events, volume, buy_trades, sell_trades, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, last_trades_width, min_price_increment * min_price_increment_factor )
@@ -161,7 +169,7 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
 
             price_change_log_ema_norm = TkStatistics.log_ema_normalize( price_change, half_life=market_regime_steps_count ).tolist()
 
-            regimes = TkStatistics.price_to_market_regimes(price, market_regime_steps_count, num_market_regimes)
+            regimes = TkStatistics.price_to_market_regimes(price, market_regimes, market_regime_steps_count)
 
             order_flow_imbalance = [None] * raw_sample_count
             queue_imbalance = [None] * raw_sample_count
@@ -201,6 +209,11 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
             last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( last_trades_num_events, half_life=market_regime_steps_count ).tolist()
             spread_log_ema_norm = TkStatistics.log_ema_normalize( spread, half_life=market_regime_steps_count ).tolist()
 
+            bid_alpha_ema_norm = TkStatistics.ema_normalize( orderbook_bid_alpha, half_life=market_regime_steps_count ).tolist()
+            ask_alpha_ema_norm = TkStatistics.ema_normalize( orderbook_ask_alpha, half_life=market_regime_steps_count ).tolist()
+            alpha_imbalance_ema_norm = TkStatistics.ema_normalize( orderbook_alpha_imbalance, half_life=market_regime_steps_count ).tolist()
+            mean_alpha_ema_norm = TkStatistics.ema_normalize( orderbook_mean_alpha, half_life=market_regime_steps_count ).tolist()
+
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
             range_len = end_range - start_range
@@ -229,7 +242,7 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
 
             callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
 
-            hasheable_sample_width = 37 * prior_steps_count # 37 == sizeof ts_input[] 
+            hasheable_sample_width = 50 * prior_steps_count # 50 == sizeof ts_input[] 
             sample_lhs = LSHash(lshash_size, hasheable_sample_width) 
             step = 0
 
@@ -313,6 +326,36 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
                     # slice 14 : higher order nonlinear interactions
                     ts_input[j].append( spread_log_ema_norm[k] * price_log_ema_volatility[k] * queue_depletion_intensity_log_ema_norm[k] )
                     ts_input[j].append( queue_imbalance_ema_norm[k] * trade_flow_imbalance_ema_norm[k] * orderbook_microprice_ema_norm[k] )
+
+                    # slice 15 : alpha base & imbalance (depth shape structure)
+                    ts_input[j].append( bid_alpha_ema_norm[k] )
+                    ts_input[j].append( ask_alpha_ema_norm[k] )
+                    ts_input[j].append( alpha_imbalance_ema_norm[k] )
+                    ts_input[j].append( mean_alpha_ema_norm[k] )
+
+                    # slice 16: alpha x L1 structure (holistic book pressure)                    
+                    # * If L1 imbalance points up AND bid depth is thicker than ask depth, strong bullish signal.
+                    # * Microprice vs Depth alignment 
+                    # * Divergence between slope (overall linear steepness) and alpha (power-law curvature)
+                    ts_input[j].append( queue_imbalance_ema_norm[k] * alpha_imbalance_ema_norm[k] )                    
+                    ts_input[j].append( orderbook_microprice_ema_norm[k] * alpha_imbalance_ema_norm[k] )                    
+                    ts_input[j].append( orderbook_slope_ema_norm[k] - mean_alpha_ema_norm[k] )
+
+                    # slice 17: alpha x flow & trade activity (price impact/absorption)
+                    # * Trade flow hitting the alpha shape: determines expected slippage
+                    # * How intense trade volume interacts with the overall depth concavity
+                    # * Order arrival intensity against depth shape (detects liquidity replenishment speed)
+                    ts_input[j].append( trade_flow_imbalance_ema_norm[k] * alpha_imbalance_ema_norm[k] )
+                    ts_input[j].append( last_trades_log_ema_norm_volume[k] * mean_alpha_ema_norm[k] )
+                    ts_input[j].append( order_arrival_imbalance_log_ema_norm[k] * alpha_imbalance_ema_norm[k] )
+
+                    # slice 18: alpha x volatility & spread (liquidity fragility)
+                    # * Fragility indicator: High volatility + sparse near-touch depth (high mean alpha) = danger
+                    # * Directional fragility: Volatility multiplied by depth asymmetry
+                    # * Spread expansion risk: Wide spread + heavy imbalance in depth shape
+                    ts_input[j].append( price_log_ema_volatility[k] * mean_alpha_ema_norm[k] )
+                    ts_input[j].append( price_log_ema_volatility[k] * alpha_imbalance_ema_norm[k] )
+                    ts_input[j].append( spread_log_ema_norm[k] * alpha_imbalance_ema_norm[k] )
                                 
                 ts_input = list( itertools.chain.from_iterable(ts_input) )
                 ts_target = future_trades[i].tolist()
@@ -371,6 +414,11 @@ if __name__ == "__main__":
     files_by_ticker = group_by_ticker(data_files)
     print( 'Tickers found:', len(files_by_ticker) )
 
+    market_regimes_config_file = open('TkMarketRegimeThresholds.json', 'r', encoding='utf-8')
+    market_regimes_config = json.load(market_regimes_config_file)
+    mean_regimes = market_regimes_config.values()
+    mean_regimes = [sum(column) / len(column) for column in zip(*mean_regimes)]
+
     with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.create_context()
@@ -419,6 +467,8 @@ if __name__ == "__main__":
             num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
             num_training_data_sources = num_data_sources - num_test_data_sources
 
+            market_regimes = market_regimes_config[ticker] if ticker in market_regimes_config else mean_regimes
+
             for i in range(num_data_sources):
 
                 date_and_filename = files_by_ticker[ticker][i]
@@ -426,7 +476,7 @@ if __name__ == "__main__":
                 filename = date_and_filename[1]
                 is_test_data_source = i+1 >= num_training_data_sources
 
-                data_sources.append( (ticker, is_test_data_source, filename) )
+                data_sources.append( (ticker, is_test_data_source, filename, market_regimes) )
 
         print( 'Total num files:', len(data_sources) )
 
@@ -480,8 +530,9 @@ if __name__ == "__main__":
                 ticker = data_source[0]                
                 is_test_data_source = data_source[1]
                 filename = data_source[2]
+                market_regimes = data_source[3]
 
-                process = mp.Process(target=preprocess_file, args=(output_queue, ticker, is_test_data_source, filename))
+                process = mp.Process(target=preprocess_file, args=(output_queue, ticker, is_test_data_source, filename, market_regimes))
                 process.start()
                 processes.append(process)
 

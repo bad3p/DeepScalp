@@ -4,6 +4,7 @@ import os.path
 import numpy as np
 import random
 import math
+from numpy.lib.stride_tricks import sliding_window_view
 from collections import defaultdict
 from decimal import Decimal
 from tinkoff.invest.schemas import Quotation
@@ -900,11 +901,13 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def price_to_market_regimes(prices:list, rolling_window_size:int=20, num_regimes:int=3):
+    def price_to_market_regimes(prices:list, regime_thresholds:list, rolling_window_size:int=20):
 
         # insert padding to the input list, using first element as a padding value
         prices = prices.copy()
         prices[0:0] = [prices[0]] * rolling_window_size
+
+        thresholds = np.sort(np.array(regime_thresholds, dtype=float))
 
         log_returns = np.diff(np.log(prices))
         rolling_vol = np.full_like(prices, fill_value=np.nan, dtype=float)
@@ -912,22 +915,8 @@ class TkStatistics():
         for t in range(rolling_window_size - 1, len(log_returns)):
             window_slice = log_returns[t - rolling_window_size + 1 : t + 1]
             rolling_vol[t + 1] = np.std(window_slice, ddof=0)
-
-        valid_vol = rolling_vol[~np.isnan(rolling_vol)]
     
-        # quantile boundaries
-        quantiles = np.linspace(0, 1, num_regimes + 1)
-        bins = np.quantile(valid_vol, quantiles)
-    
-        # unique bins are important if volatility is flat
-        bins = np.unique(bins)
-    
-        # assign regimes using digitize^
-        regimes = np.full_like(rolling_vol, fill_value=-1, dtype=int)
-    
-        for i, v in enumerate(rolling_vol):
-            if not np.isnan(v):
-                regimes[i] = np.digitize(v, bins[1:-1], right=True)
+        regimes = np.searchsorted(thresholds, rolling_vol, side='right')
     
         regimes = regimes.tolist()
 
@@ -936,6 +925,59 @@ class TkStatistics():
         
         return regimes
     
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes market regime thresholds for giver sequence of prices
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def calculate_regime_thresholds(prices: np.ndarray, num_regimes: int, rolling_window_size: int = 20) -> list:
+        """
+        Calculates data-driven volatility thresholds based on historical price percentiles.
+
+        Parameters:
+        -----------
+        prices : array_like
+            Sequence of historical prices.
+        num_regimes : int
+            The number of market regimes you want to model. Must be >= 2.
+        window : int, optional
+            Lookback window to calculate rolling volatility (default is 20 periods).
+
+        Returns:
+        --------
+        thresholds : list
+            List of size (num_regimes - 1) containing the volatility thresholds in percentages.
+        """
+        prices = np.asarray(prices, dtype=float)
+    
+        if num_regimes < 2:
+            raise ValueError("Number of regimes must be at least 2.")
+        if len(prices) <= rolling_window_size:
+            raise ValueError("Price sequence must be longer than the rolling window.")
+
+        # Calculate percentage returns
+        log_returns = np.diff(np.log(prices))
+
+        # Calculate rolling volatility efficiently
+        windows = sliding_window_view(log_returns, window_shape=rolling_window_size)
+        rolling_vol = np.std(windows, axis=1, ddof=1)
+    
+        # Filter out NaN values (though sliding_window_view naturally excludes them here)
+        valid_vol = rolling_vol[~np.isnan(rolling_vol)]
+    
+        if len(valid_vol) == 0:
+            raise ValueError("Not enough data to compute volatility percentiles.")
+
+        # Calculate the required percentiles based on the number of regimes
+        # Example: For 3 regimes, we need the 33.33rd and 66.67th percentiles.
+        percentile_steps = [100.0 * i / num_regimes for i in range(1, num_regimes)]
+    
+        # 5. Compute the thresholds
+        thresholds = np.percentile(valid_vol, percentile_steps)
+
+        return thresholds.tolist()
+
+
     #------------------------------------------------------------------------------------------------------------------------
     # Compute depth-weighted Order Flow Imbalance between two LOB snapshots.
     # alpha : float = exponential decay parameter for depth weighting

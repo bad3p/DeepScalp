@@ -83,6 +83,7 @@ class TkTimeSeriesDataLoader():
 
         for i in range( len(self._training_index) ):
             _, _, regime_sample = self.get_training_sample( i )
+            regime_sample = int( regime_sample )
             regimes[regime_sample] = regimes[regime_sample] + 1
 
         norm = 0
