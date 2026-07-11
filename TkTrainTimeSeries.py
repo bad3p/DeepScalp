@@ -249,7 +249,7 @@ smm_weight_decay = float(config['TimeSeries']['SMMWeightDecay'])
 fusion_weight_decay = float(config['TimeSeries']['FusionWeightDecay']) 
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
-regime_loss_weight = float(config['TimeSeries']['RegimeLossWeight']) 
+regime_loss_weight = TkAnnealing(config['TimeSeries']['RegimeLossWeight']) 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
 learning_rate_multiplier = TkAnnealing(config['TimeSeries']['LearningRateMultiplier']) 
@@ -437,11 +437,15 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         #emd_mse_loss = TkTimeSeriesForecaster.emd_mse_1d_from_logits(y, target_true)
         sample_regime_weights = (target_regime * ts_regime_error_weights).sum(dim=1)
         y_recon_loss = ( ( emd_loss + js_loss * 0.01 ) * sample_regime_weights ).mean() # TODO: configure kl_loss weight
-        #print( kl_loss.mean().item(), emd_mse_loss.mean().item() )
+        
+        #print( kl_loss.mean().item(), emd_mse_loss.mean().item() )        
 
         y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_regime_weights).mean()
 
-        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight
+        # print( y_regime_loss.mean().item(), y_recon_loss.mean().item() )
+        print( ts_smooth_epoch, regime_loss_weight.get_value( ts_smooth_epoch ) )
+
+        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight.get_value( ts_smooth_epoch )
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
@@ -518,10 +522,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         ts_training_history.log(data_loader.training_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy_val)
 
+        frac_epoch = ts_smooth_epoch - math.floor(ts_smooth_epoch)
+        frac_epoch = math.pow( frac_epoch, 4.0 )
         TkUI.set_series("x_axis_training", "y_axis_training", "loss_series", ts_training_history.loss_history())
-        TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history())
+        TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history(frac_epoch))
         TkUI.set_series("x_axis_accuracy", "y_axis_accuracy", "accuracy_series", ts_training_history.accuracy_history())
-        TkUI.set_series("x_axis_accuracy_epoch", "y_axis_accuracy_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history())
+        TkUI.set_series("x_axis_accuracy_epoch", "y_axis_accuracy_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history(frac_epoch))
 
         cooldownRemaining = cooldown
         cooldownStep = 1.0 / 30.0

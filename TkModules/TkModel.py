@@ -196,6 +196,9 @@ class TkModel(torch.nn.Module):
         def create_exp_layer(params:list):
             return Exp()
         
+        def create_identity_layer(params:list):
+            return torch.nn.Identity()
+        
         def create_residual_layer(params:list):
             index = params[0]
             layer_in_channels = params[1]
@@ -261,6 +264,8 @@ class TkModel(torch.nn.Module):
                 return create_clamp_layer( layer_descriptor[layer_type])
             if layer_type == 'Exp':
                 return create_exp_layer( layer_descriptor[layer_type])
+            if layer_type == 'Identity':
+                return create_identity_layer( layer_descriptor[layer_type])
             else:
                 raise RuntimeError('Unknown layer type: ' + layer_type + "!")
 

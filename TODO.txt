@@ -8,3 +8,4 @@
  [x] Generate orderbooks in reduced range { random(-width/2,0) ... random(0,width/2) } to improve likelihood to the real orderbooks with large min_price_step
  [x] TimeSeriesPreprocessor should shift the last trades samples in input history according to the pivot price
  [x] Try residual layers in time series prediction
+ [ ] Try lesser amount of future/predicted quants (2, 1) and observe the accuracy of the model

@@ -187,24 +187,28 @@ class TkTimeSeriesTrainingHistory():
     def loss_history(self):
         return self._loss_history
 
-    def epoch_loss_history(self):
+    def epoch_loss_history(self, frac_epoch=1.0):
+        result = []
         if len(self._epoch_loss_history) > 2:
-            return [self._epoch_loss_history[i][0] for i in range(1, len(self._epoch_loss_history))]
+            result = [self._epoch_loss_history[i][0] for i in range(1, len(self._epoch_loss_history))]
         else:
-            return [self._epoch_loss_history[i][0] for i in range(0, len(self._epoch_loss_history))]
+            result = [self._epoch_loss_history[i][0] for i in range(0, len(self._epoch_loss_history))]
+        if len(result) > 1:
+            result[-1] = result[-2] * (1.0 - frac_epoch) + result[-1] * frac_epoch
+        return result
 
     def accuracy_history(self):
         return self._accuracy_history
 
-    def epoch_accuracy_history(self):
+    def epoch_accuracy_history(self, frac_epoch=1.0):
+        result = []
         if len(self._epoch_accuracy_history) > 2:
-            return [self._epoch_accuracy_history[i][0] for i in range(1, len(self._epoch_accuracy_history))]
+            result = [self._epoch_accuracy_history[i][0] for i in range(1, len(self._epoch_accuracy_history))]
         else:
-            return [self._epoch_accuracy_history[i][0] for i in range(0, len(self._epoch_accuracy_history))]
-
-    def crop_front(self):
-        del self._epoch_loss_history[0]
-        del self._epoch_accuracy_history[0]
+            result = [self._epoch_accuracy_history[i][0] for i in range(0, len(self._epoch_accuracy_history))]
+        if len(result) > 1:
+            result[-1] = result[-2] * (1.0 - frac_epoch) + result[-1] * frac_epoch
+        return result
 
     def save(self):
         TkIO.write_at_path(self._history_path, self._training_sample_id)

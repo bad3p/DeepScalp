@@ -61,15 +61,19 @@ class MultiHeadFusionGRF(torch.nn.Module):
     def forward(self, inputs, pos_encoding = None):
 
         # 1. Project to shared embedding (Pure Data)
-        x = torch.stack(
-            [proj(h) for proj, h in zip(self.projections, inputs)],
-            dim=1
-        )  # (B, N, D)
+        projected = []
+        for proj, h in zip(self.projections, inputs):
+            p = proj(h)
+            # If input is (B, D), make it (B, 1, D). If it's (B, T, D), leave it.
+            if p.dim() == 2:
+                p = p.unsqueeze(1)
+            projected.append(p)
+            
+        # Concatenate along the sequence dimension: (B, N*T, D)
+        x = torch.cat(projected, dim=1) 
 
         # 2. Create position-infused keys/queries
         if pos_encoding is not None:
-            # Simple addition is mathematically equivalent to your previous linear collapse, 
-            # but much more efficient.
             x_attn = x + pos_encoding.expand(x.size(0), -1, -1)
         else:
             x_attn = x
@@ -249,7 +253,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
+        
         self._source_pos_embedding = torch.nn.Parameter( torch.randn(1, len(self._input_slices), self._fusion_embedding_dims) * 0.02 )
+        self._temporal_pos_embedding = torch.nn.Parameter( torch.randn(1, self._prior_steps_count, self._fusion_embedding_dims) * 0.02 )
         
         self._fusion_input_dims = []
 
@@ -341,7 +347,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         mlp_no_decay_params = []
 
         fusion_decay_params = [ ]
-        fusion_no_decay_params = [ self._source_pos_embedding ]
+        fusion_no_decay_params = [ self._source_pos_embedding, self._temporal_pos_embedding ]
 
         for name, param in self._embedding.named_parameters():
             if not param.requires_grad:
@@ -452,16 +458,22 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 x = torch.nn.functional.silu(x)
                 x = x + residual            
             x = self._smm_norm[i][-1]( x )
-            smm_output = x[:, -1, :]
-            self._smm_output_tensors.append( smm_output )
+            self._smm_output_tensors.append( x )
+
+        #  Combine Spatial (Source) and Temporal Positional Encodings
+        # _source_pos: (1, N, D) -> (1, N, 1, D)
+        # _temporal_pos: (1, T, D) -> (1, 1, T, D)
+        # Broadcasting adds them to (1, N, T, D), then view flattens to (1, N*T, D)
+        pos_emb = self._source_pos_embedding.unsqueeze(2) + self._temporal_pos_embedding.unsqueeze(1)
+        pos_emb = pos_emb.view(1, -1, self._fusion_embedding_dims)
 
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors, self._source_pos_embedding )
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb )
         merged = fused
 
         # monitoring feedback
-        self._smm_output_tensors = merged
+        self._smm_output_tensors = fused
 
         # regime prediction branch
         y_regime = self._regime_mlp.forward( merged )
