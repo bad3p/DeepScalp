@@ -379,13 +379,13 @@ class TkStatistics():
             rightmost_mean = 0.0
             rightmost_bin_weight = 0.0
             
-            for i in range(len(distribution)):
-                if descriptor[i] < left_mean:
-                    leftmost_mean += descriptor[i] * distribution[i]
-                    leftmost_bin_weight += distribution[i]
-                elif descriptor[i] > right_mean:
-                    rightmost_mean += descriptor[i] * distribution[i]
-                    rightmost_bin_weight += distribution[i]
+            for j in range(len(distribution)):
+                if descriptor[j] < left_mean:
+                    leftmost_mean += descriptor[j] * distribution[j]
+                    leftmost_bin_weight += distribution[j]
+                elif descriptor[j] > right_mean:
+                    rightmost_mean += descriptor[j] * distribution[j]
+                    rightmost_bin_weight += distribution[j]
 
             if leftmost_bin_weight > 0.0:
                 leftmost_mean *= 1.0 / leftmost_bin_weight
