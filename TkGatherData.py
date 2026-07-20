@@ -119,12 +119,14 @@ if __name__ ==  '__main__':
     regular_iteration_time_mean = float(config['GatherData']['RegularIterationTimeMean'])
     regular_iteration_time_std_dev = float(config['GatherData']['RegularIterationTimeStdDev'])    
     
-
     def init_gather_data_queue_callback():
         print( 'Initializing gather data queue...' )
+        global ignore_tickers
         TOKEN = os.environ["TK_TOKEN"]
         with Client(TOKEN, target=INVEST_GRPC_API) as client:        
-            return TkInstrument.get_instrument_tickers(client, InstrumentType.INSTRUMENT_TYPE_SHARE, "TQBR")
+            tickers = TkInstrument.get_instrument_tickers(client, InstrumentType.INSTRUMENT_TYPE_SHARE, "TQBR")
+            tickers = [ticker for ticker in tickers if ticker not in ignore_tickers]
+            return tickers
 
     gather_data_queue_path = join( data_path, gather_data_queue_filename )
     queue = TkPersistentQueue( gather_data_queue_path, init_gather_data_queue_callback )

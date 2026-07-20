@@ -926,54 +926,80 @@ class TkStatistics():
         return regimes
     
     #------------------------------------------------------------------------------------------------------------------------
-    # Computes market regime thresholds for giver sequence of prices
+    # Computes market regime thresholds for given sequence of prices
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
     def calculate_regime_thresholds(prices: np.ndarray, num_regimes: int, rolling_window_size: int = 20) -> list:
         """
-        Calculates data-driven volatility thresholds based on historical price percentiles.
-
+        Calculates data-driven volatility thresholds using native NumPy K-Means clustering.
+        
         Parameters:
         -----------
         prices : array_like
             Sequence of historical prices.
         num_regimes : int
             The number of market regimes you want to model. Must be >= 2.
-        window : int, optional
+        rolling_window_size : int, optional
             Lookback window to calculate rolling volatility (default is 20 periods).
-
+            
         Returns:
         --------
         thresholds : list
-            List of size (num_regimes - 1) containing the volatility thresholds in percentages.
+            List of size (num_regimes - 1) containing the volatility thresholds.
         """
         prices = np.asarray(prices, dtype=float)
-    
+        
         if num_regimes < 2:
             raise ValueError("Number of regimes must be at least 2.")
         if len(prices) <= rolling_window_size:
             raise ValueError("Price sequence must be longer than the rolling window.")
 
-        # Calculate percentage returns
+        # 1. Calculate rolling volatility
         log_returns = np.diff(np.log(prices))
-
-        # Calculate rolling volatility efficiently
         windows = sliding_window_view(log_returns, window_shape=rolling_window_size)
         rolling_vol = np.std(windows, axis=1, ddof=1)
-    
-        # Filter out NaN values (though sliding_window_view naturally excludes them here)
         valid_vol = rolling_vol[~np.isnan(rolling_vol)]
-    
-        if len(valid_vol) == 0:
-            raise ValueError("Not enough data to compute volatility percentiles.")
+        
+        if len(valid_vol) < num_regimes:
+            raise ValueError("Not enough data points to compute clusters.")
 
-        # Calculate the required percentiles based on the number of regimes
-        # Example: For 3 regimes, we need the 33.33rd and 66.67th percentiles.
-        percentile_steps = [100.0 * i / num_regimes for i in range(1, num_regimes)]
-    
-        # 5. Compute the thresholds
-        thresholds = np.percentile(valid_vol, percentile_steps)
+        # 2. Guardrail: ensure enough unique values exist
+        unique_vols = np.unique(valid_vol)
+        if len(unique_vols) < num_regimes:
+            raise ValueError("Not enough unique volatility values found.")            
+
+        # 3. Native K-Means Implementation
+        # Initialize centers evenly across the min/max range to handle zero-inflation safely
+        centers = np.linspace(np.min(valid_vol), np.max(valid_vol), num_regimes)
+        
+        max_iterations = 100
+        for _ in range(max_iterations):
+            # Calculate distance from each point to each center using broadcasting
+            # valid_vol[:, None] is shape (N, 1), centers[None, :] is shape (1, K)
+            distances = np.abs(valid_vol[:, None] - centers[None, :])
+            
+            # Assign each point to the closest center
+            labels = np.argmin(distances, axis=1)
+            
+            new_centers = np.zeros(num_regimes)
+            for k in range(num_regimes):
+                cluster_points = valid_vol[labels == k]
+                if len(cluster_points) > 0:
+                    new_centers[k] = np.mean(cluster_points)
+                else:
+                    # If a cluster ends up empty, retain its previous center
+                    new_centers[k] = centers[k]
+            
+            # Check for convergence (if centers stop moving, we're done)
+            if np.allclose(centers, new_centers, atol=1e-8):
+                break
+                
+            centers = new_centers
+
+        # 4. Compute thresholds as the midpoints between sorted centers
+        centers = np.sort(centers)
+        thresholds = (centers[:-1] + centers[1:]) / 2.0
 
         return thresholds.tolist()
 

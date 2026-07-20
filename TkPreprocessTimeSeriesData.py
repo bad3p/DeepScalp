@@ -34,7 +34,7 @@ from TkModules.TkIO import TkIO
 from TkModules.TkInstrument import TkInstrument
 from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
-from TkModules.TkPreprocessFile import preprocess_file
+from TkModules.TkPreprocessFile import preprocess_file_for_training
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -220,7 +220,7 @@ if __name__ == "__main__":
                 filename = data_source[2]
                 market_regimes = data_source[3]
 
-                process = mp.Process(target=preprocess_file, args=(output_queue, ticker, is_test_data_source, filename, market_regimes))
+                process = mp.Process(target=preprocess_file_for_training, args=(output_queue, ticker, is_test_data_source, filename, market_regimes))
                 process.start()
                 processes.append(process)
 

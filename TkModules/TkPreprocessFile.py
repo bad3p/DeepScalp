@@ -36,6 +36,10 @@ from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
 from dataclasses import dataclass
 
+#------------------------------------------------------------------------------------------------------------------------
+# Preprocessed data 
+#------------------------------------------------------------------------------------------------------------------------
+
 @dataclass
 class PreprocessedData:
 
@@ -302,7 +306,11 @@ class PreprocessedData:
 
         return sample
 
-def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename:str, market_regimes:list):
+#------------------------------------------------------------------------------------------------------------------------
+# Preprocessing for training, adopted for MP
+#------------------------------------------------------------------------------------------------------------------------
+
+def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:bool, filename:str, market_regimes:list):
 
     pid = os.getpid()
 
@@ -404,3 +412,57 @@ def preprocess_file(output_queue, ticker:str, is_test_data_source:bool, filename
     output_queue.put( (pid, [0], False, is_test_data_source, True) )
 
     quit(0)
+
+#------------------------------------------------------------------------------------------------------------------------
+# Preprocessing for inference
+#------------------------------------------------------------------------------------------------------------------------
+
+def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list):
+
+    TOKEN = os.environ["TK_TOKEN"]
+    with Client(TOKEN, target=INVEST_GRPC_API) as client:
+
+        config = configparser.ConfigParser()
+        config.read( 'TkConfig.ini' )
+
+        share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
+
+        data_path = config['Paths']['DataPath']
+        min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])                
+
+        orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
+        orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
+        last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
+        last_trades_depth = int(config['Autoencoders']['LastTradesDepth'])
+
+        test_data_ratio = float(config['TimeSeries']['TestDataRatio'])
+        lshash_size = int(config['TimeSeries']['LSHashSize'])
+        ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
+        ts_data_stride = int(config['TimeSeries']['TSDataStride'])
+        market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
+        num_market_regimes = int(config['TimeSeries']['NumMarketRegimes'])
+        prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
+        future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
+        priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
+
+        raw_samples = TkIO.read_at_path( join( data_path, filename) )
+
+        raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
+
+        if raw_sample_count >= prior_steps_count:
+
+            data = PreprocessedData( share, raw_samples, min_price_increment_factor, orderbook_width, last_trades_width, market_regime_steps_count, market_regimes, future_steps_count )
+
+            ts_input = [None] * prior_steps_count
+                
+            for j in range( prior_steps_count ):
+                k = raw_sample_count-prior_steps_count-1+j
+                ts_input[j] = data.quant_sample(k)
+                                
+            ts_input = list( itertools.chain.from_iterable(ts_input) )
+
+            last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( raw_samples[-1], data.price[-1], last_trades_width, data.min_price_increment * min_price_increment_factor)
+                                
+            return ts_input, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor
+        
+        return None, None, None, None, None

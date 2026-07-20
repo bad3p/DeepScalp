@@ -248,7 +248,8 @@ class TkInstrument():
         getAssetsResponse = client.instruments.get_assets(None)
         assetsWithInstruments = [asset for asset in getAssetsResponse.assets if len(asset.instruments) >= 1 ]
         filteredAssets = [asset for asset in assetsWithInstruments if asset.instruments[0].instrument_kind == instrument_kind and asset.instruments[0].class_code == class_code]        
-        return [asset.instruments[0].ticker for asset in filteredAssets]        
+        result = [asset.instruments[0].ticker for asset in filteredAssets]
+        return result
 
     #------------------------------------------------------------------------------------------------------------------------    
     # File helpers

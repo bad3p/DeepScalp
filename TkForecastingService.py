@@ -42,6 +42,7 @@ from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkLastTradesAutoencoder import TkLastTradesAutoencoder
 from TkModules.TkOrderbookAutoencoder import TkOrderbookAutoencoder
 from TkModules.TkTimeSeriesForecaster import TkTimeSeriesForecaster
+from TkModules.TkPreprocessFile import preprocess_file_for_inference
 
 #------------------------------------------------------------------------------------------------------------------------
 # UI
@@ -600,6 +601,7 @@ def ipc_output_thread_func():
                     message = ipc_output_message_queue[0]
                     del ipc_output_message_queue[0]
                     conn.send(message)
+                    print ('Sent', message)
         except ConnectionError:
             print("Reconnecting output thread...")
             ipc_output_message_queue.clear()
@@ -613,125 +615,10 @@ ipc_output_thread.daemon = True
 ipc_output_thread.start()
 
 #------------------------------------------------------------------------------------------------------------------------
-# Load samples from the given path
-# The samples are arranged into list of tuples [(orderbook, last_trades), ...]
-#------------------------------------------------------------------------------------------------------------------------
-
-def load_samples(path:str, num_samples:int):
-    raw_indices = TkIO.index_at_path(path)
-    raw_sample_count = int( len(raw_indices) / 2 )
-
-    if raw_sample_count >= num_samples:
-
-        data_stream = open( path, 'rb+')
-
-        try:        
-            result = []
-            for i in range(num_samples):
-                iid = len(raw_indices) - num_samples * 2 + i * 2
-                data_stream.seek( raw_indices[iid], 0 )
-                orderbook_sample = TkIO.read_from_file( data_stream )
-                data_stream.seek( raw_indices[iid+1], 0 )
-                last_trades_sample = TkIO.read_from_file( data_stream )
-                result.append( (orderbook_sample, last_trades_sample) )
-            data_stream.close()
-            return result
-        except:
-            data_stream.close()
-            print('Error loading data from stream!')
-            return None
-    else:
-        return None
-
-#------------------------------------------------------------------------------------------------------------------------
-# Convert orderbook & last trades samples to TkTimeSeriesForecaster input format
-#------------------------------------------------------------------------------------------------------------------------
-
-def preprocess_samples(instrument:TkInstrument, samples:list, orderbook_width:int, last_trades_width:int, min_price_increment_factor:int, orderbook_autoencoder:TkOrderbookAutoencoder, last_trades_autoencoder:TkLastTradesAutoencoder, main_panel:TkMainPanel):
-
-    global cuda
-
-    num_samples = len(samples)
-    price = [0.0] * num_samples
-    orderbook_volume = [0] * num_samples
-    last_trades_volume = [0] * num_samples
-    orderbook = [None] * num_samples
-    last_trades = [None] * num_samples
-
-    min_price_increment = quotation_to_float( instrument.min_price_increment() )
-
-    for i in range( num_samples ):
-        orderbook_sample = samples[i][0]
-        distribution, descriptor, volume, pivot_price = TkStatistics.orderbook_distribution( orderbook_sample, orderbook_width, min_price_increment * min_price_increment_factor )
-        if volume > 0:
-            distribution *= 1.0 / volume
-        price[i] = quotation_to_float( orderbook_sample.last_price )
-        orderbook_volume[i] = volume
-        orderbook[i] = distribution
-        if main_panel != None:
-            labels = [ 0.5 * (item[0] + item[1]) for item in descriptor]
-            main_panel.setOrderbook( i, distribution.tolist(), labels )
-
-        last_trades_sample = samples[i][1]
-        distribution, descriptor, volume = TkStatistics.trades_distribution( last_trades_sample, pivot_price, last_trades_width, min_price_increment * min_price_increment_factor )
-        if volume > 0:
-            distribution *= 1.0 / volume
-        last_trades_volume[i] = volume
-        last_trades[i] = distribution
-        if main_panel != None:
-            labels = [ 0.5 * (item[0] + item[1]) for item in descriptor]
-            main_panel.setLastTrades( i, distribution.tolist(), labels )
-
-    if main_panel != None:
-        main_panel.setOrderbookVolume( orderbook_volume )
-        main_panel.setLastTradesVolume( last_trades_volume )
-        main_panel.setPrice( price )
-
-    orderbook_input = torch.Tensor( np.concatenate( orderbook ) )
-    orderbook_input = torch.reshape( orderbook_input, ( num_samples, 1, orderbook_width ) )
-    orderbook_input = orderbook_input.cuda()
-    orderbook_code = orderbook_autoencoder.encode(orderbook_input)
-    orderbook_code = torch.reshape( orderbook_code, (num_samples, orderbook_autoencoder.code_layer_size() ) )
-    orderbook_code = orderbook_code.tolist()
-
-    last_trades_input = torch.Tensor( np.concatenate( last_trades ) )
-    last_trades_input = torch.reshape( last_trades_input, ( num_samples, 1, last_trades_width ) )
-    last_trades_input = last_trades_input.cuda()
-    last_trades_code = last_trades_autoencoder.encode(last_trades_input)
-    last_trades_code = torch.reshape( last_trades_code, (num_samples, last_trades_autoencoder.code_layer_size() ) )
-    last_trades_code = last_trades_code.tolist()
-
-    base_price = price[-1]
-    base_orderbook_volume = sum( orderbook_volume[0:num_samples] ) / num_samples
-    base_last_trades_volume = sum( last_trades_volume[0:num_samples] ) / num_samples
-
-    result = [None] * num_samples
-
-    for i in range( num_samples ):
-        result[i] = orderbook_code[i].copy()
-        result[i].extend( last_trades_code[i].copy() )
-
-        sample_price = price[i]
-        sample_price = ( sample_price / base_price - 1.0 ) * 100
-        result[i].append( sample_price )
-
-        sample_orderbook_volume = orderbook_volume[i]
-        sample_orderbook_volume = ( sample_orderbook_volume / base_orderbook_volume - 1.0 ) * 100 if ( base_orderbook_volume > 0 ) else 0.0
-        result[i].append( sample_orderbook_volume )
-
-        sample_last_trades_volume = last_trades_volume[i]
-        sample_last_trades_volume = ( sample_last_trades_volume / base_last_trades_volume - 1.0 ) * 100 if ( base_last_trades_volume > 0 ) else 0.0
-        result[i].append( sample_last_trades_volume )
-
-    result = list( itertools.chain.from_iterable(result) )
-
-    return result
-
-#------------------------------------------------------------------------------------------------------------------------
 # Runs TkTimeSeriesForecaster model
 #------------------------------------------------------------------------------------------------------------------------
 
-def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_width:int, ts_model:TkTimeSeriesForecaster, lt_model:TkLastTradesAutoencoder):
+def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_width:int, ts_model:TkTimeSeriesForecaster):
 
     global cuda
 
@@ -739,10 +626,9 @@ def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_wid
     input = torch.reshape( input, ( 1, prior_steps_count * input_width) )
     input = input.to(cuda)
 
-    ts_output = ts_model.forward( input )
-    lt_output = lt_model.decode( ts_output )
-    lt_output = torch.reshape( lt_output, ( 1, last_trades_width ) )
-    return lt_output
+    ts_output, ts_regime = ts_model.forward( input )
+    ts_output = torch.nn.functional.softmax( ts_output, dim=-1)
+    return ts_output
 
 #------------------------------------------------------------------------------------------------------------------------
 # Forecast profitability
@@ -765,17 +651,11 @@ def forecast_profitability( price_distribution : list , distribution_descriptor 
 # Main loop
 #------------------------------------------------------------------------------------------------------------------------
 
-print('Loading orderbook autoencoder...')
-orderbook_autoencoder = TkOrderbookAutoencoder(config)
-orderbook_autoencoder.to(cuda)
-orderbook_autoencoder.load_state_dict(torch.load(orderbook_model_path))
-orderbook_autoencoder.eval()
-
-print('Loading last trades autoencoder...')
-last_trades_autoencoder = TkLastTradesAutoencoder(config)
-last_trades_autoencoder.to(cuda)
-last_trades_autoencoder.load_state_dict(torch.load(last_trades_model_path))
-last_trades_autoencoder.eval()
+print('Loading market regimes...')
+market_regimes_config_file = open('TkMarketRegimeThresholds.json', 'r', encoding='utf-8')
+market_regimes_config = json.load(market_regimes_config_file)
+mean_regimes = market_regimes_config.values()
+mean_regimes = [sum(column) / len(column) for column in zip(*mean_regimes)]
 
 print('Loading time series forecaster...')
 time_series_forecaster = TkTimeSeriesForecaster(config)
@@ -803,40 +683,31 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             del ipc_input_message_queue[0]
             ticker = filename[ 0: filename.find("_") ]
             instrument = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
+            market_regimes = market_regimes_config[ticker] if ticker in market_regimes_config else mean_regimes
             
-            samples = load_samples( join( data_path, filename), prior_steps_count )
+            input, last_price, min_price_increment, last_trades, last_trades_descriptor = preprocess_file_for_inference(ticker, filename, market_regimes)
 
-            if samples != None:
+            if input != None:
 
-                min_price_increment = quotation_to_float(instrument.min_price_increment())
-                _, _, _, last_price = TkStatistics.orderbook_distribution( samples[-1][0], orderbook_width, min_price_increment * min_price_increment_factor )
+                t0 = default_timer()
+                output = forecast(input, prior_steps_count, input_width, last_trades_width, time_series_forecaster)
+                forecast_time = default_timer() - t0
 
-                last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( samples[-1][1], last_price, last_trades_width, min_price_increment * min_price_increment_factor)
-
-                if last_trades_volume > 0:
-                    last_trades *= 1.0/last_trades_volume
-                
                 distribution_incremental_value = (min_price_increment_factor * min_price_increment) / last_price * 100
                 output_distribution_descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(last_trades_width / 2) )
                 output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
 
-                t0 = default_timer()
-                input = preprocess_samples( instrument, samples, orderbook_width, last_trades_width, min_price_increment_factor, orderbook_autoencoder, last_trades_autoencoder, main_panel)
-                preprocess_samples_time = default_timer() - t0
-
-                t0 = default_timer()
-                output = forecast(input, prior_steps_count, input_width, last_trades_width, time_series_forecaster, last_trades_autoencoder)
-                forecast_time = default_timer() - t0
-
+                output_bin_threshold = 0.001 # TODO: configure
                 output = list( itertools.chain.from_iterable( output.tolist() ) )
+                output = [x if x >= output_bin_threshold else 0.0 for x in output]
                 main_panel.setForecast( output, output_distribution_labels )
 
-                is_profitable, profit = forecast_profitability( output , output_distribution_descriptor, profitability_threshold=profitability, tail_mean_order=tail_mean_order )
+                is_profitable, profit = forecast_profitability( output , output_distribution_labels, profitability_threshold=profitability, tail_mean_order=tail_mean_order )
 
                 if is_profitable:
                     # Multiple forecasts in a row
-                    if TkForecastPanel.find(instrument) != None:
-                        ipc_output_message_queue.append( (instrument.ticker(), profit) )
+                    #if TkForecastPanel.find(instrument) != None:
+                    ipc_output_message_queue.append( (instrument.ticker(), profit) )
                     TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)                    
                     if event_notification and not toast.notification_active():
                         toastMessage = instrument.ticker() + ' +' + str(profit) + '%'

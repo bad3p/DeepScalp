@@ -108,6 +108,9 @@ if __name__ == "__main__":
 
         for ticker in files_by_ticker:
 
+            #if ticker != 'CHMK':
+            #    continue
+
             share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
 
             num_data_sources = len(files_by_ticker[ticker])
