@@ -39,7 +39,6 @@ data_extension = config['Paths']['OrderbookFileExtension']
 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
-min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
 
 data_files = [fileName for fileName in listdir(data_path) if (data_extension in fileName) and isfile(join(data_path, fileName))]
 random.shuffle(data_files)

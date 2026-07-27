@@ -152,8 +152,9 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def trades_distribution(trades : GetLastTradesResponse, pivot_price : float, distribution_width : int, min_price_increment : float):
+    def trades_distribution(trades : GetLastTradesResponse, pivot_price : float, distribution_width : int, discretization_interval : float):
 
+        min_price_increment = pivot_price * 0.01 * discretization_interval
         distribution_incremental_value = min_price_increment / pivot_price * 100
         descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(distribution_width / 2) )
 
@@ -725,17 +726,19 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
     # For the given list of anonymized trades, the method returns distrubution of order volumes,
     # * pivoted around given price
-    # * with discretization proportional to given min_price_increment
+    # * with given relative discretization interval (in percents)
     # * with optional time threshold allowing to ignore events older than the certain time
     # Using "force_categorical" the method will return valid categorical distribution peaked at pivot_price if the input volume is zero.
     # Additionally the method measures the means of distribution tails, given the order "measure_distribution_tail_order"
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def last_trades_to_tensor(trades_with_time_threshold : list, pivot_price : float, distribution_width : int, min_price_increment : float, force_categorical: bool = False, measure_distribution_tail_order=1):
+    def last_trades_to_tensor(trades_with_time_threshold : list, pivot_price : float, distribution_width : int, discretization_interval : float, force_categorical: bool = False, measure_distribution_tail_order=1):
 
         def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
             return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+        
+        min_price_increment = pivot_price * 0.01 * discretization_interval
 
         bid_price = [ pivot_price - min_price_increment * i for i in range(int(distribution_width/2))]
         ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(distribution_width/2)+1)]
@@ -771,13 +774,11 @@ class TkStatistics():
                 price = quotation_to_float( trade.price )
                 if price <= pivot_price:
                     index = max( 0, min( int( round( (pivot_price - price) / min_price_increment ) ), int(distribution_width/2)-1 ) )
-                    assert almost_equal(price, bid_price[index]) if index < int(distribution_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index]) + " : " + str(index)
                     total_volume = total_volume + trade.quantity
                     bid_volume[index] = bid_volume[index] + trade.quantity
                     total_sell_trades = total_sell_trades + trade.quantity
                 else:
                     index = max( 0, min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 ) )
-                    # assert almost_equal(price, ask_price[index]) if index < int(distribution_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index]) + " : " + str(index)
                     total_volume = total_volume + trade.quantity
                     ask_volume[index] = ask_volume[index] + trade.quantity
                     total_buy_trades = total_buy_trades + trade.quantity

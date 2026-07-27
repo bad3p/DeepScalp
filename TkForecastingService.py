@@ -539,7 +539,7 @@ ts_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSerie
 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
-min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])
+last_trades_discretization = float(config['Autoencoders']['LastTradesDiscretization'])
 
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
 future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
@@ -693,7 +693,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 output = forecast(input, prior_steps_count, input_width, last_trades_width, time_series_forecaster)
                 forecast_time = default_timer() - t0
 
-                distribution_incremental_value = (min_price_increment_factor * min_price_increment) / last_price * 100
+
+                min_price_increment = last_price * 0.01 * last_trades_discretization
+                distribution_incremental_value = min_price_increment / last_price * 100
                 output_distribution_descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(last_trades_width / 2) )
                 output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
 

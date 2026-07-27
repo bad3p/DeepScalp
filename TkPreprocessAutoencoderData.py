@@ -40,7 +40,6 @@ class TkAutoencoderDataPreprocessor():
     def __init__(self, _cfg : configparser.ConfigParser):
         self._orderbook_width = int(_cfg['Autoencoders']['OrderbookWidth'])
         self._last_trades_width = int(_cfg['Autoencoders']['LastTradesWidth'])
-        self._min_price_increment_factor = int(_cfg['Autoencoders']['MinPriceIncrementFactor'])
         self._lshash_size = int(_cfg['Autoencoders']['LSHashSize'])
         self._orderbook_sample_similarity = float(_cfg['Autoencoders']['OrderBookSampleSimilarity'])
         self._last_trades_sample_similarity = float(_cfg['Autoencoders']['LastTradesSampleSimilarity'])

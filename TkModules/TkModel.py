@@ -2,7 +2,7 @@
 import torch
 
 #------------------------------------------------------------------------------------------------------------------------
-# Residual layer for MLP
+# Residual layer for linear connections
 #------------------------------------------------------------------------------------------------------------------------
 
 class Residual(torch.nn.Module):
@@ -37,6 +37,54 @@ class Residual(torch.nn.Module):
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.normal_(m.weight, 0, 0.001)
                 torch.nn.init.constant_(m.bias, 0)
+
+#------------------------------------------------------------------------------------------------------------------------
+# Residual layer for convolutional connections
+#------------------------------------------------------------------------------------------------------------------------
+
+class Residual2D(torch.nn.Module):
+    def __init__(self, idx:int, in_dim:int, in_features:int, out_dim:int, out_features:int, scale:float, dropout:float, nonlinearity:torch.nn.Module):
+        super().__init__()
+        self._index = idx
+        self._in_dim = in_dim
+        self._in_features = in_features
+        self._out_dim = out_dim
+        self._out_features = out_features
+        self._scale = scale
+        self._dropout = torch.nn.Dropout(dropout) if dropout > 0 else None
+        self._projection = torch.nn.Conv1d( in_channels=self._in_features, out_channels=self._out_features, kernel_size=1, stride=1, padding=0)
+        self._nonlinearity = nonlinearity
+        self.initWeights()
+
+    def index(self):
+        return self._index
+
+    def forward(self, x_prev, x):
+
+        x_prev = torch.nn.functional.interpolate( x_prev, size=self._out_dim, mode='linear', align_corners=False )
+        x_prev = self._projection(x_prev)
+
+        if self._nonlinearity == None:
+            if self._dropout == None:
+                return x + x_prev * self._scale
+            else:
+                return x + self._dropout(x_prev) * self._scale
+        else:
+            if self._dropout == None:
+                return x + self._nonlinearity(x_prev) * self._scale
+            else:
+                return x + self._dropout(self._nonlinearity(x_prev)) * self._scale
+    
+    def initWeights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, 0, 0.001)
+                torch.nn.init.constant_(m.bias, 0)
+            if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.ConvTranspose1d):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')                
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)
+
 
 #------------------------------------------------------------------------------------------------------------------------
 # Clamp as layer
@@ -213,6 +261,23 @@ class TkModel(torch.nn.Module):
             if len(params) > 5:
                 nonlinearity = create_layer( {params[5]: [0.01]})
             return Residual(index, layer_in_channels, layer_out_channels, scale, dropout, nonlinearity)
+        
+        def create_residual2d_layer(params:list):
+            index = params[0]
+            layer_in_dim = params[1]
+            layer_in_channels = params[2]
+            layer_out_dim = params[3]
+            layer_out_channels = params[4]
+            scale = 1.0
+            if len(params) > 5:
+                residual_scale = params[5]
+            dropout = 0.0
+            if len(params) > 6:
+                dropout = params[6]
+            nonlinearity = None
+            if len(params) > 7:
+                nonlinearity = create_layer( {params[7]: [0.01]})
+            return Residual2D( index, layer_in_dim, layer_in_channels, layer_out_dim, layer_out_channels, scale, dropout, nonlinearity)
 
         def create_layer(layer_descriptor : dict):
             if len(layer_descriptor.keys()) == 0:
@@ -256,6 +321,8 @@ class TkModel(torch.nn.Module):
                 return create_linear_layer( layer_descriptor[layer_type] )
             if layer_type == 'Residual':
                 return create_residual_layer( layer_descriptor[layer_type] )
+            if layer_type == 'Residual2D':
+                return create_residual2d_layer( layer_descriptor[layer_type] )
             if layer_type == 'LNorm':
                 return create_lnorm_layer( layer_descriptor[layer_type])
             if layer_type == 'CNorm':
@@ -304,6 +371,10 @@ class TkModel(torch.nn.Module):
             if isinstance(self._layers[layer_id], Residual):
                 residual: Residual = self._layers[layer_id]
                 index = residual.index()
+                self._layer_outputs.append( self._layers[layer_id]( self._layer_outputs[index], self._layer_outputs[-1] ) )
+            elif isinstance(self._layers[layer_id], Residual2D):
+                residual2d: Residual2D = self._layers[layer_id]
+                index = residual2d.index()
                 self._layer_outputs.append( self._layers[layer_id]( self._layer_outputs[index], self._layer_outputs[-1] ) )
             else:
                 self._layer_outputs.append( self._layers[layer_id]( self._layer_outputs[-1] ) )

@@ -91,7 +91,7 @@ class PreprocessedData:
     alpha_imbalance_ema_norm: list
     mean_alpha_ema_norm: list
 
-    def __init__(self, share:TkInstrument, raw_samples:list, min_price_increment_factor:float, orderbook_width:int, last_trades_width:int, market_regime_steps_count:int, market_regimes:list, future_steps_count:int):        
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, market_regime_steps_count:int, market_regimes:list, future_steps_count:int):        
         
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -123,11 +123,11 @@ class PreprocessedData:
 
             orderbook_sample = raw_samples[i*2]
 
-            # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment * min_price_increment_factor )            
-            volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment * min_price_increment_factor )
+            # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment )            
+            volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment )
 
             self.price[i] = pivot_price
-            self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment * min_price_increment_factor )
+            self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment )
             self.orderbook_volume[i] = volume
             self.orderbook_slope[i] = slope
             self.orderbook_microprice[i] = microprice
@@ -137,7 +137,7 @@ class PreprocessedData:
             self.orderbook_mean_alpha[i] = (bid_alpha + ask_alpha) / 2.0
 
             last_trades_samples = [ (raw_samples[i*2+1], last_trades_time_threshold) ]
-            last_trades_tensor, _, num_events, volume, buy_trades, sell_trades, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, last_trades_width, self.min_price_increment * min_price_increment_factor )
+            last_trades_tensor, _, num_events, volume, buy_trades, sell_trades, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, last_trades_width, last_trades_discretization )
             self.last_trades_volume[i] = volume
             self.last_trades_num_events[i] = num_events
             self.trade_flow_imbalance[i] = (buy_trades - sell_trades) / max(1.0, buy_trades + sell_trades)
@@ -323,7 +323,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
 
         data_path = config['Paths']['DataPath']
-        min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])                
+        last_trades_discretization = float(config['Autoencoders']['LastTradesDiscretization'])
 
         orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
         orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
@@ -346,7 +346,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, min_price_increment_factor, orderbook_width, last_trades_width, market_regime_steps_count, market_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, market_regimes, future_steps_count )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -366,7 +366,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                     prev_orderbook_sample = raw_samples[(i+j-1)*2]
                     last_trades_samples.append( ( raw_samples[(i+j)*2+1], prev_orderbook_sample.orderbook_ts ) )
 
-                future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, last_trades_width, data.min_price_increment * min_price_increment_factor, force_categorical=True )
+                future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( last_trades_samples, ts_base_price, last_trades_width, last_trades_discretization, force_categorical=True )
             
                 future_trades[i] = future_last_trades_tensor
                 future_trades_volume[i] = future_volume
@@ -428,7 +428,7 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
         share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
 
         data_path = config['Paths']['DataPath']
-        min_price_increment_factor = int(config['Autoencoders']['MinPriceIncrementFactor'])                
+        last_trades_discretization = float(config['Autoencoders']['LastTradesDiscretization'])
 
         orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
         orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
@@ -451,7 +451,7 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, min_price_increment_factor, orderbook_width, last_trades_width, market_regime_steps_count, market_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, market_regimes, future_steps_count )
 
             ts_input = [None] * prior_steps_count
                 
@@ -461,7 +461,7 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
                                 
             ts_input = list( itertools.chain.from_iterable(ts_input) )
 
-            last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( raw_samples[-1], data.price[-1], last_trades_width, data.min_price_increment * min_price_increment_factor)
+            last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( raw_samples[-1], data.price[-1], last_trades_width, last_trades_discretization )
                                 
             return ts_input, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor
         
