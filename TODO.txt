@@ -10,5 +10,8 @@
  [x] Try residual layers in time series prediction
  [x] Try lesser amount of future/predicted quants (2, 1) and observe the accuracy of the model
  [ ] Gather data over the whole day period, do not split it to Day and Evening.
- [ ] Refactor prices, volatilities and market regimes to be based on trades snapshots, not on instant last price values from LOBs
- [ ] Try fixed forecasting output, independent on min_price_increment. Since regime is not depending on it either.
+ [x] Refactor prices, volatilities and market regimes to be based on trades snapshots, not on instant last price values from LOBs
+ [x] Try fixed forecasting output, independent on min_price_increment. Since regime is not depending on it either.
+ [x] In validation service - sell for actual limit price instead for maximal observed price
+ [ ] In validation service - when sell with loss, simulate probability of selling at certain step by weighting best price to the other prices by volume
+ [ ] In preprocessed data - add information about market regimes to the price & volatility slice

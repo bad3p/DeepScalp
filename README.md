@@ -7,7 +7,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 # Prerequisites
 
 * https://numpy.org/
-* https://tinkoff.github.io/invest-python/
+* https://opensource.tbank.ru/invest/invest-python/-/blob/master/README.md
 * https://pandas.pydata.org/
 * https://pypi.org/project/dearpygui/
 * https://pypi.org/project/joblib/
@@ -19,7 +19,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 
 * pip install numpy
 * pip install pandas
-* pip install tinkoff-investments
+* pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
 * pip install dearpygui
 * pip install joblib
 * pip install win10toast

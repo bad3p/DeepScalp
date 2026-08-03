@@ -116,6 +116,7 @@ def validation_service_iteration():
     config.read( 'TkConfig.ini' )
 
     position_life_time = float(config['TradingService']['PositionLifeTime'])
+    max_last_trades_period = float(config['ValidationService']['MaxLastTradesPeriodInSeconds'])
     trading_fee = float(config['TradingService']['TradingFee'])
     trading_forecast_modifier = float(config['TradingService']['TradingForecastModifier'])
 
@@ -179,20 +180,35 @@ def validation_service_iteration():
                         profit = forecast * ( 1.0 - profit_factor )
 
                         last_trades_end_date = now() 
-                        last_trades_start_date = now() - timedelta( seconds=round(life_time) )
+                        last_trades_start_date = now() - timedelta( seconds=round( min(max_last_trades_period,life_time) ) )
                         last_trades = share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED )
 
                         if len(last_trades.trades) > 0:
 
+                            avg_price = 0.0
+                            total_volume = 0
+                            for trade in last_trades.trades:
+                                avg_price = avg_price + quotation_to_float( trade.price )
+                                total_volume = total_volume + trade.quantity
+                            avg_price = avg_price / len(last_trades.trades)
+                            print( avg_price, total_volume )
+
                             max_price = quotation_to_float( last_trades.trades[0].price )
                             for trade in last_trades.trades:
                                 max_price = max( max_price, quotation_to_float( trade.price ) )
-                                
-                            price = max_price                            
 
-                            if ( price >= cost + cost * profit / 100.0 ) or ( life_time > position_life_time ):
-                                price = round( lot * (price - price * trading_fee), 2 )
-                                validation_state.report_deal( ticker, cost, price, (price - cost)/cost * 100, validation_state.get_current_position_profit() )
+                            max_lot_price = round( lot * max_price, 2 )
+                            if ( max_lot_price >= cost + cost * profit / 100.0 ):
+                                # sell at profitable price
+                                sell_price = (cost + cost * profit / 100.0)
+                                sell_price = sell_price - sell_price * trading_fee
+                                sell_price = round( sell_price, 2 ) # cost considers lot
+                                validation_state.report_deal( ticker, cost, sell_price, (sell_price - cost)/cost * 100, validation_state.get_current_position_profit() )
+                                validation_state.delete_current_position()
+                            elif ( life_time > position_life_time ):
+                                # sell at market price
+                                sell_price = round( lot * (max_price - max_price * trading_fee), 2 )
+                                validation_state.report_deal( ticker, cost, sell_price, (sell_price - cost)/cost * 100, validation_state.get_current_position_profit() )
                                 validation_state.delete_current_position()
                             else:
                                 validation_state.shift_current_position()

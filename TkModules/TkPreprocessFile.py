@@ -49,6 +49,7 @@ class PreprocessedData:
     # unfiltered data
     
     price: list
+    volatility: list
     spread: list
     orderbook_volume: list
     orderbook_slope: list
@@ -81,7 +82,7 @@ class PreprocessedData:
     queue_depletion_imbalance_log_ema_norm: list
     order_arrival_intensity_log_ema_norm: list
     order_arrival_imbalance_log_ema_norm: list
-    price_log_ema_volatility: list
+    ema_norm_volatility: list
     orderbook_log_ema_norm_volume: list
     last_trades_log_ema_norm_volume: list
     last_trades_log_ema_norm_num_events: list
@@ -105,6 +106,8 @@ class PreprocessedData:
         # extract features from orderbook & last trades
 
         self.price = [0.0] * raw_sample_count
+        self.volatility = [0.0] * raw_sample_count
+        self.regimes = [0.0] * raw_sample_count
         self.spread = [0.0] * raw_sample_count
         self.orderbook_volume = [0] * raw_sample_count
         self.orderbook_slope = [0] * raw_sample_count
@@ -122,11 +125,15 @@ class PreprocessedData:
         for i in range( raw_sample_count ):
 
             orderbook_sample = raw_samples[i*2]
+            last_trades_sample = raw_samples[i*2+1]
 
-            # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment )            
+            # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment )                        
             volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment )
+            vwap, vwvol, normalized_vwvol = TkStatistics.trades_statistics( last_trades_sample, last_trades_time_threshold )
 
-            self.price[i] = pivot_price
+            self.price[i] = vwap if vwap > 0.0 else pivot_price
+            self.volatility[i] = normalized_vwvol
+            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.volatility[i], market_regimes )
             self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment )
             self.orderbook_volume[i] = volume
             self.orderbook_slope[i] = slope
@@ -157,8 +164,6 @@ class PreprocessedData:
                 self.price_change[i] = self.price[i] - self.price[i-1]
 
         self.price_change_log_ema_norm = TkStatistics.log_ema_normalize( self.price_change, half_life=market_regime_steps_count ).tolist()
-
-        self.regimes = TkStatistics.price_to_market_regimes( self.price, market_regimes, market_regime_steps_count )
 
         self.order_flow_imbalance = [0] * raw_sample_count
         self.queue_imbalance = [0] * raw_sample_count
@@ -192,7 +197,7 @@ class PreprocessedData:
         self.order_arrival_intensity_log_ema_norm = TkStatistics.log_ema_normalize( self.order_arrival_intensity, half_life=market_regime_steps_count ).tolist()
         self.order_arrival_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( self.order_arrival_imbalance, half_life=market_regime_steps_count ).tolist()
         
-        self.price_log_ema_volatility = TkStatistics.log_vol_ema_normalize( self.price, half_life=market_regime_steps_count ).tolist()
+        self.ema_norm_volatility = TkStatistics.ema_normalize( self.volatility, half_life=market_regime_steps_count ).tolist()
         self.orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( self.orderbook_volume, half_life=market_regime_steps_count ).tolist()
         self.last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( self.last_trades_volume, half_life=market_regime_steps_count ).tolist()
         self.last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( self.last_trades_num_events, half_life=market_regime_steps_count ).tolist()
@@ -204,14 +209,14 @@ class PreprocessedData:
         self.mean_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_mean_alpha, half_life=market_regime_steps_count ).tolist()
 
     def sample_width(self):
-        return 50 # sizeof quant_sample
+        return 53 # sizeof quant_sample
     
     def quant_sample(self, i:int):
         sample = []
 
         # slice 1 : price and volatility
         sample.append( self.price_change_log_ema_norm[i] )
-        sample.append( self.price_log_ema_volatility[i] )
+        sample.append( self.ema_norm_volatility[i] )
 
         # slice 2 : liquidity and spread
         sample.append( self.spread_log_ema_norm[i] )            
@@ -236,7 +241,7 @@ class PreprocessedData:
 
         # slice 6 : price x liquidity / Spread
         sample.append( self.price_change_log_ema_norm[i] * self.spread_log_ema_norm[i] )
-        sample.append( self.price_log_ema_volatility[i] * self.spread_log_ema_norm[i] )
+        sample.append( self.ema_norm_volatility[i] * self.spread_log_ema_norm[i] )
         sample.append( self.price_change_log_ema_norm[i] * self.orderbook_log_ema_norm_volume[i] )
 
         # slice 7 : price x orderbook structure
@@ -271,7 +276,7 @@ class PreprocessedData:
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] * self.last_trades_log_ema_norm_num_events[i] )
 
         # slice 14 : higher order nonlinear interactions
-        sample.append( self.spread_log_ema_norm[i] * self.price_log_ema_volatility[i] * self.queue_depletion_intensity_log_ema_norm[i] )
+        sample.append( self.spread_log_ema_norm[i] * self.ema_norm_volatility[i] * self.queue_depletion_intensity_log_ema_norm[i] )
         sample.append( self.queue_imbalance_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] * self.orderbook_microprice_ema_norm[i] )
 
         # slice 15 : alpha base & imbalance (depth shape structure)
@@ -300,9 +305,14 @@ class PreprocessedData:
         # * Fragility indicator: High volatility + sparse near-touch depth (high mean alpha) = danger
         # * Directional fragility: Volatility multiplied by depth asymmetry
         # * Spread expansion risk: Wide spread + heavy imbalance in depth shape
-        sample.append( self.price_log_ema_volatility[i] * self.mean_alpha_ema_norm[i] )
-        sample.append( self.price_log_ema_volatility[i] * self.alpha_imbalance_ema_norm[i] )
+        sample.append( self.ema_norm_volatility[i] * self.mean_alpha_ema_norm[i] )
+        sample.append( self.ema_norm_volatility[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.spread_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
+
+        # slice 19: market regime
+        sample.append( 1.0 if self.regimes[i] == 0 else 0.0 )
+        sample.append( 1.0 if self.regimes[i] == 1 else 0.0 )
+        sample.append( 1.0 if self.regimes[i] == 2 else 0.0 )
 
         return sample
 
@@ -453,6 +463,10 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
 
             data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, market_regimes, future_steps_count )
 
+            price = data.price[-prior_steps_count:]
+            orderbook_volume = data.orderbook_volume[-prior_steps_count:]
+            trades_volume = data.last_trades_volume[-prior_steps_count:]
+            
             ts_input = [None] * prior_steps_count
                 
             for j in range( prior_steps_count ):
@@ -463,6 +477,6 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
 
             last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( raw_samples[-1], data.price[-1], last_trades_width, last_trades_discretization )
                                 
-            return ts_input, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor
+            return ts_input, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, trades_volume
         
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None, None

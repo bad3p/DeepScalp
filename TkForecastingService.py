@@ -640,9 +640,10 @@ def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_wid
 
 def forecast_profitability( price_distribution : list , distribution_descriptor : list, profitability_threshold : float, tail_mean_order:int ):
 
+    mean, _ = TkStatistics.get_distribution_tail_means( price_distribution, distribution_descriptor, 0 )
     left_mean, right_mean = TkStatistics.get_distribution_tail_means( price_distribution, distribution_descriptor, tail_mean_order )
     
-    if right_mean > profitability_threshold:
+    if mean > 0.0 and right_mean > profitability_threshold:
         return True, right_mean
     else:
         return False, 0.0
@@ -685,7 +686,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             instrument = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
             market_regimes = market_regimes_config[ticker] if ticker in market_regimes_config else mean_regimes
             
-            input, last_price, min_price_increment, last_trades, last_trades_descriptor = preprocess_file_for_inference(ticker, filename, market_regimes)
+            input, last_price, min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, last_trades_volume = preprocess_file_for_inference(ticker, filename, market_regimes)
 
             if input != None:
 
@@ -693,16 +694,20 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 output = forecast(input, prior_steps_count, input_width, last_trades_width, time_series_forecaster)
                 forecast_time = default_timer() - t0
 
-
                 min_price_increment = last_price * 0.01 * last_trades_discretization
                 distribution_incremental_value = min_price_increment / last_price * 100
                 output_distribution_descriptor = TkStatistics.distribution_descriptor( distribution_incremental_value, int(last_trades_width / 2) )
                 output_distribution_labels = [ 0.5 * (item[0] + item[1]) for item in output_distribution_descriptor]
 
+                # cleanup output bins
                 output_bin_threshold = 0.001 # TODO: configure
                 output = list( itertools.chain.from_iterable( output.tolist() ) )
                 output = [x if x >= output_bin_threshold else 0.0 for x in output]
+
                 main_panel.setForecast( output, output_distribution_labels )
+                main_panel.setPrice( price )
+                main_panel.setOrderbookVolume( orderbook_volume )
+                main_panel.setLastTradesVolume( last_trades_volume )
 
                 is_profitable, profit = forecast_profitability( output , output_distribution_labels, profitability_threshold=profitability, tail_mean_order=tail_mean_order )
 

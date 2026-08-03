@@ -249,4 +249,5 @@ class TkTimeSeriesTrainingHistory():
         accumulate_epoch_data( self._epoch_accuracy_history, accuracy, is_end_of_test_epoch )
 
         if is_end_of_training_epoch and end_of_training_epoch_callback != None :
+            print('Saving trainign state...')
             end_of_training_epoch_callback()

@@ -520,7 +520,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        ts_training_history.log(data_loader.training_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy_val)
+        def save_training_state():
+            global ts_training_history
+            global ts_model
+            global ts_model_path
+            global ts_optimizer
+            global ts_optimizer_path
+            ts_training_history.save()
+            torch.save( ts_model.state_dict(), ts_model_path )
+            torch.save( ts_optimizer.state_dict(), ts_optimizer_path )    
+
+        ts_training_history.log(data_loader.training_sample_id(), data_loader.test_sample_id(), y_loss_val, y_accuracy_val, save_training_state )
 
         frac_epoch = ts_smooth_epoch - math.floor(ts_smooth_epoch)
         frac_epoch = math.pow( frac_epoch, 4.0 )

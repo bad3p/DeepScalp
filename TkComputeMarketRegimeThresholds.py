@@ -117,7 +117,7 @@ if __name__ == "__main__":
             num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
             num_training_data_sources = num_data_sources - num_test_data_sources
 
-            prices = []
+            volatility = []
 
             for i in range(num_training_data_sources):
 
@@ -128,11 +128,16 @@ if __name__ == "__main__":
                 raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
                 for j in range( raw_sample_count ):
-                    orderbook_sample = raw_samples[j*2]
-                    prices.append( quotation_to_float(orderbook_sample.last_price) )
+                    time_threshold = raw_samples[(j-1)*2].orderbook_ts if j > 0 else None
+                    last_trades_sample = raw_samples[j*2+1]
+                    vwap, vwvol, normalized_vwvol = TkStatistics.trades_statistics( last_trades_sample, time_threshold )
+                    if vwap > 0:
+                        volatility.append( normalized_vwvol )
+                    else:
+                        volatility.append( 0.0 )
 
             
-            regime_thresholds = TkStatistics.calculate_regime_thresholds( np.array(prices), num_regimes, market_regime_steps_count)
+            regime_thresholds = TkStatistics.calculate_regime_thresholds_vw( np.array(volatility), num_regimes )
             
             print( '"' + ticker + '":', regime_thresholds, "," )
 

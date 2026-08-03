@@ -4,6 +4,7 @@ import os.path
 import numpy as np
 import random
 import math
+import bisect
 from numpy.lib.stride_tricks import sliding_window_view
 from collections import defaultdict
 from decimal import Decimal
@@ -217,6 +218,47 @@ class TkStatistics():
                     distribution[-1] = distribution[-1] + trade.quantity
 
         return volume
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Extract volume weighted average price and volume weighted volatility for the given collection of anonymized trades
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def trades_statistics(trades : GetLastTradesResponse, time_threshold = None ):
+
+        total_currency_volume = 0.0
+        total_volume = 0
+
+        for trade in trades.trades:
+            trade_time = trade.time
+            if time_threshold != None and trade_time < time_threshold:
+                continue
+            price = quotation_to_float( trade.price )
+            total_currency_volume = total_currency_volume + price * trade.quantity
+            total_volume = total_volume + trade.quantity
+
+        if total_volume == 0:
+            return 0.0, 0.0, 0.0
+
+        # volume weighted average price
+        vwap = total_currency_volume / total_volume 
+
+        # volume weighted variance
+        vwvar = 0
+        for trade in trades.trades:
+            trade_time = trade.time
+            if time_threshold != None and trade_time < time_threshold:
+                continue
+            price = quotation_to_float( trade.price )
+            vwvar = vwvar + trade.quantity * (price - vwap)**2
+
+        vwvar = vwvar / total_volume
+
+        # volume weighted volatility
+        vwvol = math.sqrt(vwvar)
+        normalized_vwvol = vwvol / vwap
+
+        return vwap, vwvol, normalized_vwvol
 
     #------------------------------------------------------------------------------------------------------------------------
     # Convert discrete distribution to cumulative form
@@ -896,6 +938,14 @@ class TkStatistics():
         vol = np.sqrt(ema_r2 + eps)
 
         return vol
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Given the absolute price, the method computes market regime
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def volatility_to_market_regime(price:float, regime_thresholds:list):
+        return bisect.bisect_right( regime_thresholds, price)
     
     #------------------------------------------------------------------------------------------------------------------------
     # Given the absolute price series, the method computes market regimes based on rolling volatility 
@@ -1004,6 +1054,76 @@ class TkStatistics():
 
         return thresholds.tolist()
 
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes market regime thresholds for given sequence of volume weighted volatilities
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def calculate_regime_thresholds_vw(vw_vols: np.ndarray, num_regimes: int) -> list:
+        """
+        Calculates data-driven volatility thresholds using native NumPy K-Means clustering.
+        
+        Parameters:
+        -----------
+        vw_vols : array_like
+            Sequence of pre-calculated volume-weighted volatilities.
+        num_regimes : int
+            The number of market regimes you want to model. Must be >= 2.
+            
+        Returns:
+        --------
+        thresholds : list
+            List of size (num_regimes - 1) containing the volatility thresholds.
+        """
+        vols = np.asarray(vw_vols, dtype=float)
+        
+        if num_regimes < 2:
+            raise ValueError("Number of regimes must be at least 2.")
+
+        # 1. Clean the input (remove any NaNs that might have resulted from external rolling calculations)
+        valid_vol = vols[~np.isnan(vols)]
+        
+        if len(valid_vol) < num_regimes:
+            raise ValueError("Not enough data points to compute clusters.")
+
+        # 2. Guardrail: ensure enough unique values exist
+        unique_vols = np.unique(valid_vol)
+        if len(unique_vols) < num_regimes:
+            raise ValueError("Not enough unique volatility values found.")            
+
+        # 3. Native K-Means Implementation
+        # Initialize centers evenly across the min/max range to handle zero-inflation safely
+        centers = np.linspace(np.min(valid_vol), np.max(valid_vol), num_regimes)
+        
+        max_iterations = 100
+        for _ in range(max_iterations):
+            # Calculate distance from each point to each center using broadcasting
+            # valid_vol[:, None] is shape (N, 1), centers[None, :] is shape (1, K)
+            distances = np.abs(valid_vol[:, None] - centers[None, :])
+            
+            # Assign each point to the closest center
+            labels = np.argmin(distances, axis=1)
+            
+            new_centers = np.zeros(num_regimes)
+            for k in range(num_regimes):
+                cluster_points = valid_vol[labels == k]
+                if len(cluster_points) > 0:
+                    new_centers[k] = np.mean(cluster_points)
+                else:
+                    # If a cluster ends up empty, retain its previous center
+                    new_centers[k] = centers[k]
+            
+            # Check for convergence (if centers stop moving, we're done)
+            if np.allclose(centers, new_centers, atol=1e-8):
+                break
+                
+            centers = new_centers
+
+        # 4. Compute thresholds as the midpoints between sorted centers
+        centers = np.sort(centers)
+        thresholds = (centers[:-1] + centers[1:]) / 2.0
+
+        return thresholds.tolist()
 
     #------------------------------------------------------------------------------------------------------------------------
     # Compute depth-weighted Order Flow Imbalance between two LOB snapshots.
