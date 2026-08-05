@@ -32,7 +32,7 @@ from TkModules.TkPersistentQueue import TkPersistentQueue
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int):
+def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, mpc:bool):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -67,9 +67,10 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
             else:
                 sys.exit(0)
 
-    # 0 ok
-    # > 0 request error, wait for specific time
-    sys.exit(0)
+    if mpc:
+        # 0 ok
+        # > 0 request error, wait for specific time
+        sys.exit(0)
 
 #------------------------------------------------------------------------------------------------------------------------
 # Data gathering loop
@@ -79,6 +80,7 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
 if __name__ ==  '__main__':
 
     ipc = ( '-ipc' in sys.argv )
+    mpc = False # ( '-mpc' in sys.argv )
 
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )
@@ -138,22 +140,43 @@ if __name__ ==  '__main__':
 
         if not ( ticker in ignore_tickers ):
 
-            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, market_data_file_extension, orderbook_depth, last_trades_period_in_minutes))
-            process.daemon = True
-            process.start()
+            if mpc:
 
-            start_time = time.time()
-            while process.exitcode == None:
-                if time.time() - start_time > max_iteration_time:
-                    print( 'Gathering process exceeds maximal timeout, will be terminated' )
+                process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, market_data_file_extension, orderbook_depth, last_trades_period_in_minutes, True))
+                process.daemon = True
+                process.start()
+
+                start_time = time.time()
+                while process.exitcode == None:
+                    if time.time() - start_time > max_iteration_time:
+                        print( 'Gathering process exceeds maximal timeout, will be terminated' )
+                        break
+                    time.sleep(0.01)
+
+                if process.exitcode == None or process.exitcode > 0:
                     break
-                time.sleep(0.01)
+                else:
+                    end_time = time.time()
 
-            if process.exitcode == None or process.exitcode > 0:
-                break
-            else:
+                    gathering_time = (end_time-start_time)
+
+                    if regularize_gathering:
+                        regularized_time = random.gauss(regular_iteration_time_mean, regular_iteration_time_std_dev)
+                        if regularized_time > gathering_time:
+                            time.sleep(regularized_time - gathering_time)
+                            gathering_time = regularized_time
+
+                    print( 'Gathering time: ', gathering_time )
+                    if ipc:
+                        today = date.today()
+                        filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
+                        ipcMessageQueue.append(filename)
+
+            else: # not mpc
+
+                start_time = time.time()
+                gather_data_iteration( ticker, data_path, market_data_file_extension, orderbook_depth, last_trades_period_in_minutes, False )
                 end_time = time.time()
-
                 gathering_time = (end_time-start_time)
 
                 if regularize_gathering:
@@ -167,6 +190,7 @@ if __name__ ==  '__main__':
                     today = date.today()
                     filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
                     ipcMessageQueue.append(filename)
+                
 
         queue.push(ticker)
         queue.flush()
