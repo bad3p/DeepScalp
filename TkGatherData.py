@@ -32,7 +32,7 @@ from TkModules.TkPersistentQueue import TkPersistentQueue
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, mpc:bool):
+def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, use_mpc:bool):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -67,7 +67,7 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
             else:
                 sys.exit(0)
 
-    if mpc:
+    if use_mpc:
         # 0 ok
         # > 0 request error, wait for specific time
         sys.exit(0)
@@ -80,7 +80,7 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
 if __name__ ==  '__main__':
 
     ipc = ( '-ipc' in sys.argv )
-    mpc = False # ( '-mpc' in sys.argv )
+    use_mpc = False # ( '-mpc' in sys.argv )
 
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )
@@ -140,7 +140,7 @@ if __name__ ==  '__main__':
 
         if not ( ticker in ignore_tickers ):
 
-            if mpc:
+            if use_mpc:
 
                 process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, market_data_file_extension, orderbook_depth, last_trades_period_in_minutes, True))
                 process.daemon = True
