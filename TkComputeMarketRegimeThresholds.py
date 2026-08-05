@@ -19,15 +19,15 @@ import multiprocessing as mp
 from queue import Empty  # for non-blocking queue reads
 from collections import defaultdict
 from joblib import Parallel, delayed
-from tinkoff.invest.constants import INVEST_GRPC_API
-from tinkoff.invest import Client
-from tinkoff.invest import InstrumentType
-from tinkoff.invest import InstrumentIdType
-from tinkoff.invest import SecurityTradingStatus
-from tinkoff.invest import GetOrderBookResponse, GetLastTradesResponse
-from tinkoff.invest import HistoricCandle
-from tinkoff.invest.exceptions import RequestError
-from tinkoff.invest.utils import decimal_to_quotation, quotation_to_decimal
+from t_tech.invest.constants import INVEST_GRPC_API
+from t_tech.invest import Client
+from t_tech.invest import InstrumentType
+from t_tech.invest import InstrumentIdType
+from t_tech.invest import SecurityTradingStatus
+from t_tech.invest import GetOrderBookResponse, GetLastTradesResponse
+from t_tech.invest import HistoricCandle
+from t_tech.invest.exceptions import RequestError
+from t_tech.invest.utils import decimal_to_quotation, quotation_to_decimal
 from TkModules.TkQuotation import quotation_to_float
 from TkModules.TkIO import TkIO
 from TkModules.TkInstrument import TkInstrument

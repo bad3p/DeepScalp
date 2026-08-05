@@ -12,27 +12,27 @@ import multiprocessing
 import multiprocessing.connection as mpc
 from os.path import join
 from datetime import date, datetime, timedelta
-from tinkoff.invest.constants import INVEST_GRPC_API
-from tinkoff.invest import (
+from t_tech.invest.constants import INVEST_GRPC_API
+from t_tech.invest import (
     Client,
     InstrumentType,
     InstrumentIdType,
     SecurityTradingStatus,
     GetOrderBookResponse,
 )
-from tinkoff.invest.schemas import CandleInterval, TradeSourceType
-from tinkoff.invest.utils import now
-from tinkoff.invest.exceptions import RequestError
+from t_tech.invest.schemas import CandleInterval, TradeSourceType, TradeDirection
+from t_tech.invest.utils import now
+from t_tech.invest.exceptions import RequestError
 from TkModules.TkQuotation import quotation_to_float
 from TkModules.TkIO import TkIO
-from TkModules.TkInstrument import TkInstrument
+from TkModules.TkInstrument import TkInstrument, TkOrderbook, TkLastTrades
 from TkModules.TkPersistentQueue import TkPersistentQueue
 
 #------------------------------------------------------------------------------------------------------------------------
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int):
+def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -43,15 +43,16 @@ def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:st
 
         try:
             today = date.today()
-            filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + orderbook_file_extension
+            # filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + data_file_extension
+            filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + "Day" + data_file_extension
             path = join( data_path, filename )
             share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
             share_trading_status = share.trading_status()
             if share_trading_status == SecurityTradingStatus.SECURITY_TRADING_STATUS_NORMAL_TRADING: # or share_trading_status == SecurityTradingStatus.SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING:
                 last_trades_end_date = now() 
                 last_trades_start_date = now() - timedelta( minutes=last_trades_period_in_minutes )
-                order_book = share.get_order_book(orderbook_depth)
-                last_trades = share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED )
+                order_book = TkOrderbook( share.get_order_book(orderbook_depth) )
+                last_trades = TkLastTrades( share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED ) )
                 TkIO.append_at_path( path, order_book )
                 TkIO.append_at_path( path, last_trades )
                 print(ticker, "gathered.")                
@@ -72,7 +73,7 @@ def gather_data_iteration(ticker:str, data_path:str, orderbook_file_extension:st
 
 #------------------------------------------------------------------------------------------------------------------------
 # Data gathering loop
-# Multiprocessing environment required to workaround the issues in tinkoff.invest API, resulting in blocking RPC calls.
+# Multiprocessing environment required to workaround the issues in t_tech.invest API, resulting in blocking RPC calls.
 #------------------------------------------------------------------------------------------------------------------------
 
 if __name__ ==  '__main__':
@@ -110,7 +111,7 @@ if __name__ ==  '__main__':
 
     data_path = config['Paths']['DataPath']
     gather_data_queue_filename = config['Paths']['GatherDataQueueFileName']
-    orderbook_file_extension = config['Paths']['OrderbookFileExtension']
+    market_data_file_extension = config['Paths']['MarketDataFileExtension']
     orderbook_depth = int(config['GatherData']['OrderBookDepth'])
     last_trades_period_in_minutes = int(config['GatherData']['LastTradesPeriodInMinutes'])
     max_iteration_time = int(config['GatherData']['MaxIterationTime'])
@@ -137,7 +138,7 @@ if __name__ ==  '__main__':
 
         if not ( ticker in ignore_tickers ):
 
-            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, orderbook_file_extension, orderbook_depth, last_trades_period_in_minutes))
+            process = multiprocessing.Process(target=gather_data_iteration, args=(ticker, data_path, market_data_file_extension, orderbook_depth, last_trades_period_in_minutes))
             process.daemon = True
             process.start()
 
@@ -164,7 +165,7 @@ if __name__ ==  '__main__':
                 print( 'Gathering time: ', gathering_time )
                 if ipc:
                     today = date.today()
-                    filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + orderbook_file_extension
+                    filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
                     ipcMessageQueue.append(filename)
 
         queue.push(ticker)

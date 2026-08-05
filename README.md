@@ -8,6 +8,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 
 * https://numpy.org/
 * https://opensource.tbank.ru/invest/invest-python/-/blob/master/README.md
+  * https://developer.tbank.ru/invest/intro/developer/network
 * https://pandas.pydata.org/
 * https://pypi.org/project/dearpygui/
 * https://pypi.org/project/joblib/
@@ -25,6 +26,10 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * pip install win10toast
 * pip install jsonpickle
 * pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# SSL Certificate
+
+* Add new environment variable "SSL_TBANK_VERIFY = True" to use certificate shipped with "t-tech-investments" package
 
 # Access token
 

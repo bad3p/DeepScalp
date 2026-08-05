@@ -3,9 +3,9 @@ import datetime
 import logging
 import os
 
-from tinkoff.invest import Client
-from tinkoff.invest.constants import INVEST_GRPC_API
-from tinkoff.invest.schemas import OrderExecutionReportStatus
+from t_tech.invest import Client
+from t_tech.invest.constants import INVEST_GRPC_API
+from t_tech.invest.schemas import OrderExecutionReportStatus
 
 TOKEN = os.environ["TK_TOKEN"]
 

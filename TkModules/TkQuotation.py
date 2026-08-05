@@ -1,5 +1,5 @@
 
-from tinkoff.invest.schemas import Quotation
+from t_tech.invest.schemas import Quotation
 
 #------------------------------------------------------------------------------------------------------------------------
 # Quotation conversion

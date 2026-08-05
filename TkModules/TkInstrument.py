@@ -4,13 +4,56 @@ from decimal import Decimal
 from datetime import date, datetime, timezone, timedelta
 from collections import defaultdict
 from configparser import ConfigParser
-from tinkoff.invest import Client
-from tinkoff.invest import InstrumentIdType
-from tinkoff.invest import InstrumentType
-from tinkoff.invest import OrderDirection
-from tinkoff.invest import OrderType
-from tinkoff.invest.utils import decimal_to_quotation, quotation_to_decimal, money_to_decimal
+from t_tech.invest import Client
+from t_tech.invest import InstrumentIdType
+from t_tech.invest import InstrumentType
+from t_tech.invest import OrderDirection
+from t_tech.invest import OrderType
+from t_tech.invest.utils import decimal_to_quotation, quotation_to_decimal, money_to_decimal
+from t_tech.invest import GetOrderBookResponse, GetLastTradesResponse
+from t_tech.invest.schemas import TradeSourceType, TradeDirection
 from TkModules.TkIO import TkIO
+
+#------------------------------------------------------------------------------------------------------------------------
+# Orderbook wrapper
+#------------------------------------------------------------------------------------------------------------------------
+
+class TkOrderbook():
+
+    bids:list # [(price,quantity), ...]
+    asks:list # [(price,quantity), ...]
+    close_price:Decimal
+    close_price_ts:datetime
+    last_price:Decimal
+    last_price_ts:datetime
+    limit_up:Decimal
+    limit_down:Decimal
+    orderbook_ts:datetime
+
+    def __init__(self, orderbook:GetOrderBookResponse):        
+
+        self.bids = [ (quotation_to_decimal( bid.price ), bid.quantity) for bid in orderbook.bids]
+        self.asks = [ (quotation_to_decimal( ask.price ), ask.quantity) for ask in orderbook.asks]
+        self.close_price = quotation_to_decimal( orderbook.close_price )
+        self.close_price_ts = orderbook.close_price_ts
+        self.last_price = quotation_to_decimal( orderbook.last_price )
+        self.last_price_ts = orderbook.last_price_ts
+        self.limit_up = quotation_to_decimal(orderbook.limit_up)
+        self.limit_down = quotation_to_decimal(orderbook.limit_down)
+        self.orderbook_ts = orderbook.orderbook_ts
+
+#------------------------------------------------------------------------------------------------------------------------
+# Last trades wrapper
+#------------------------------------------------------------------------------------------------------------------------
+
+class TkLastTrades():
+
+    trades:list # [(price, quantity, time, direction), ...]
+
+    def __init__(self, last_trades:GetLastTradesResponse):        
+
+        self.trades = [ (quotation_to_decimal( trade.price ), trade.quantity, trade.time, -1 if trade.direction == TradeDirection.TRADE_DIRECTION_SELL else 1) for trade in last_trades.trades]
+
 
 #------------------------------------------------------------------------------------------------------------------------
 # Investment instrument wrapper

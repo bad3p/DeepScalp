@@ -14,8 +14,8 @@ import multiprocessing.connection as mpc
 from decimal import Decimal
 from os.path import join
 from datetime import date, datetime, timedelta
-from tinkoff.invest.constants import INVEST_GRPC_API
-from tinkoff.invest import (
+from t_tech.invest.constants import INVEST_GRPC_API
+from t_tech.invest import (
     Client,
     InstrumentType,
     InstrumentIdType,
@@ -23,10 +23,10 @@ from tinkoff.invest import (
     GetOrderBookResponse,
     OrderDirection
 )
-from tinkoff.invest.utils import decimal_to_quotation, quotation_to_decimal, money_to_decimal
-from tinkoff.invest.schemas import Quotation, TradeSourceType, OrderExecutionReportStatus, OrderStateStreamRequest, ReplaceOrderRequest, PriceType
-from tinkoff.invest.utils import now
-from tinkoff.invest.exceptions import RequestError
+from t_tech.invest.utils import decimal_to_quotation, quotation_to_decimal, money_to_decimal
+from t_tech.invest.schemas import Quotation, TradeSourceType, OrderExecutionReportStatus, OrderStateStreamRequest, ReplaceOrderRequest, PriceType
+from t_tech.invest.utils import now
+from t_tech.invest.exceptions import RequestError
 from TkModules.TkIO import TkIO
 from TkModules.TkInstrument import TkInstrument
 from TkModules.TkPersistentQueue import TkPersistentQueue
@@ -235,7 +235,7 @@ def validation_service_iteration():
 
 #------------------------------------------------------------------------------------------------------------------------
 # Trading service loop
-# Multiprocessing environment required to workaround the issues in tinkoff.invest API, resulting in blocking RPC calls.
+# Multiprocessing environment required to workaround the issues in t_tech.invest API, resulting in blocking RPC calls.
 #------------------------------------------------------------------------------------------------------------------------
 
 if __name__ ==  '__main__':

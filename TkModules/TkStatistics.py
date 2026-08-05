@@ -8,10 +8,7 @@ import bisect
 from numpy.lib.stride_tricks import sliding_window_view
 from collections import defaultdict
 from decimal import Decimal
-from tinkoff.invest.schemas import Quotation
-from tinkoff.invest.utils import quotation_to_decimal
-from tinkoff.invest import GetOrderBookResponse, GetLastTradesResponse
-from TkModules.TkQuotation import quotation_to_float
+from TkModules.TkInstrument import TkOrderbook, TkLastTrades
 
 #------------------------------------------------------------------------------------------------------------------------
 # Statistics helpers
@@ -77,17 +74,17 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def orderbook_spread(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+    def orderbook_spread(orderbook : TkOrderbook, orderbook_width : int, min_price_increment : float):
         
         max_bid_price = 0.0
         if len(orderbook.bids) > 0:
             for bid in orderbook.bids:
-                max_bid_price = max( max_bid_price, quotation_to_float( bid.price ) )                
+                max_bid_price = max( max_bid_price, float( bid[0] ) )
 
         min_ask_price = 10e10
         if len(orderbook.asks) > 0:
             for ask in orderbook.asks:
-                min_ask_price = min( min_ask_price, quotation_to_float( ask.price ) )
+                min_ask_price = min( min_ask_price, float( ask[0] ) )
 
         spread = ( min_ask_price - max_bid_price ) / min_price_increment
         return int( max( 0.0, min( spread, orderbook_width) ) ) * min_price_increment
@@ -102,17 +99,17 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def orderbook_distribution(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+    def orderbook_distribution(orderbook : TkOrderbook, orderbook_width : int, min_price_increment : float):
 
         pivot_price = 0.0
 
         if len(orderbook.bids) > 0:
             for bid in orderbook.bids:
-                pivot_price = max( pivot_price, quotation_to_float( bid.price ) )
+                pivot_price = max( pivot_price, float( bid[0] ) )
         else:
-            pivot_price = quotation_to_float( orderbook.last_price )
+            pivot_price = float( orderbook.last_price )
             for ask in orderbook.asks:
-                pivot_price = min( pivot_price, quotation_to_float( ask.price ) )
+                pivot_price = min( pivot_price, float( ask[0] ) )
 
         distribution_incremental_value = min_price_increment / pivot_price * 100
         descriptor = TkStatistics.cumulative_distribution_descriptor( distribution_incremental_value, int(orderbook_width / 2) )
@@ -122,27 +119,27 @@ class TkStatistics():
 
         volume = 0
         for ask in orderbook.asks:
-            price = quotation_to_float( ask.price )
+            price = float( ask[0] )
             price_percent = ( price / pivot_price - 1.0 ) * 100
-            volume = volume + ask.quantity
+            volume = volume + ask[1]
             outOfBounds = True
             for i in range(len(descriptor)):
                 if price_percent >= descriptor[i][0] and price_percent < descriptor[i][1]:
-                    distribution[i] = distribution[i] + ask.quantity
+                    distribution[i] = distribution[i] + ask[1]
                     outOfBounds = False
             if outOfBounds:
-                distribution[-1] = distribution[-1] + ask.quantity
+                distribution[-1] = distribution[-1] + ask[1]
         for bid in orderbook.bids:
-            price = quotation_to_float( bid.price )
+            price = float( bid[0] )
             price_percent = ( price / pivot_price - 1.0 ) * 100
-            volume = volume + bid.quantity
+            volume = volume + bid[1]
             outOfBounds = True
             for i in range(len(descriptor)):
                 if price_percent > descriptor[i][0] and price_percent <= descriptor[i][1]:
-                    distribution[i] = distribution[i] + bid.quantity
+                    distribution[i] = distribution[i] + bid[1]
                     outOfBounds = False
             if outOfBounds:
-                distribution[0] = distribution[0] + bid.quantity
+                distribution[0] = distribution[0] + bid[1]
 
         return distribution, descriptor, volume, pivot_price
 
@@ -153,7 +150,7 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def trades_distribution(trades : GetLastTradesResponse, pivot_price : float, distribution_width : int, discretization_interval : float):
+    def trades_distribution(trades : TkLastTrades, pivot_price : float, distribution_width : int, discretization_interval : float):
 
         min_price_increment = pivot_price * 0.01 * discretization_interval
         distribution_incremental_value = min_price_increment / pivot_price * 100
@@ -165,26 +162,26 @@ class TkStatistics():
         volume = 0
 
         for trade in trades.trades:
-            price = quotation_to_float( trade.price )
+            price = float( trade[0] )
             price_percent = ( price / pivot_price - 1.0 ) * 100
-            volume = volume + trade.quantity
+            volume = volume + trade[1]
 
             outOfBounds = True
             for i in range(len(descriptor)):
                 if price_percent < 0:
                     if price_percent > descriptor[i][0] and price_percent <= descriptor[i][1]:
-                        distribution[i] = distribution[i] + trade.quantity
+                        distribution[i] = distribution[i] + trade[1]
                         outOfBounds = False
                         break
                 else:
                     if price_percent >= descriptor[i][0] and price_percent < descriptor[i][1]:
-                        distribution[i] = distribution[i] + trade.quantity
+                        distribution[i] = distribution[i] + trade[1]
                         outOfBounds = False
             if outOfBounds:
                 if price_percent < 0:
-                    distribution[0] = distribution[0] + trade.quantity
+                    distribution[0] = distribution[0] + trade[1]
                 else:
-                    distribution[-1] = distribution[-1] + trade.quantity
+                    distribution[-1] = distribution[-1] + trade[1]
 
         return distribution, descriptor, volume
 
@@ -193,29 +190,29 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def accumulate_trades_distribution(distribution : np.ndarray, descriptor : list, volume : int, trades : GetLastTradesResponse, pivot_price : float):
+    def accumulate_trades_distribution(distribution : np.ndarray, descriptor : list, volume : int, trades : TkLastTrades, pivot_price : float):
 
         for trade in trades.trades:
-            price = quotation_to_float( trade.price )
+            price = float( trade[0] )
             price_percent = ( price / pivot_price - 1.0 ) * 100
-            volume = volume + trade.quantity
+            volume = volume + trade[1]
 
             outOfBounds = True
             for i in range(len(descriptor)):
                 if price_percent < 0:
                     if price_percent > descriptor[i][0] and price_percent <= descriptor[i][1]:
-                        distribution[i] = distribution[i] + trade.quantity
+                        distribution[i] = distribution[i] + trade[1]
                         outOfBounds = False
                         break
                 else:
                     if price_percent >= descriptor[i][0] and price_percent < descriptor[i][1]:
-                        distribution[i] = distribution[i] + trade.quantity
+                        distribution[i] = distribution[i] + trade[1]
                         outOfBounds = False
             if outOfBounds:
                 if price_percent < 0:
-                    distribution[0] = distribution[0] + trade.quantity
+                    distribution[0] = distribution[0] + trade[1]
                 else:
-                    distribution[-1] = distribution[-1] + trade.quantity
+                    distribution[-1] = distribution[-1] + trade[1]
 
         return volume
 
@@ -224,18 +221,18 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def trades_statistics(trades : GetLastTradesResponse, time_threshold = None ):
+    def trades_statistics(trades : TkLastTrades, time_threshold = None ):
 
         total_currency_volume = 0.0
         total_volume = 0
 
         for trade in trades.trades:
-            trade_time = trade.time
+            trade_time = trade[2]
             if time_threshold != None and trade_time < time_threshold:
                 continue
-            price = quotation_to_float( trade.price )
-            total_currency_volume = total_currency_volume + price * trade.quantity
-            total_volume = total_volume + trade.quantity
+            price = float( trade[0] )
+            total_currency_volume = total_currency_volume + price * trade[1]
+            total_volume = total_volume + trade[1]
 
         if total_volume == 0:
             return 0.0, 0.0, 0.0
@@ -246,11 +243,11 @@ class TkStatistics():
         # volume weighted variance
         vwvar = 0
         for trade in trades.trades:
-            trade_time = trade.time
+            trade_time = trade[2]
             if time_threshold != None and trade_time < time_threshold:
                 continue
-            price = quotation_to_float( trade.price )
-            vwvar = vwvar + trade.quantity * (price - vwap)**2
+            price = float( trade[0] )
+            vwvar = vwvar + trade[1] * (price - vwap)**2
 
         vwvar = vwvar / total_volume
 
@@ -448,7 +445,7 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def get_min_price_increment(orderbook : GetOrderBookResponse, default_value:Decimal):
+    def get_min_price_increment(orderbook : TkOrderbook, default_value:Decimal):
 
         def get_min_price_diff(prices:list):
             min_diff = Decimal(99999999999)
@@ -458,8 +455,8 @@ class TkStatistics():
                     min_diff = current_diff
             return min_diff
 
-        bid_prices = [ quotation_to_decimal( bid.price ) for bid in orderbook.bids ]        
-        ask_prices = [ quotation_to_decimal( ask.price ) for ask in orderbook.asks ]        
+        bid_prices = [ bid[0] for bid in orderbook.bids ]
+        ask_prices = [ ask[0] for ask in orderbook.asks ]
 
         if len(bid_prices) == 0 and len(ask_prices) == 0:
             return default_value
@@ -479,7 +476,7 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def orderbook_to_tensor(orderbook : GetOrderBookResponse, orderbook_width : int, min_price_increment : float):
+    def orderbook_to_tensor(orderbook : TkOrderbook, orderbook_width : int, min_price_increment : float):
 
         def almost_equal(a, b, rel_tol=1e-09, abs_tol=1e-06):
             return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
@@ -491,11 +488,11 @@ class TkStatistics():
 
         if len(orderbook.bids) > 0:
             for bid in orderbook.bids:
-                pivot_price = max( pivot_price, quotation_to_float( bid.price ) )
+                pivot_price = max( pivot_price, float( bid[0] ) )
         else:
-            pivot_price = quotation_to_float( orderbook.last_price )
+            pivot_price = float( orderbook.last_price )
             for ask in orderbook.asks:
-                pivot_price = min( pivot_price, quotation_to_float( ask.price ) )
+                pivot_price = min( pivot_price, float( ask[0] ) )
 
         bid_price = [ pivot_price - min_price_increment * i for i in range(int(orderbook_width/2))]
         ask_price = [ pivot_price + min_price_increment * i for i in range(1,int(orderbook_width/2)+1)]
@@ -511,16 +508,16 @@ class TkStatistics():
         bid_volume.fill(0)
 
         for bid in orderbook.bids:
-            price = quotation_to_float( bid.price )
+            price = float( bid[0] )
             if price > pivot_price:
                 #print( 'Bid overlapping asks: ', pivot_price, price )
                 continue
             index = min( int( round( (pivot_price - price) / min_price_increment ) ), int(orderbook_width/2)-1 )
             assert almost_equal(price, bid_price[index]) if index < int(orderbook_width/2)-1 else True , "Bid index mismatch: " + str(price) + " : " + str(bid_price[index])
-            total_bid_volume = total_bid_volume + bid.quantity
-            bid_volume[index] = bid_volume[index] + bid.quantity
-            weighted_bid = weighted_bid + price * bid.quantity
-            order_book_slope = order_book_slope + bid.quantity * (price - pivot_price)
+            total_bid_volume = total_bid_volume + bid[1]
+            bid_volume[index] = bid_volume[index] + bid[1]
+            weighted_bid = weighted_bid + price * bid[1]
+            order_book_slope = order_book_slope + bid[1] * (price - pivot_price)
 
         total_ask_volume = 0
         weighted_ask = 0
@@ -529,16 +526,16 @@ class TkStatistics():
         ask_volume.fill(0) 
         
         for ask in orderbook.asks:
-            price = quotation_to_float( ask.price )
+            price = float( ask[0] )
             if price <= pivot_price:
                 #print( 'Ask overlapping bids: ', pivot_price, price )
                 continue
             index = min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(orderbook_width/2)-1 )
             assert almost_equal(price, ask_price[index]) if index < int(orderbook_width/2)-1 else True, "Ask index mismatch: " + str(price) + " : " + str(ask_price[index])
-            total_ask_volume = total_ask_volume + ask.quantity
-            ask_volume[index] = ask_volume[index] + ask.quantity
-            weighted_ask = weighted_ask + price * ask.quantity
-            order_book_slope = order_book_slope + ask.quantity * (price - pivot_price)
+            total_ask_volume = total_ask_volume + ask[1]
+            ask_volume[index] = ask_volume[index] + ask[1]
+            weighted_ask = weighted_ask + price * ask[1]
+            order_book_slope = order_book_slope + ask[1] * (price - pivot_price)
 
         bid_imbalance = np.empty( len(bid_volume), dtype=float)
         bid_imbalance.fill(0)
@@ -632,7 +629,7 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def orderbook_statistics(orderbook : GetOrderBookResponse, min_price_increment : float):
+    def orderbook_statistics(orderbook : TkOrderbook, min_price_increment : float):
         
         def offset_price(levels:list, price_delta:float):
             for i in range(len(levels)):
@@ -649,19 +646,19 @@ class TkStatistics():
             print( 'Default statistics, orderbook is incomplete: ', len(orderbook.bids), len(orderbook.asks) )
             total_volume = 0
             for bid in orderbook.bids:            
-                total_volume = total_volume + bid.quantity
+                total_volume = total_volume + bid[1]
             for ask in orderbook.asks:
-                total_volume = total_volume + ask.quantity
-            return total_volume, quotation_to_float(orderbook.last_price), microprice_offset, order_book_slope, bid_alpha, ask_alpha
+                total_volume = total_volume + ask[1]
+            return total_volume, float(orderbook.last_price), microprice_offset, order_book_slope, bid_alpha, ask_alpha
 
         # LOB levels
 
-        bids = [ ( quotation_to_float(level.price), level.quantity) for level in orderbook.bids]
-        asks = [ ( quotation_to_float(level.price), level.quantity) for level in orderbook.asks]
+        bids = [ ( float(level[0]), level[1]) for level in orderbook.bids]
+        asks = [ ( float(level[0]), level[1]) for level in orderbook.asks]
 
         # correct overlapping
 
-        if quotation_to_float(orderbook.bids[0].price) >= quotation_to_float(orderbook.asks[0].price):
+        if float(orderbook.bids[0][0]) >= float(orderbook.asks[0][0]):
 
             midprice = ( bids[0][0] + asks[0][0] ) / 2
             price_delta = bids[0][0] - midprice + min_price_increment / 2
@@ -809,21 +806,21 @@ class TkStatistics():
             time_threshold = trades_with_time_threshold[i][1]
 
             for trade in trades.trades:
-                trade_time = trade.time
+                trade_time = trade[2]
                 if time_threshold != None and trade_time < time_threshold:
                     continue
                 total_event_count = total_event_count + 1
-                price = quotation_to_float( trade.price )
+                price = float( trade[0] )
                 if price <= pivot_price:
                     index = max( 0, min( int( round( (pivot_price - price) / min_price_increment ) ), int(distribution_width/2)-1 ) )
-                    total_volume = total_volume + trade.quantity
-                    bid_volume[index] = bid_volume[index] + trade.quantity
-                    total_sell_trades = total_sell_trades + trade.quantity
+                    total_volume = total_volume + trade[1]
+                    bid_volume[index] = bid_volume[index] + trade[1]
+                    total_sell_trades = total_sell_trades + trade[1]
                 else:
                     index = max( 0, min( int( round( (price - pivot_price) / min_price_increment ) - 1 ), int(distribution_width/2)-1 ) )
-                    total_volume = total_volume + trade.quantity
-                    ask_volume[index] = ask_volume[index] + trade.quantity
-                    total_buy_trades = total_buy_trades + trade.quantity
+                    total_volume = total_volume + trade[1]
+                    ask_volume[index] = ask_volume[index] + trade[1]
+                    total_buy_trades = total_buy_trades + trade[1]
 
         if total_volume == 0 and force_categorical:
             total_volume = 1
@@ -1131,7 +1128,7 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod    
-    def depth_weighted_order_flow_imbalance(orderbook1 : GetOrderBookResponse, orderbook2 : GetOrderBookResponse, alpha=1.0):
+    def depth_weighted_order_flow_imbalance(orderbook1 : TkOrderbook, orderbook2 : TkOrderbook, alpha=1.0):
     
         def build_signed_depth(bids, asks):
             S = defaultdict(float)
@@ -1146,19 +1143,19 @@ class TkStatistics():
         
         bids_1 = []
         for bid in orderbook1.bids:
-            bids_1.append( (quotation_to_float( bid.price ), bid.quantity) )
+            bids_1.append( (float( bid[0] ), bid[1]) )
 
         asks_1 = []
         for ask in orderbook1.asks:
-            asks_1.append( (quotation_to_float( ask.price ), ask.quantity) )
+            asks_1.append( (float( ask[0] ), ask[1]) )
 
         bids_2 = []
         for bid in orderbook2.bids:
-            bids_2.append( (quotation_to_float( bid.price ), bid.quantity) )
+            bids_2.append( (float( bid[0] ), bid[1]) )
 
         asks_2 = []
         for ask in orderbook2.asks:
-            asks_2.append( (quotation_to_float( ask.price ), ask.quantity) )
+            asks_2.append( (float( ask[0] ), ask[1]) )
 
         S1 = build_signed_depth(bids_1, asks_1)
         S2 = build_signed_depth(bids_2, asks_2)
@@ -1220,15 +1217,15 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------        
 
     @staticmethod    
-    def depth_weighted_queue_imbalance(orderbook : GetOrderBookResponse, min_price_increment : float, depth=None, alpha=1.0):
+    def depth_weighted_queue_imbalance(orderbook : TkOrderbook, min_price_increment : float, depth=None, alpha=1.0):
 
         bids = []
         for bid in orderbook.bids:
-            bids.append( (quotation_to_float( bid.price ), bid.quantity) )
+            bids.append( (float( bid[0] ), bid[1]) )
 
         asks = []
         for ask in orderbook.asks:
-            asks.append( (quotation_to_float( ask.price ), ask.quantity) )
+            asks.append( (float( ask[0] ), ask[1]) )
 
         if not bids or not asks:
             return 0.0
@@ -1276,11 +1273,11 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------            
 
     @staticmethod
-    def depth_weighted_queue_depletion_rate(orderbook : GetOrderBookResponse, last_trades : GetLastTradesResponse, alpha: float):
+    def depth_weighted_queue_depletion_rate(orderbook : TkOrderbook, last_trades : TkLastTrades, alpha: float):
 
-        bids = [ ( quotation_to_float(bid.price), bid.quantity) for bid in orderbook.bids]
-        asks = [ ( quotation_to_float(ask.price), ask.quantity) for ask in orderbook.asks]
-        trades = [ ( quotation_to_float(trade.price), trade.quantity) for trade in last_trades.trades]
+        bids = [ ( float(bid[0]), bid[1]) for bid in orderbook.bids]
+        asks = [ ( float(ask[0]), ask[1]) for ask in orderbook.asks]
+        trades = [ ( float(trade[0]), trade[1]) for trade in last_trades.trades]
 
         # Sort and convert to mutable lists with initial depth levels: [price, qty, level]
         # Bids descending (highest price first), Asks ascending (lowest price first)
@@ -1386,13 +1383,13 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------            
 
     @staticmethod
-    def depth_weighted_order_arrival_rate(prev_orderbook : GetOrderBookResponse, curr_orderbook : GetOrderBookResponse, last_trades : GetLastTradesResponse, alpha: float, dt: float = 1.0 ):
+    def depth_weighted_order_arrival_rate(prev_orderbook : TkOrderbook, curr_orderbook : TkOrderbook, last_trades : TkLastTrades, alpha: float, dt: float = 1.0 ):
 
-        lob_prev_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in prev_orderbook.bids]
-        lob_prev_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in prev_orderbook.asks]
-        lob_curr_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in curr_orderbook.bids]
-        lob_curr_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in curr_orderbook.asks]
-        trades = [ ( quotation_to_decimal(trade.price), trade.quantity) for trade in last_trades.trades]
+        #lob_prev_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in prev_orderbook.bids]
+        #lob_prev_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in prev_orderbook.asks]
+        #lob_curr_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in curr_orderbook.bids]
+        #lob_curr_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in curr_orderbook.asks]
+        trades = [ ( trade[0], trade[1]) for trade in last_trades.trades ]
     
         # Aggregate trades by price to identify consumed liquidity
         trade_vols = {}
@@ -1400,10 +1397,10 @@ class TkStatistics():
             trade_vols[price] = trade_vols.get(price, 0.0) + qty
 
         # Convert tuple lists to dictionaries for fast O(1) lookups
-        prev_bids_dict = dict(lob_prev_bids)
-        curr_bids_dict = dict(lob_curr_bids)
-        prev_asks_dict = dict(lob_prev_asks)
-        curr_asks_dict = dict(lob_curr_asks)
+        prev_bids_dict = dict(prev_orderbook.bids)
+        curr_bids_dict = dict(prev_orderbook.asks)
+        prev_asks_dict = dict(curr_orderbook.bids)
+        curr_asks_dict = dict(curr_orderbook.asks)
 
         # Extract and sort current book prices to establish the dynamic depth hierarchy
         # Bids descending (highest first), Asks ascending (lowest first)
