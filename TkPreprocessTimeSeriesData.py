@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
         # preprocess data sources
 
-        max_num_processes = 1#12
+        max_num_processes = 12
         max_queue_size = 8192
         max_queue_fetch_steps = int( max_queue_size / max_num_processes )
 

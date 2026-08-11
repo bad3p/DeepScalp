@@ -16,7 +16,7 @@ from os.path import isfile, join
 from datetime import date, datetime, timezone
 from dateutil import parser
 from timeit import default_timer
-from win10toast import ToastNotifier
+#from win10toast import ToastNotifier
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
@@ -672,7 +672,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
     main_window = dpg.add_window(tag="primary_window", label="Forecasting service")
     main_panel = TkMainPanel("primary_window", prior_steps_count)
-    toast = ToastNotifier()
+    #toast = ToastNotifier()
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
@@ -716,10 +716,10 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     #if TkForecastPanel.find(instrument) != None:
                     ipc_output_message_queue.append( (instrument.ticker(), profit) )
                     TkForecastPanel.update(instrument, last_price, last_trades.tolist(), last_trades_descriptor, output, output_distribution_descriptor, output_distribution_labels, forecast_history_size, future_steps_count, profit)                    
-                    if event_notification and not toast.notification_active():
-                        toastMessage = instrument.ticker() + ' +' + str(profit) + '%'
-                        toast.show_toast( instrument.ticker(), toastMessage, duration = 10, threaded = True)
-                        print( toastMessage )
+                    #if event_notification and not toast.notification_active():
+                        #toastMessage = instrument.ticker() + ' +' + str(profit) + '%'
+                        #toast.show_toast( instrument.ticker(), toastMessage, duration = 10, threaded = True)
+                        #print( toastMessage )
                 else:
                     if discard_if_non_profitable:
                         TkForecastPanel.discard(instrument)

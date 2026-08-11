@@ -4,7 +4,9 @@ Data/Instruments/*.share
 Data/Instruments/*.bond
 Data/Instruments/*.etf
 Data/_gather.queue
-Data/*.obs
+Data/*.data
+Data/*.samples
+Data/*.index
 .trash/
 profile.pyspy
 .vscode/*

@@ -80,7 +80,7 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
 if __name__ ==  '__main__':
 
     ipc = ( '-ipc' in sys.argv )
-    use_mpc = False # ( '-mpc' in sys.argv )
+    use_mpc = ( '-mpc' in sys.argv )
 
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )

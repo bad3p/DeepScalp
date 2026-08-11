@@ -246,7 +246,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
-        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )        
+        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
+        self._trend_mlp = TkModel( json.loads(_cfg['TimeSeries']['TrendMLP']) )
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
@@ -373,6 +374,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 mlp_no_decay_params.append(param)
 
+        for name, param in self._trend_mlp.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
         for name, param in self._fusion.named_parameters():
             if not param.requires_grad:
                 continue
@@ -479,6 +488,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         y_regime = self._regime_mlp.forward( merged )
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
 
+        # trend prediction branch
+        y_trend = self._trend_mlp.forward( merged )
+
         y = self._mlp( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
 
@@ -494,7 +506,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # self._smm_output_tensors = gates
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
-        return y, y_regime
+        return y, y_regime, y_trend
 
     @staticmethod    
     def kl_divergence_from_logits(logits, target, eps=1e-8):
@@ -551,4 +563,3 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         emd_mse = (cdf_q - cdf_t) ** 2
         emd_mse = emd_mse.sum(dim=-1)
         return emd_mse
-

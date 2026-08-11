@@ -25,7 +25,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * pip install joblib
 * pip install win10toast
 * pip install jsonpickle
-* pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+* pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # SSL Certificate
 

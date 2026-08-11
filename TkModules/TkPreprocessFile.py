@@ -45,11 +45,12 @@ class PreprocessedData:
 
     min_price_increment:float
     regimes:list
+    trends: list
 
     # unfiltered data
     
     price: list
-    volatility: list
+    volatility: list    
     spread: list
     orderbook_volume: list
     orderbook_slope: list
@@ -92,7 +93,7 @@ class PreprocessedData:
     alpha_imbalance_ema_norm: list
     mean_alpha_ema_norm: list
 
-    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, market_regime_steps_count:int, market_regimes:list, future_steps_count:int):        
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, market_regime_steps_count:int, trend_steps_count:int, market_regimes:list, future_steps_count:int):
         
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -133,7 +134,7 @@ class PreprocessedData:
 
             self.price[i] = vwap if vwap > 0.0 else pivot_price
             self.volatility[i] = normalized_vwvol
-            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.volatility[i], market_regimes )
+            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.volatility[i], market_regimes )            
             self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment )
             self.orderbook_volume[i] = volume
             self.orderbook_slope[i] = slope
@@ -151,6 +152,9 @@ class PreprocessedData:
 
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts       
+
+        self.trends = TkStatistics.price_to_trends( self.price, trend_steps_count ).tolist()
+        self.trends_ema_norm = TkStatistics.ema_normalize( self.trends, half_life=market_regime_steps_count ).tolist()
 
         self.trade_flow_imbalance_ema_norm = TkStatistics.ema_normalize( self.trade_flow_imbalance, half_life=market_regime_steps_count ).tolist()
         self.orderbook_slope_ema_norm = TkStatistics.ema_normalize( self.orderbook_slope, half_life=market_regime_steps_count ).tolist()
@@ -209,14 +213,15 @@ class PreprocessedData:
         self.mean_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_mean_alpha, half_life=market_regime_steps_count ).tolist()
 
     def sample_width(self):
-        return 53 # sizeof quant_sample
+        return 57 # sizeof quant_sample
     
     def quant_sample(self, i:int):
         sample = []
 
-        # slice 1 : price and volatility
+        # slice 1 : price, volatility and trend
         sample.append( self.price_change_log_ema_norm[i] )
         sample.append( self.ema_norm_volatility[i] )
+        sample.append( self.trends_ema_norm[i] )
 
         # slice 2 : liquidity and spread
         sample.append( self.spread_log_ema_norm[i] )            
@@ -309,7 +314,16 @@ class PreprocessedData:
         sample.append( self.ema_norm_volatility[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.spread_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 19: market regime
+        # slice 19 : trend interactions (macro vs micro divergence)
+        # * Trend x Queue Imbalance: Does the resting liquidity support the recent trend?
+        #   (Positive = continuation, Negative = divergence/reversal warning)
+        # * Trend x Trade Flow Imbalance: Are aggressive market orders still pushing with the trend?
+        # * Trend x Alpha Imbalance: Does the deep book shape agree with the recent price trajectory?
+        sample.append( self.trends_ema_norm[i] * self.queue_imbalance_ema_norm[i] )                
+        sample.append( self.trends_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )                
+        sample.append( self.trends_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
+
+        # slice 20: market regime
         sample.append( 1.0 if self.regimes[i] == 0 else 0.0 )
         sample.append( 1.0 if self.regimes[i] == 1 else 0.0 )
         sample.append( 1.0 if self.regimes[i] == 2 else 0.0 )
@@ -345,6 +359,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
         ts_data_stride = int(config['TimeSeries']['TSDataStride'])
         market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
+        trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])        
         num_market_regimes = int(config['TimeSeries']['NumMarketRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
@@ -356,7 +371,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, market_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, trend_steps_count, market_regimes, future_steps_count )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -395,6 +410,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 step = step + 1
 
                 ts_regime = data.regimes[i+1] 
+                ts_trend = data.trends[i+1] * 100.0 # target trend in percents
                 ts_input = [None] * prior_steps_count
                 
                 for j in range( prior_steps_count ):
@@ -416,7 +432,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 is_priority_sample = ( ts_target_left_tail <= -priority_tail_threshold ) or ( ts_target_right_tail >= priority_tail_threshold )
                 
                 if (step-1) % ts_data_stride == 0 or is_priority_sample:                    
-                    output_queue.put( (pid, [ts_input, ts_target, ts_regime], is_priority_sample, is_test_data_source, False) )
+                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend], is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     
     output_queue.put( (pid, [0], False, is_test_data_source, True) )
@@ -450,6 +466,7 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
         ts_data_stride = int(config['TimeSeries']['TSDataStride'])
         market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
+        trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])
         num_market_regimes = int(config['TimeSeries']['NumMarketRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
@@ -461,7 +478,7 @@ def preprocess_file_for_inference(ticker:str, filename:str, market_regimes:list)
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, market_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, trend_steps_count, market_regimes, future_steps_count )
 
             price = data.price[-prior_steps_count:]
             orderbook_volume = data.orderbook_volume[-prior_steps_count:]

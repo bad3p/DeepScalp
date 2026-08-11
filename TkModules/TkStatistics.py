@@ -839,6 +839,15 @@ class TkStatistics():
             normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
+            total_nonzero = np.count_nonzero(normalized_volume_tensor)
+            if total_nonzero > 7:
+                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
+            elif total_nonzero > 5:
+                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))
+            elif total_nonzero > 2:
+                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(3,1.0))
+
+
         volume_tensor = np.log1p( volume_tensor )
 
         result_tensor = np.stack([log_delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
@@ -1463,3 +1472,87 @@ class TkStatistics():
         assert not math.isnan(ask_intensity) , "Ask intensity is NaN!"
         
         return float(bid_intensity), float(ask_intensity)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes the trend at each position using the past `window_size` prices.
+    # The trend is represented by the slope of the linear regression line.
+    #    
+    #    Args:
+    #        prices (list or np.array): Sequence of historical prices.
+    #        window_size (int): Number of past values (N) to compute the trend.
+    #        
+    #    Returns:
+    #        np.array: Sequence of trend values (slopes). 
+    #                  Positive = Bullish, Negative = Bearish.
+    #------------------------------------------------------------------------------------------------------------------------            
+
+    @staticmethod
+    def price_to_trends(prices:list, window_size:int):
+
+        prices = np.array(prices)
+        n = len(prices)
+    
+        # Initialize output array with 0.0 for periods where the window is incomplete
+        trends = np.full(n, 0.0)
+    
+        if window_size < 2:
+            raise ValueError("Window size must be at least 2 to compute a trend.")
+    
+        # Precompute X values (time steps) and their variance since they don't change
+        x = np.arange(window_size)
+        x_mean = np.mean(x)
+        x_diff = x - x_mean
+        x_var = np.sum(x_diff ** 2)
+    
+        # Slide the window across the price array
+        for i in range(window_size - 1, n):
+            # Extract the window of N past prices (including the current price)
+            y = prices[i - window_size + 1 : i + 1]
+        
+            # Calculate the slope (beta) of the linear regression: Cov(x, y) / Var(x)
+            y_mean = np.mean(y)
+            slope = np.sum(x_diff * (y - y_mean)) / x_var
+            normalized_slope = slope / y_mean
+        
+            trends[i] = normalized_slope
+        
+        return trends
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Gaussian smoothing
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def generate_gaussian_kernel(size, sigma):
+        """
+        Generates a 1D Gaussian kernel of a given size and standard deviation.
+        """
+        # Create an array centered around zero
+        # For size=5, this creates [-2, -1, 0, 1, 2]
+        center = size // 2
+        x = np.arange(0, size) - center
+    
+        # Apply the Gaussian formula
+        kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    
+        # Normalize the kernel so that it sums to 1
+        kernel = kernel / np.sum(kernel)
+    
+        return kernel
+
+    @staticmethod
+    def smooth_with_given_kernel(data_array, gaussian_kernel):
+        """
+        Applies a pre-defined Gaussian kernel to a 1D NumPy array.
+        """
+        # Ensure both inputs are numpy arrays
+        data_array = np.asarray(data_array)
+        gaussian_kernel = np.asarray(gaussian_kernel)
+    
+        # Normalize the kernel so the overall amplitude of the signal doesn't change
+        kernel_normalized = gaussian_kernel / np.sum(gaussian_kernel)
+    
+        # Apply convolution
+        smoothed_array = np.convolve(data_array, kernel_normalized, mode='same')
+    
+        return smoothed_array
