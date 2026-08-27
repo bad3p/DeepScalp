@@ -102,11 +102,6 @@ if __name__ == "__main__":
     files_by_ticker = group_by_ticker(data_files)
     print( 'Tickers found:', len(files_by_ticker) )
 
-    market_regimes_config_file = open('TkMarketRegimeThresholds.json', 'r', encoding='utf-8')
-    market_regimes_config = json.load(market_regimes_config_file)
-    mean_regimes = market_regimes_config.values()
-    mean_regimes = [sum(column) / len(column) for column in zip(*mean_regimes)]
-
     with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.create_context()
@@ -114,6 +109,9 @@ if __name__ == "__main__":
         dpg.setup_dearpygui()
 
         with dpg.window(tag="primary_window", label="Preprocess data"):
+            with dpg.group(horizontal=True):
+                dpg.add_text( default_value="MPC Queue Size: " )
+                dpg.add_text( tag="mpc_queue_size", default_value="0", color=[255, 254, 255])
             with dpg.group(horizontal=True):
                 dpg.add_text( default_value="Files remaining: " )
                 dpg.add_text( tag="files_remaining", default_value="0/0", color=[255, 254, 255])
@@ -155,8 +153,6 @@ if __name__ == "__main__":
             num_test_data_sources = max(1, int( num_data_sources * test_data_ratio ))
             num_training_data_sources = num_data_sources - num_test_data_sources
 
-            market_regimes = market_regimes_config[ticker] if ticker in market_regimes_config else mean_regimes
-
             for i in range(num_data_sources):
 
                 date_and_filename = files_by_ticker[ticker][i]
@@ -164,14 +160,14 @@ if __name__ == "__main__":
                 filename = date_and_filename[1]
                 is_test_data_source = i+1 >= num_training_data_sources
 
-                data_sources.append( (ticker, is_test_data_source, filename, market_regimes) )
+                data_sources.append( (ticker, is_test_data_source, filename) )
 
         print( 'Total num files:', len(data_sources) )
 
         # preprocess data sources
 
         max_num_processes = 12
-        max_queue_size = 8192
+        max_queue_size = 2048
         max_queue_fetch_steps = int( max_queue_size / max_num_processes )
 
         output_queue = mp.Queue( maxsize=max_queue_size )
@@ -218,15 +214,16 @@ if __name__ == "__main__":
                 ticker = data_source[0]                
                 is_test_data_source = data_source[1]
                 filename = data_source[2]
-                market_regimes = data_source[3]
 
-                process = mp.Process(target=preprocess_file_for_training, args=(output_queue, ticker, is_test_data_source, filename, market_regimes))
+                process = mp.Process(target=preprocess_file_for_training, args=(output_queue, ticker, is_test_data_source, filename))
                 process.start()
                 processes.append(process)
 
-                dpg.set_value("filename", filename)
+                dpg.set_value("filename", filename)                
                 dpg.set_value("files_remaining", str(len(data_sources)))
                 dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
+
+            dpg.set_value("mpc_queue_size", str(output_queue.qsize()))
 
             for step in range(max_queue_fetch_steps):
                 try:

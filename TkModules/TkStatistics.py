@@ -839,10 +839,13 @@ class TkStatistics():
             normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
+            # TODO: configure
             total_nonzero = np.count_nonzero(normalized_volume_tensor)
-            if total_nonzero > 7:
+            if total_nonzero > 8:
+                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(9,1.0))
+            if total_nonzero > 6:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
-            elif total_nonzero > 5:
+            elif total_nonzero > 4:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))
             elif total_nonzero > 2:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(3,1.0))
@@ -946,12 +949,12 @@ class TkStatistics():
         return vol
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Given the absolute price, the method computes market regime
+    # Given the volatility, the method computes market volatility regime
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def volatility_to_market_regime(price:float, regime_thresholds:list):
-        return bisect.bisect_right( regime_thresholds, price)
+    def volatility_to_market_regime( volatility:float, regime_thresholds:list):
+        return bisect.bisect_right( regime_thresholds, volatility )
     
     #------------------------------------------------------------------------------------------------------------------------
     # Given the absolute price series, the method computes market regimes based on rolling volatility 
@@ -1517,6 +1520,24 @@ class TkStatistics():
             trends[i] = normalized_slope
         
         return trends
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Trends to trend regimes 
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def trends_to_trend_regimes(trends: np.ndarray, regime_thresholds:list):
+
+        trend_regimes = [0] * len(trends)
+
+        for i in range(len(trends)):
+            trend_regimes[i] = len(regime_thresholds)
+            for j in range(len(regime_thresholds)):
+                if trends[i] <= regime_thresholds[j]:
+                    trend_regimes[i] = j
+                    break
+    
+        return trend_regimes
 
     #------------------------------------------------------------------------------------------------------------------------
     # Gaussian smoothing

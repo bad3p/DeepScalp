@@ -210,13 +210,17 @@ class TkTimeSeriesTrainingHistory():
             result[-1] = result[-2] * (1.0 - frac_epoch) + result[-1] * frac_epoch
         return result
 
-    def save(self):
-        TkIO.write_at_path(self._history_path, self._training_sample_id)
-        TkIO.append_at_path(self._history_path, self._test_sample_id)
-        TkIO.append_at_path(self._history_path, self._loss_history)
-        TkIO.append_at_path(self._history_path,self._accuracy_history)
-        TkIO.append_at_path(self._history_path,self._epoch_loss_history)
-        TkIO.append_at_path(self._history_path,self._epoch_accuracy_history)
+    def save(self, path:str = None):
+
+        if path == None:
+            path = self._history_path
+
+        TkIO.write_at_path(path, self._training_sample_id)
+        TkIO.append_at_path(path, self._test_sample_id)
+        TkIO.append_at_path(path, self._loss_history)
+        TkIO.append_at_path(path,self._accuracy_history)
+        TkIO.append_at_path(path,self._epoch_loss_history)
+        TkIO.append_at_path(path,self._epoch_accuracy_history)
 
     def log(self, training_sample_id:int, test_sample_id:int, loss:float, accuracy:float, end_of_training_epoch_callback = None):
 
@@ -249,5 +253,5 @@ class TkTimeSeriesTrainingHistory():
         accumulate_epoch_data( self._epoch_accuracy_history, accuracy, is_end_of_test_epoch )
 
         if is_end_of_training_epoch and end_of_training_epoch_callback != None :
-            print('Saving trainign state...')
+            print('End of training epoch!')
             end_of_training_epoch_callback()

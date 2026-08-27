@@ -176,8 +176,8 @@ class TkModel(torch.nn.Module):
             return torch.nn.AvgPool1d( kernel_size=layer_kernel_size, stride=layer_stride)
         
         def create_upsample_layer( params:list ):
-            layer_scale_factor = params[0]
-            return torch.nn.Upsample( scale_factor=layer_scale_factor )
+            layer_output_size = params[0]
+            return torch.nn.Upsample( size=layer_output_size, mode='linear' )
 
         def create_lrelu_layer(params : list):
             layer_leakage = params[0]

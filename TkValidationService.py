@@ -135,7 +135,7 @@ def validation_service_iteration():
                     sys.exit(0)
 
         try:
-            time.sleep(1.0)
+            time.sleep(0.5)
             validation_state = TkValidationServiceState( config )
             if not validation_state.is_empty():
 
@@ -147,7 +147,7 @@ def validation_service_iteration():
                 life_time = validation_state.get_current_position_life_time()
 
                 share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
-                min_price_increment = quotation_to_decimal(share.min_price_increment())
+                min_price_increment = quotation_to_float(share.min_price_increment())
                 lot = share.lot()
 
                 share_trading_status = share.trading_status()
@@ -155,13 +155,42 @@ def validation_service_iteration():
                     print( ticker, share.figi(), action, profit, life_time )
                     if action > 0 : # SIMULATE BUYING
 
-                        orderbook = share.get_order_book( 20 )
-                        if len(orderbook.asks) > 0:
-                            cost = quotation_to_float( orderbook.asks[0].price )
-                            cost = round( lot * (cost + cost * trading_fee), 2 )
-                            validation_state.set_current_position_cost( cost )
-                            validation_state.set_current_position_action( -1 )
-                        
+                        life_time = validation_state.get_current_position_life_time()
+                        cost = validation_state.get_current_position_cost()
+
+                        if cost > 0.0:
+                            last_trades_end_date = now() 
+                            last_trades_start_date = now() - timedelta( seconds=round( max( 0.0, life_time - 1.0 ) ) )
+                            last_trades = share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED )
+
+                            price = cost / lot
+
+                            bought = False
+
+                            for trade in last_trades.trades:
+                                if quotation_to_float( trade.price ) <= price:
+                                    cost = price
+                                    cost = round( lot * (cost + cost * trading_fee), 2 )
+                                    validation_state.set_current_position_cost( cost )
+                                    validation_state.set_current_position_action( -1 )
+                                    bought = True
+                                    break
+
+                            if not bought:
+                                orderbook = share.get_order_book( 20 )
+                                if len(orderbook.bids) > 0:
+                                    cost = ( quotation_to_float( orderbook.bids[0].price ) + min_price_increment ) * lot
+                                    validation_state.set_current_position_cost( cost )
+
+                            if life_time > 0.5 * position_life_time:
+                                print( "Buying failed" )
+                                validation_state.delete_current_position()
+                        else:
+                            orderbook = share.get_order_book( 20 )
+                            if len(orderbook.bids) > 0:
+                                cost = ( quotation_to_float( orderbook.bids[0].price ) + min_price_increment ) * lot
+                                validation_state.set_current_position_cost( cost )
+                                            
                         validation_state.shift_current_position()
                         
                     elif action < 0 : # SIMULATE SELLING
@@ -254,7 +283,7 @@ if __name__ ==  '__main__':
     trading_service_address = config['IPC']['TradingServiceAddress']
     trading_service_port = int(config['IPC']['TradingServicePort'])
     trading_service_auth_key = bytes( config['IPC']['TradingServiceAuthKey'], 'ascii' )
-    max_iteration_time = float( config['TradingService']['MaxIterationTime'] )
+    max_iteration_time = 9999# TEST# float( config['TradingService']['MaxIterationTime'] )
 
     ipc_message_queue = []
 

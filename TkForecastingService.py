@@ -626,7 +626,7 @@ def forecast(input:list, prior_steps_count:int, input_width:int, last_trades_wid
     input = torch.reshape( input, ( 1, prior_steps_count * input_width) )
     input = input.to(cuda)
 
-    ts_output, ts_regime = ts_model.forward( input )
+    ts_output, ts_regime, ts_trend = ts_model.forward( input )
     ts_output = torch.nn.functional.softmax( ts_output, dim=-1)
     return ts_output
 
@@ -651,12 +651,6 @@ def forecast_profitability( price_distribution : list , distribution_descriptor 
 #------------------------------------------------------------------------------------------------------------------------
 # Main loop
 #------------------------------------------------------------------------------------------------------------------------
-
-print('Loading market regimes...')
-market_regimes_config_file = open('TkMarketRegimeThresholds.json', 'r', encoding='utf-8')
-market_regimes_config = json.load(market_regimes_config_file)
-mean_regimes = market_regimes_config.values()
-mean_regimes = [sum(column) / len(column) for column in zip(*mean_regimes)]
 
 print('Loading time series forecaster...')
 time_series_forecaster = TkTimeSeriesForecaster(config)
@@ -684,9 +678,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             del ipc_input_message_queue[0]
             ticker = filename[ 0: filename.find("_") ]
             instrument = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
-            market_regimes = market_regimes_config[ticker] if ticker in market_regimes_config else mean_regimes
             
-            input, last_price, min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, last_trades_volume = preprocess_file_for_inference(ticker, filename, market_regimes)
+            input, last_price, min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, last_trades_volume = preprocess_file_for_inference(ticker, filename)
 
             if input != None:
 

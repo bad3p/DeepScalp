@@ -236,7 +236,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         super(TkTimeSeriesForecaster, self).__init__()
 
         self._cfg = _cfg
-        self._num_market_regimes = int(_cfg['TimeSeries']['NumMarketRegimes'])
+        self._num_market_regimes = len(json.loads(_cfg['TimeSeries']['VolatilityRegimes'])) + 1
+        self._num_trend_regimes = len( json.loads( _cfg['TimeSeries']['TrendRegimes'] ) ) + 1
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount']) 
         self._display_slice = int(_cfg['TimeSeries']['DisplaySlice'])  
         self._input_width = int(_cfg['TimeSeries']['InputWidth'])  
@@ -489,7 +490,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
 
         # trend prediction branch
-        y_trend = self._trend_mlp.forward( merged )
+        y_trend_regime = self._trend_mlp.forward( merged )
+        y_trend_regime = torch.reshape( y_trend_regime, (y_trend_regime.shape[0], self._num_trend_regimes ) )
 
         y = self._mlp( merged )
         y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
@@ -506,7 +508,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # self._smm_output_tensors = gates
         # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
 
-        return y, y_regime, y_trend
+        return y, y_regime, y_trend_regime
 
     @staticmethod    
     def kl_divergence_from_logits(logits, target, eps=1e-8):
