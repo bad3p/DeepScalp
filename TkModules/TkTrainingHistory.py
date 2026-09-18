@@ -187,10 +187,10 @@ class TkTimeSeriesTrainingHistory():
     def loss_history(self):
         return self._loss_history
 
-    def epoch_loss_history(self, frac_epoch=1.0):
-        result = []
-        if len(self._epoch_loss_history) > 2:
-            result = [self._epoch_loss_history[i][0] for i in range(1, len(self._epoch_loss_history))]
+    def epoch_loss_history(self, frac_epoch=1.0, start_epoch_to_display=0):
+        result = []        
+        if len(self._epoch_loss_history) > start_epoch_to_display:
+            result = [self._epoch_loss_history[i][0] for i in range((start_epoch_to_display-1), len(self._epoch_loss_history))]
         else:
             result = [self._epoch_loss_history[i][0] for i in range(0, len(self._epoch_loss_history))]
         if len(result) > 1:
@@ -200,10 +200,10 @@ class TkTimeSeriesTrainingHistory():
     def accuracy_history(self):
         return self._accuracy_history
 
-    def epoch_accuracy_history(self, frac_epoch=1.0):
+    def epoch_accuracy_history(self, frac_epoch=1.0, start_epoch_to_display=0):
         result = []
-        if len(self._epoch_accuracy_history) > 2:
-            result = [self._epoch_accuracy_history[i][0] for i in range(1, len(self._epoch_accuracy_history))]
+        if len(self._epoch_accuracy_history) > start_epoch_to_display:
+            result = [self._epoch_accuracy_history[i][0] for i in range((start_epoch_to_display-1), len(self._epoch_accuracy_history))]
         else:
             result = [self._epoch_accuracy_history[i][0] for i in range(0, len(self._epoch_accuracy_history))]
         if len(result) > 1:

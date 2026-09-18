@@ -220,7 +220,7 @@ class PreprocessedData:
         self.mean_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_mean_alpha, half_life=market_regime_steps_count ).tolist()
 
     def sample_width(self):
-        return 61 # sizeof quant_sample
+        return 54 # sizeof quant_sample
     
     def quant_sample(self, i:int):
         sample = []
@@ -331,9 +331,9 @@ class PreprocessedData:
         sample.append( self.trends_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
         # slice 20: market volatility regime
-        one_hot = [0.0] * self.num_volatility_regimes
-        one_hot[self.regimes[i]] = 1.0
-        sample.extend(one_hot)
+        # one_hot = [0.0] * self.num_volatility_regimes
+        # one_hot[self.regimes[i]] = 1.0
+        # sample.extend(one_hot)
 
         return sample
 
@@ -439,7 +439,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 ts_target_right_tail = future_trades_tails[i][1]
                 is_priority_sample = ( ts_target_left_tail <= -priority_tail_threshold ) or ( ts_target_right_tail >= priority_tail_threshold )
                 
-                if (step-1) % ts_data_stride == 0 or is_priority_sample:                    
+                if (step-1) % ts_data_stride == 0 or is_priority_sample or is_test_data_source:
                     output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime], is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     

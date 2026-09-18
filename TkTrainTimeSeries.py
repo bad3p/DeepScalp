@@ -257,6 +257,7 @@ smm_weight_decay = float(config['TimeSeries']['SMMWeightDecay'])
 fusion_weight_decay = float(config['TimeSeries']['FusionWeightDecay']) 
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
+start_epoch_to_display = int( config['TimeSeries']['StartEpochToDisplay'] )
 regime_loss_weight = TkAnnealing(config['TimeSeries']['RegimeLossWeight']) 
 trend_loss_weight = TkAnnealing(config['TimeSeries']['TrendLossWeight']) 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
@@ -581,9 +582,9 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         frac_epoch = ts_smooth_epoch - math.floor(ts_smooth_epoch)
         frac_epoch = math.pow( frac_epoch, 4.0 )
         TkUI.set_series("x_axis_training", "y_axis_training", "loss_series", ts_training_history.loss_history())
-        TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history(frac_epoch))
+        TkUI.set_series("x_axis_training_epoch", "y_axis_training_epoch", "loss_series_epoch", ts_training_history.epoch_loss_history(frac_epoch, start_epoch_to_display))
         TkUI.set_series("x_axis_accuracy", "y_axis_accuracy", "accuracy_series", ts_training_history.accuracy_history())
-        TkUI.set_series("x_axis_accuracy_epoch", "y_axis_accuracy_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history(frac_epoch))
+        TkUI.set_series("x_axis_accuracy_epoch", "y_axis_accuracy_epoch", "accuracy_series_epoch", ts_training_history.epoch_accuracy_history(frac_epoch, start_epoch_to_display))
 
         cooldownRemaining = cooldown
         cooldownStep = 1.0 / 30.0

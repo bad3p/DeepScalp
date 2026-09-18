@@ -841,9 +841,9 @@ class TkStatistics():
 
             # TODO: configure
             total_nonzero = np.count_nonzero(normalized_volume_tensor)
-            if total_nonzero > 8:
+            if total_nonzero > 16:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(9,1.0))
-            if total_nonzero > 6:
+            elif total_nonzero > 8:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
             elif total_nonzero > 4:
                 normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))

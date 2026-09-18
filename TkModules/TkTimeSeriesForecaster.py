@@ -397,8 +397,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
             {"params": embedding_no_decay_params, "weight_decay": 0.0, 'lr': embedding_learning_rate}, #1
             {"params": smm_decay_params, "weight_decay": smm_weight_decay, 'lr': smm_learning_rate}, #2
-            {"params": smm_ev_params, "weight_decay": smm_weight_decay, 'lr': smm_ev_learning_rate}, #3
-            {"params": smm_dt_params, "weight_decay": smm_weight_decay, 'lr': smm_dt_learning_rate}, #4
+            {"params": smm_ev_params, "weight_decay": 0.0, 'lr': smm_ev_learning_rate}, #3
+            {"params": smm_dt_params, "weight_decay": 0.0, 'lr': smm_dt_learning_rate}, #4
             {"params": smm_no_decay_params, "weight_decay": 0.0, 'lr': smm_learning_rate}, #5
             {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate}, #6
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
