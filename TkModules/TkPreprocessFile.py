@@ -73,6 +73,11 @@ class PreprocessedData:
     order_arrival_intensity:list
     order_arrival_imbalance:list
 
+    # EMA-smoothed data
+
+    smooth_volatility:list
+    smooth_trends:list
+
     # EMA-normalized data
 
     trade_flow_imbalance_ema_norm: list
@@ -96,7 +101,71 @@ class PreprocessedData:
     alpha_imbalance_ema_norm: list
     mean_alpha_ema_norm: list
 
-    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, market_regime_steps_count:int, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int):
+    @staticmethod
+    def interpolate_corrupted_datetimes(dt_list: list[datetime]) -> list[datetime]:
+        if not dt_list or len(dt_list) < 2:
+            return dt_list
+
+        # Step 1: Identify valid indices using a greedy left-to-right check
+        valid_indices = [0]
+        for i in range(1, len(dt_list)):
+            # A valid item must be >= the last known valid item
+            if dt_list[i] >= dt_list[valid_indices[-1]]:
+                valid_indices.append(i)
+
+        if( len(valid_indices) < len(dt_list) ):
+            print('Found corrupted datetime sequence, attempting to fix...')
+
+        fixed_list = dt_list.copy()
+
+        # Step 2: Interpolate missing segments between valid boundaries
+        for k in range(len(valid_indices) - 1):
+            start_idx = valid_indices[k]
+            end_idx = valid_indices[k + 1]
+            missing_count = end_idx - start_idx - 1
+
+            if missing_count > 0:
+                time_diff = fixed_list[end_idx] - fixed_list[start_idx]
+                # timedelta objects in Python can be directly divided by integers
+                step = time_diff / (missing_count + 1)
+
+                for j in range(1, missing_count + 1):
+                    fixed_list[start_idx + j] = fixed_list[start_idx] + (step * j)
+
+        # Step 3: Extrapolate if trailing elements are corrupted
+        last_valid = valid_indices[-1]
+        if last_valid < len(fixed_list) - 1:
+            # Determine a trend using the last two valid anchors, if available
+            if len(valid_indices) >= 2:
+                ref_start = valid_indices[-2]
+                ref_end = valid_indices[-1]
+                avg_step = (fixed_list[ref_end] - fixed_list[ref_start]) / (ref_end - ref_start)
+            else:
+                avg_step = timedelta(seconds=0) # Fallback if only 1 valid item exists
+
+            for j in range(last_valid + 1, len(fixed_list)):
+                fixed_list[j] = fixed_list[j - 1] + avg_step
+
+        return fixed_list
+
+    @staticmethod
+    def fix_corrupted_datetimes(raw_samples:list):
+        raw_sample_count = int( len(raw_samples) / 2 )
+        orderbook_ts = [0.0] * raw_sample_count
+        for i in range( 0, raw_sample_count ):
+            orderbook_ts[i] = raw_samples[i*2].orderbook_ts
+        fixed_orderbook_ts = PreprocessedData.interpolate_corrupted_datetimes( orderbook_ts )
+        for i in range( 0, raw_sample_count ):
+            raw_samples[i*2].orderbook_ts = fixed_orderbook_ts[i]    
+
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, ema_half_life:list, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int):
+
+        fastest_ema_half_life = ema_half_life[0]
+        fast_ema_half_life = ema_half_life[1]        
+        general_ema_half_life = ema_half_life[2]
+        persistent_ema_half_life = ema_half_life[3]
+        slow_ema_half_life = ema_half_life[4]
+        slowest_ema_half_life = ema_half_life[5]
 
         self.num_volatility_regimes = len(volatility_regimes) + 1
         self.num_trend_regimes = len(trend_regime_thresholds) + 1
@@ -109,6 +178,18 @@ class PreprocessedData:
         for i in range(raw_sample_count):
             self.min_price_increment = min( self.min_price_increment, TkStatistics.get_min_price_increment( raw_samples[i*2], quotation_to_decimal(share.min_price_increment()) ) )
         self.min_price_increment = float(self.min_price_increment)
+
+        # timestamps and time deltas
+
+        PreprocessedData.fix_corrupted_datetimes(raw_samples)
+
+        self.time_delta = [0.0] * raw_sample_count
+        for i in range( 1, raw_sample_count ):
+            prev_ts = raw_samples[(i-1)*2].orderbook_ts
+            curr_ts = raw_samples[i*2].orderbook_ts
+            self.time_delta[i] = (curr_ts - prev_ts).total_seconds()            
+            if self.time_delta[i] < 0:
+                raise ValueError("Invalid time_delta!")
 
         # extract features from orderbook & last trades
 
@@ -140,7 +221,6 @@ class PreprocessedData:
 
             self.price[i] = vwap if vwap > 0.0 else pivot_price
             self.volatility[i] = normalized_vwvol
-            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.volatility[i], volatility_regimes )
             self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment )
             self.orderbook_volume[i] = volume
             self.orderbook_slope[i] = slope
@@ -159,13 +239,18 @@ class PreprocessedData:
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts       
 
-        self.trends = TkStatistics.price_to_trends( self.price, trend_steps_count ).tolist()
-        self.trend_regimes = TkStatistics.trends_to_trend_regimes( self.trends, trend_regime_thresholds )
-        self.trends_ema_norm = TkStatistics.ema_normalize( self.trends, half_life=market_regime_steps_count ).tolist()
+        self.smooth_volatility = TkStatistics.irregular_ema_smoothing( self.volatility, self.time_delta, half_life=slowest_ema_half_life ).tolist()
+        for i in range( raw_sample_count ):
+            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.smooth_volatility[i], volatility_regimes )
 
-        self.trade_flow_imbalance_ema_norm = TkStatistics.ema_normalize( self.trade_flow_imbalance, half_life=market_regime_steps_count ).tolist()
-        self.orderbook_slope_ema_norm = TkStatistics.ema_normalize( self.orderbook_slope, half_life=market_regime_steps_count ).tolist()
-        self.orderbook_microprice_ema_norm = TkStatistics.ema_normalize( self.orderbook_microprice, half_life=market_regime_steps_count ).tolist()            
+        self.trends = TkStatistics.price_to_trends( self.price, trend_steps_count ).tolist()
+        self.smooth_trends = TkStatistics.irregular_ema_smoothing( self.trends, self.time_delta, half_life=general_ema_half_life ).tolist()
+        self.trend_regimes = TkStatistics.trends_to_trend_regimes( self.smooth_trends, trend_regime_thresholds )
+        self.trends_ema_norm = TkStatistics.irregular_ema_normalize( self.trends, self.time_delta, half_life=general_ema_half_life ).tolist()
+
+        self.trade_flow_imbalance_ema_norm = TkStatistics.irregular_ema_normalize( self.trade_flow_imbalance, self.time_delta, half_life=fastest_ema_half_life ).tolist()
+        self.orderbook_slope_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_slope, self.time_delta, half_life=general_ema_half_life ).tolist()
+        self.orderbook_microprice_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_microprice, self.time_delta, half_life=fastest_ema_half_life ).tolist()
 
         self.price_change = [0.0] * raw_sample_count
         for i in range( raw_sample_count ):
@@ -174,7 +259,7 @@ class PreprocessedData:
             else:
                 self.price_change[i] = self.price[i] - self.price[i-1]
 
-        self.price_change_log_ema_norm = TkStatistics.log_ema_normalize( self.price_change, half_life=market_regime_steps_count ).tolist()
+        self.price_change_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.price_change, self.time_delta, half_life=fastest_ema_half_life ).tolist()
 
         self.order_flow_imbalance = [0] * raw_sample_count
         self.queue_imbalance = [0] * raw_sample_count
@@ -198,26 +283,26 @@ class PreprocessedData:
             self.queue_depletion_intensity[i] = bid_depletion + ask_depletion
             self.queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
 
-        self.order_flow_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( self.order_flow_imbalance, half_life=market_regime_steps_count ).tolist()
+        self.order_flow_imbalance_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.order_flow_imbalance, self.time_delta, half_life=fastest_ema_half_life ).tolist()
         self.cumulative_order_flow_imbalance_log_ema_norm = TkStatistics.rolling_sum( self.order_flow_imbalance_log_ema_norm, window=future_steps_count ).tolist()
-        self.queue_imbalance_ema_norm = TkStatistics.ema_normalize( self.queue_imbalance, half_life=market_regime_steps_count ).tolist()
+        self.queue_imbalance_ema_norm = TkStatistics.irregular_ema_normalize( self.queue_imbalance, self.time_delta, half_life=fastest_ema_half_life ).tolist()
 
-        self.queue_depletion_intensity_log_ema_norm = TkStatistics.log_ema_normalize( self.queue_depletion_intensity, half_life=market_regime_steps_count ).tolist()
-        self.queue_depletion_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( self.queue_depletion_imbalance, half_life=market_regime_steps_count ).tolist()
+        self.queue_depletion_intensity_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.queue_depletion_intensity, self.time_delta, half_life=fastest_ema_half_life ).tolist()
+        self.queue_depletion_imbalance_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.queue_depletion_imbalance, self.time_delta, half_life=fast_ema_half_life ).tolist()
 
-        self.order_arrival_intensity_log_ema_norm = TkStatistics.log_ema_normalize( self.order_arrival_intensity, half_life=market_regime_steps_count ).tolist()
-        self.order_arrival_imbalance_log_ema_norm = TkStatistics.log_ema_normalize( self.order_arrival_imbalance, half_life=market_regime_steps_count ).tolist()
+        self.order_arrival_intensity_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.order_arrival_intensity, self.time_delta, half_life=fast_ema_half_life ).tolist()
+        self.order_arrival_imbalance_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.order_arrival_imbalance, self.time_delta, half_life=fast_ema_half_life ).tolist()
         
-        self.ema_norm_volatility = TkStatistics.ema_normalize( self.volatility, half_life=market_regime_steps_count ).tolist()
-        self.orderbook_log_ema_norm_volume = TkStatistics.log_ema_normalize( self.orderbook_volume, half_life=market_regime_steps_count ).tolist()
-        self.last_trades_log_ema_norm_volume = TkStatistics.log_ema_normalize( self.last_trades_volume, half_life=market_regime_steps_count ).tolist()
-        self.last_trades_log_ema_norm_num_events = TkStatistics.log_ema_normalize( self.last_trades_num_events, half_life=market_regime_steps_count ).tolist()
-        self.spread_log_ema_norm = TkStatistics.log_ema_normalize( self.spread, half_life=market_regime_steps_count ).tolist()
+        self.ema_norm_volatility = TkStatistics.irregular_ema_normalize( self.volatility, self.time_delta, half_life=slow_ema_half_life ).tolist()
+        self.orderbook_log_ema_norm_volume = TkStatistics.irregular_log_ema_normalize( self.orderbook_volume, self.time_delta, half_life=persistent_ema_half_life ).tolist()
+        self.last_trades_log_ema_norm_volume = TkStatistics.irregular_log_ema_normalize( self.last_trades_volume, self.time_delta, half_life=fast_ema_half_life ).tolist()
+        self.last_trades_log_ema_norm_num_events = TkStatistics.irregular_log_ema_normalize( self.last_trades_num_events, self.time_delta, half_life=fast_ema_half_life ).tolist()
+        self.spread_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.spread, self.time_delta, half_life=general_ema_half_life ).tolist()
 
-        self.bid_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_bid_alpha, half_life=market_regime_steps_count ).tolist()
-        self.ask_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_ask_alpha, half_life=market_regime_steps_count ).tolist()
-        self.alpha_imbalance_ema_norm = TkStatistics.ema_normalize( self.orderbook_alpha_imbalance, half_life=market_regime_steps_count ).tolist()
-        self.mean_alpha_ema_norm = TkStatistics.ema_normalize( self.orderbook_mean_alpha, half_life=market_regime_steps_count ).tolist()
+        self.bid_alpha_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_bid_alpha, self.time_delta, half_life=general_ema_half_life ).tolist()
+        self.ask_alpha_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_ask_alpha, self.time_delta, half_life=general_ema_half_life ).tolist()
+        self.alpha_imbalance_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_alpha_imbalance, self.time_delta, half_life=fast_ema_half_life ).tolist()
+        self.mean_alpha_ema_norm = TkStatistics.irregular_ema_normalize( self.orderbook_mean_alpha, self.time_delta, half_life=persistent_ema_half_life ).tolist()
 
     def sample_width(self):
         return 54 # sizeof quant_sample
@@ -364,13 +449,14 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         test_data_ratio = float(config['TimeSeries']['TestDataRatio'])
         lshash_size = int(config['TimeSeries']['LSHashSize'])
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
-        ts_data_stride = int(config['TimeSeries']['TSDataStride'])
-        market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
+        ts_data_stride = int(config['TimeSeries']['TSDataStride'])        
         trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])
         trend_regimes = json.loads(config['TimeSeries']['TrendRegimes'])
         volatility_regimes = json.loads(config['TimeSeries']['VolatilityRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
+        future_interval = float(config['TimeSeries']['FutureInterval'])
+        ema_half_life = json.loads(config['TimeSeries']['EMAHalfLife'])
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
@@ -379,7 +465,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -473,13 +559,14 @@ def preprocess_file_for_inference(ticker:str, filename:str):
         lshash_size = int(config['TimeSeries']['LSHashSize'])
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
         ts_data_stride = int(config['TimeSeries']['TSDataStride'])
-        market_regime_steps_count = int(config['TimeSeries']['MarketRegimeStepsCount'])
         trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])
         trend_regimes = json.loads(config['TimeSeries']['TrendRegimes'])
         volatility_regimes = json.loads(config['TimeSeries']['VolatilityRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
-        priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
+        future_interval = float(config['TimeSeries']['FutureInterval'])
+        ema_half_life = json.loads(config['TimeSeries']['TrendRegimes'])
+        priority_tail_threshold = float(config['TimeSeries']['EMAHalfLife'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
 
@@ -487,7 +574,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, market_regime_steps_count, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
 
             price = data.price[-prior_steps_count:]
             orderbook_volume = data.orderbook_volume[-prior_steps_count:]

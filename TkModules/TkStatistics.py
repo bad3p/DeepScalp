@@ -865,16 +865,66 @@ class TkStatistics():
         return result_tensor.T, hasheable_tensor, total_event_count, total_volume, total_buy_trades, total_sell_trades, (left_tail, right_tail)
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Performs EMA normalization for the given sequence
+    #  Computes the Exponential Moving Average for irregularly sampled data.
+    #  Args:
+    #       samples (array-like): The sequence of observed values.
+    #       delta_times (array-like): The time elapsed since the previous sample.
+    #                               (The first value is ignored).
+    #       half_life (float): The time interval required for the weight of a 
+    #                       previous observation to drop by half.
+    #                      
+    #  Returns:
+    #      np.ndarray: The smoothed EMA values.
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def ema_normalize(sequence, half_life=250, eps=1e-12):
+    def irregular_ema_smoothing(samples, delta_times, half_life):
+
+        samples = np.asarray(samples, dtype=np.float64)
+        delta_times = np.asarray(delta_times, dtype=np.float64)
+    
+        if len(samples) != len(delta_times):
+            raise ValueError("samples and delta_times must have the same length.")
+        
+        # Precalculate the decay weights for all steps in a single vectorized operation
+        # W = 2^(-dt / half_life)
+        W = np.exp2(-delta_times / half_life)
+    
+        # Initialize the output array
+        smoothed = np.empty_like(samples)
+    
+        # The first smoothed value is simply the first observation
+        smoothed[0] = samples[0]
+    
+        # Sequential EMA application
+        for i in range(1, len(samples)):
+            smoothed[i] = (1 - W[i]) * samples[i] + W[i] * smoothed[i-1]
+        
+        return smoothed
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # EMA normalization supporting irregular time steps.
+    #       
+    # :param sequence: Iterable of values to normalize.
+    # :param time_deltas: Iterable of time elapsed since the previous sample. 
+    #                     Must be the same length as sequence. index 0 is ignored.
+    # :param half_life: The half-life parameter in the same units as time_deltas.
+    # :param eps: Small value to prevent division by zero.
+    # :return: Normalized sequence as a numpy array.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def irregular_ema_normalize(sequence, time_deltas, half_life, eps=1e-12):
 
         sequence = np.asarray(sequence, dtype=np.float64)
+        time_deltas = np.asarray(time_deltas, dtype=np.float64)
 
-        # EMA coefficient
-        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
+        if len(sequence) != len(time_deltas):
+            raise ValueError("sequence and time_deltas must have the same length.")
+
+        # Calculate dynamic alphas based on the exact time elapsed between steps
+        decay_constant = np.log(2.0) / half_life
+        alphas = 1.0 - np.exp(-decay_constant * time_deltas)
 
         mu = np.zeros_like(sequence)
         var = np.zeros_like(sequence)
@@ -883,28 +933,38 @@ class TkStatistics():
         var[0] = 0.0
 
         for t in range(1, len(sequence)):
+            alpha = alphas[t]
+            
+            # Update mean
             mu[t] = alpha * sequence[t] + (1.0 - alpha) * mu[t - 1]
+            
+            # Update variance
             diff = sequence[t] - mu[t]
-            var[t] = alpha * diff * diff + (1.0 - alpha) * var[t - 1]
+            var[t] = alpha * (diff * diff) + (1.0 - alpha) * var[t - 1]
 
         norm_sequence = (sequence - mu) / np.sqrt(var + eps)
 
         return norm_sequence
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Performs log1p transform with subsequent EMA normalization for the given sequence
+    # Log-transformed EMA normalization supporting irregular time steps.
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def log_ema_normalize(sequence, half_life=250, eps=1e-12):
+    def irregular_log_ema_normalize(sequence, time_deltas, half_life=250, eps=1e-12):
 
         sequence = np.asarray(sequence, dtype=np.float64)
+        time_deltas = np.asarray(time_deltas, dtype=np.float64)
 
-        # log transform
-        log_sequence = np.sign(sequence) * np.log1p(abs(sequence))
+        if len(sequence) != len(time_deltas):
+            raise ValueError("sequence and time_deltas must have the same length.")
 
-        # EMA coefficient
-        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
+        # Apply symmetric log transform
+        log_sequence = np.sign(sequence) * np.log1p(np.abs(sequence))
+
+        # Calculate dynamic alphas based on the exact time elapsed between steps
+        decay_constant = np.log(2.0) / half_life
+        alphas = 1.0 - np.exp(-decay_constant * time_deltas)
 
         mu = np.zeros_like(log_sequence)
         var = np.zeros_like(log_sequence)
@@ -913,40 +973,18 @@ class TkStatistics():
         var[0] = 0.0
 
         for t in range(1, len(log_sequence)):
+            alpha = alphas[t]
+        
+            # Update mean using the dynamic alpha
             mu[t] = alpha * log_sequence[t] + (1.0 - alpha) * mu[t - 1]
+        
+            # Update variance using the dynamic alpha
             diff = log_sequence[t] - mu[t]
-            var[t] = alpha * diff * diff + (1.0 - alpha) * var[t - 1]
+            var[t] = alpha * (diff * diff) + (1.0 - alpha) * var[t - 1]
 
         norm_sequence = (log_sequence - mu) / np.sqrt(var + eps)
 
         return norm_sequence
-    
-    #------------------------------------------------------------------------------------------------------------------------
-    # Performs log1p transform with subsequent short-term volatility extraction & EMA normalization
-    #------------------------------------------------------------------------------------------------------------------------
-
-    @staticmethod
-    def log_vol_ema_normalize(sequence, half_life=250, eps=1e-12):
-
-        sequence = np.asarray(sequence, dtype=np.float64)
-
-        log_sequence = np.log(sequence)
-
-        r = np.diff(log_sequence, prepend=log_sequence[0])
-        r2 = r * r
-
-        alpha = 1.0 - np.exp(-np.log(2.0) / half_life)
-
-        ema_r2 = np.zeros_like(r2)
-        ema_r2[0] = r2[0]
-
-        for t in range(1, len(r2)):
-            ema_r2[t] = alpha * r2[t] + (1 - alpha) * ema_r2[t - 1]
-
-        # volatility estimate
-        vol = np.sqrt(ema_r2 + eps)
-
-        return vol
 
     #------------------------------------------------------------------------------------------------------------------------
     # Given the volatility, the method computes market volatility regime

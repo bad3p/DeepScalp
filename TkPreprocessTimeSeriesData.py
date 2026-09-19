@@ -225,6 +225,8 @@ if __name__ == "__main__":
 
             dpg.set_value("mpc_queue_size", str(output_queue.qsize()))
 
+            max_queue_fetch_steps = int(output_queue.qsize() / 2)
+
             for step in range(max_queue_fetch_steps):
                 try:
                     tuple = output_queue.get_nowait()
