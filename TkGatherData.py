@@ -32,7 +32,7 @@ from TkModules.TkPersistentQueue import TkPersistentQueue
 # Gather data iteration
 #------------------------------------------------------------------------------------------------------------------------
 
-def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, use_mpc:bool):
+def gather_data_iteration(ticker:str, data_path:str, market_data_file_extension:str, orderbook_depth:int, last_trades_period_in_minutes:int, use_mpc:bool):
 
     TOKEN = os.environ["TK_TOKEN"]
 
@@ -44,7 +44,7 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
         try:
             today = date.today()
             # filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + data_file_extension
-            filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + "Day" + data_file_extension
+            filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + "Day" + market_data_file_extension
             path = join( data_path, filename )
             share = TkInstrument(client, config, InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
             share_trading_status = share.trading_status()
@@ -52,7 +52,8 @@ def gather_data_iteration(ticker:str, data_path:str, data_file_extension:str, or
                 last_trades_end_date = now() 
                 last_trades_start_date = now() - timedelta( minutes=last_trades_period_in_minutes )
                 order_book = TkOrderbook( share.get_order_book(orderbook_depth) )
-                last_trades = TkLastTrades( share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED ) )
+                last_trades_response = share.get_last_trades( last_trades_start_date, last_trades_end_date, TradeSourceType.TRADE_SOURCE_UNSPECIFIED )
+                last_trades = TkLastTrades( last_trades_response )
                 TkIO.append_at_path( path, order_book )
                 TkIO.append_at_path( path, last_trades )
                 print(ticker, "gathered.")                
@@ -169,7 +170,8 @@ if __name__ ==  '__main__':
                     print( 'Gathering time: ', gathering_time )
                     if ipc:
                         today = date.today()
-                        filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
+                        #filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
+                        filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + "Day" + market_data_file_extension
                         ipcMessageQueue.append(filename)
 
             else: # not mpc
@@ -188,7 +190,8 @@ if __name__ ==  '__main__':
                 print( 'Gathering time: ', gathering_time )
                 if ipc:
                     today = date.today()
-                    filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
+                    # filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + ( "Day" if datetime.now().hour < 19 else "Evening" ) + market_data_file_extension
+                    filename = ticker + "_" + today.strftime("%B_%d_%Y") + "_" + "Day" + market_data_file_extension
                     ipcMessageQueue.append(filename)
                 
 

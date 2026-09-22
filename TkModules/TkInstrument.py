@@ -50,9 +50,33 @@ class TkLastTrades():
 
     trades:list # [(price, quantity, time, direction), ...]
 
-    def __init__(self, last_trades:GetLastTradesResponse):        
+    def __init__(self, source, start_ts:int = 0, end_ts:int = 0):
 
-        self.trades = [ (quotation_to_decimal( trade.price ), trade.quantity, trade.time, -1 if trade.direction == TradeDirection.TRADE_DIRECTION_SELL else 1) for trade in last_trades.trades]
+        if isinstance( source, GetLastTradesResponse ):
+            last_trades = source
+            self.trades = [ (quotation_to_decimal( trade.price ), trade.quantity, trade.time, -1 if trade.direction == TradeDirection.TRADE_DIRECTION_SELL else 1) for trade in last_trades.trades]
+
+        elif isinstance( source, dict):
+            all_trades = source
+            self.trades = []
+            for ts in all_trades:
+                if ts >= start_ts and ts <= end_ts:
+                    self.trades.extend(all_trades[ts])        
+
+        else:
+            raise ValueError("Invalid data source!")
+        
+
+    def validate(self, other, start_ts:int, end_ts:int):
+    
+        for i in range(len(other.trades)):
+
+            trade_ts = other.trades[i][2].timestamp()
+            if trade_ts >= start_ts and trade_ts <= end_ts:
+                if not other.trades[i] in self.trades:
+                    return False
+
+        return True
 
 
 #------------------------------------------------------------------------------------------------------------------------

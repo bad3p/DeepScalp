@@ -1,0 +1,9 @@
+
+                 Date      Winning Deals      Winning Rate      Losing Deals      Losing Rate      Cumulative Net Profit
+
+      2026_08_21.json                 23            46.00%                27           54.00%                     +1.32%   
+      2026_09_04.json                 17            41.46%                23           56.10%                     -0.66%
+      2026_09_16.json                 51            28.98%               125           71.02%                     -5.45%  
+ 2026_09_17_24x4.json                  8            21.05%                30           78.95%                     -7.03% 
+ 2026_09_22_24x4.json                 29            37.18%                49           62.82%                     +3.31%
+
