@@ -14,6 +14,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * https://pypi.org/project/joblib/
 * https://pypi.org/project/win10toast/
 * https://pytorch.org/get-started/locally/
+* https://github.com/rtqichen/torchdiffeq
 * https://jsonpickle.github.io/
 
 # Installation
@@ -26,6 +27,7 @@ Uses adopted variant of [LSHASH](https://github.com/kayzhu/LSHash) to speed up s
 * pip install win10toast
 * pip install jsonpickle
 * pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+* pip install torchdiffeq
 
 # SSL Certificate
 

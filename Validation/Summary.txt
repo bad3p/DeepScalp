@@ -7,4 +7,5 @@
  2026_09_17_24x4.json                 8           21.05%               30          78.95%                    -7.03%  
  2026_09_22_24x4.json                29           37.18%               49          62.82%                    +3.31%  - time data embedding & fixed unwanted shift in input sequence during inference
  2026_09_23_24x4.json                24           43.60%               31          56.40%                    +0.56%
+ 2026_09_24_12x2.json                14           51.85%               13          48.15%                    +2.31%   
 

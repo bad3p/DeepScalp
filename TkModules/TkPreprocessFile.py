@@ -12,6 +12,7 @@ from os import listdir
 from os.path import isfile, join
 from datetime import date, datetime, timezone, timedelta
 from dateutil import parser
+from collections import Counter
 import dearpygui.dearpygui as dpg
 import itertools
 import threading
@@ -111,50 +112,96 @@ class PreprocessedData:
 
     @staticmethod
     def interpolate_corrupted_datetimes(dt_list: list[datetime]) -> list[datetime]:
-        if not dt_list or len(dt_list) < 2:
-            return dt_list
+        n = len(dt_list)
+        if n == 0:
+            return []
+        if n == 1:
+            return dt_list.copy()
 
-        # Step 1: Identify valid indices using a greedy left-to-right check
-        valid_indices = [0]
-        for i in range(1, len(dt_list)):
-            # A valid item must be >= the last known valid item
-            if dt_list[i] >= dt_list[valid_indices[-1]]:
-                valid_indices.append(i)
+        # Step 1: Identify valid anchor points through iterative elimination
+        valid_indices = list(range(n))
+    
+        while True:
+            to_remove = set()
+            m = len(valid_indices)
+        
+            for j in range(m):
+                idx = valid_indices[j]
+            
+                # Rule 1: Replace if lesser than previous object
+                if j > 0:
+                    prev_idx = valid_indices[j-1]
+                    if dt_list[idx] < dt_list[prev_idx]:
+                        to_remove.add(idx)
+                        continue
+            
+                # Rule 2: Replace if equal to the next object
+                if j < m - 1:
+                    next_idx = valid_indices[j+1]
+                    if dt_list[idx] == dt_list[next_idx]:
+                        to_remove.add(idx)
+                        continue
+        
+            # Stop if no elements violate the rules in the current pass
+            if not to_remove:
+                break
+            
+            valid_indices = [idx for idx in valid_indices if idx not in to_remove]
+        
+            # Fallback if the array is fully eliminated (e.g., edge cases)
+            if not valid_indices:
+                valid_indices = [0]
+                break
 
-        if( len(valid_indices) < len(dt_list) ):
-            print('Found corrupted datetime sequence, attempting to fix...')
+        # Initialize output array with the valid anchor points
+        out = [None] * n
+        for idx in valid_indices:
+            out[idx] = dt_list[idx]
 
-        fixed_list = dt_list.copy()
+        # Step 2: Interpolation & Extrapolation
+    
+        # Handle Edge Case: Only 1 valid anchor remains
+        if len(valid_indices) == 1:
+            single_idx = valid_indices[0]
+            # Fallback delta when interpolation is impossible
+            delta = timedelta(seconds=1)
+            for i in range(n):
+                out[i] = dt_list[single_idx] + delta * (i - single_idx)
+            return out
 
-        # Step 2: Interpolate missing segments between valid boundaries
+        # Interpolate gaps between valid anchors
         for k in range(len(valid_indices) - 1):
-            start_idx = valid_indices[k]
-            end_idx = valid_indices[k + 1]
-            missing_count = end_idx - start_idx - 1
-
-            if missing_count > 0:
-                time_diff = fixed_list[end_idx] - fixed_list[start_idx]
-                # timedelta objects in Python can be directly divided by integers
-                step = time_diff / (missing_count + 1)
-
-                for j in range(1, missing_count + 1):
-                    fixed_list[start_idx + j] = fixed_list[start_idx] + (step * j)
-
-        # Step 3: Extrapolate if trailing elements are corrupted
+            i1 = valid_indices[k]
+            i2 = valid_indices[k+1]
+            dt1 = out[i1]
+            dt2 = out[i2]
+        
+            delta = (dt2 - dt1) / (i2 - i1)
+        
+            for i in range(i1 + 1, i2):
+                out[i] = dt1 + delta * (i - i1)
+            
+        # Extrapolate leading invalid objects backwards
+        first_valid = valid_indices[0]
+        if first_valid > 0:
+            i1 = valid_indices[0]
+            i2 = valid_indices[1]
+            delta = (out[i2] - out[i1]) / (i2 - i1)
+        
+            for i in range(first_valid):
+                out[i] = out[i1] + delta * (i - i1)
+            
+        # Extrapolate trailing invalid objects forwards
         last_valid = valid_indices[-1]
-        if last_valid < len(fixed_list) - 1:
-            # Determine a trend using the last two valid anchors, if available
-            if len(valid_indices) >= 2:
-                ref_start = valid_indices[-2]
-                ref_end = valid_indices[-1]
-                avg_step = (fixed_list[ref_end] - fixed_list[ref_start]) / (ref_end - ref_start)
-            else:
-                avg_step = timedelta(seconds=0) # Fallback if only 1 valid item exists
+        if last_valid < n - 1:
+            i1 = valid_indices[-2]
+            i2 = valid_indices[-1]
+            delta = (out[i2] - out[i1]) / (i2 - i1)
+        
+            for i in range(last_valid + 1, n):
+                out[i] = out[i2] + delta * (i - i2)
 
-            for j in range(last_valid + 1, len(fixed_list)):
-                fixed_list[j] = fixed_list[j - 1] + avg_step
-
-        return fixed_list
+        return out
 
     @staticmethod
     def fix_corrupted_datetimes(raw_samples:list):
@@ -199,11 +246,12 @@ class PreprocessedData:
             curr_ts = raw_samples[i*2].orderbook_ts
             self.timestamp[i] = raw_samples[i*2].orderbook_ts.timestamp()
             self.time_delta[i] = (curr_ts - prev_ts).total_seconds()            
-            if self.time_delta[i] < 0:
-                raise ValueError("Invalid time_delta!")
+            if self.time_delta[i] <= 0:
+                raise ValueError("Invalid time_delta!")            
+        self.time_delta[0] = sum(self.time_delta) / len(self.time_delta)
 
         # Log-scaled time delta for immediate micro-burst detection
-        self.log_time_delta = [math.log(1.0 + td) for td in self.time_delta]            
+        self.log_time_delta = [math.log(td) for td in self.time_delta]
 
         # Normalized pacing: is the market acting faster or slower than recent history?
         self.pacing_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.time_delta, self.time_delta, half_life=fast_ema_half_life ).tolist()

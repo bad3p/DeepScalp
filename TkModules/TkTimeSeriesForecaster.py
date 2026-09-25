@@ -8,6 +8,7 @@ from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkSelfAttention import TkSelfAttention
 from TkModules.TkTCNN import TkTCNN
 from TkModules.TkStateSpace import TkStateSpaceModule
+from TkModules.TkGRUODEBayes import TkGRUODEBayesModule, TkGRUObservationJump, TkGRUODEContinuous
 
 # --------------------------------------------------------------------------------------------------------------
 # Gated residual fusion
@@ -243,9 +244,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._input_width = int(_cfg['TimeSeries']['InputWidth'])  
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
+        self._log_time_delta_feature_index = int(_cfg['TimeSeries']['LogTimeDeltaFeatureIndex'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
-        self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
+        self._gru_ode_bayes_specification = json.loads(_cfg['TimeSeries']['GRUODEBayes'])
         self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
         self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
         self._trend_mlp = TkModel( json.loads(_cfg['TimeSeries']['TrendMLP']) )
@@ -253,7 +255,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
 
-        if len(self._input_slices) != len(self._smm_specification):
+        if len(self._input_slices) != len(self._gru_ode_bayes_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
         
         self._source_pos_embedding = torch.nn.Parameter( torch.randn(1, len(self._input_slices), self._fusion_embedding_dims) * 0.02 )
@@ -262,10 +264,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_input_dims = []
 
         self._embedding = []
-        self._smm_proj = []
-        self._smm = []
-        self._smm_norm = []
-        self._mlp_input_size = 0
+        self._gru_ode_bayes = []
+        self._mlp_input_size = 0        
         for i in range(len(self._input_slices)):
             ch0 = self._input_slices[i][0]
             ch1 = self._input_slices[i][1]
@@ -292,19 +292,15 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 else:
                     raise RuntimeError('Unknown embedding type:'+embedding_type)
 
-            state_size = self._smm_specification[i][0]
-            model_size = self._smm_specification[i][1]
-            num_layers = self._smm_specification[i][2]
-            self._smm_proj.append( torch.nn.Linear( slice_size, model_size) )
-            self._smm.append( torch.nn.ModuleList( [ TkStateSpaceModule( model_size, state_size, model_size) for _ in range(num_layers) ] ) )
-            self._smm_norm.append( torch.nn.ModuleList( [ torch.nn.LayerNorm( model_size ) for _ in range(num_layers+1) ] ) )
-            self._mlp_input_size = self._mlp_input_size + model_size
-            self._fusion_input_dims.append( model_size )
+            gru_ode_bayes_input_size = slice_size
+            gru_ode_bayes_hidden_size = self._gru_ode_bayes_specification[i][0]
+            self._gru_ode_bayes.append( TkGRUODEBayesModule( input_size=gru_ode_bayes_input_size, hidden_size=gru_ode_bayes_hidden_size) )
+
+            self._mlp_input_size = self._mlp_input_size + gru_ode_bayes_hidden_size
+            self._fusion_input_dims.append( gru_ode_bayes_hidden_size )
 
         self._embedding = torch.nn.ModuleList( self._embedding )
-        self._smm_proj = torch.nn.ModuleList( self._smm_proj )
-        self._smm = torch.nn.ModuleList( self._smm )
-        self._smm_norm = torch.nn.ModuleList( self._smm_norm )
+        self._gru_ode_bayes = torch.nn.ModuleList( self._gru_ode_bayes )
 
         self._fusion = MultiHeadFusionGRF( 
             input_dims=self._fusion_input_dims, 
@@ -326,24 +322,20 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, gru_ode_bayes_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, gru_ode_bayes_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
 
-        smm_no_decay_params = list(self._smm_norm.parameters())
-        smm_decay_params = list(self._smm_proj.parameters())
-        smm_ev_params = []
-        smm_dt_params = []
+        gru_ode_bayes_no_decay_params = []
+        gru_ode_bayes_decay_params = []
 
-        for smm_module in self._smm:
-            for smm in smm_module:
-                smm_ev_params.append( smm.log_lambda_real )
-                smm_ev_params.append( smm.lambda_imag )
-                smm_dt_params.append( smm.log_dt )
-                smm_decay_params.append( smm.B )
-                smm_decay_params.append( smm.C_real )
-                smm_decay_params.append( smm.C_imag )
+        for gru_ode_bayes in self._gru_ode_bayes:
+            for name, param in gru_ode_bayes.named_parameters():
+                if not any(nd in name for nd in ["bias", "norm"]):
+                    gru_ode_bayes_decay_params.append(param)
+                else:
+                    gru_ode_bayes_no_decay_params.append(param)
         
         mlp_decay_params = []
         mlp_no_decay_params = []
@@ -396,14 +388,12 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
             {"params": embedding_no_decay_params, "weight_decay": 0.0, 'lr': embedding_learning_rate}, #1
-            {"params": smm_decay_params, "weight_decay": smm_weight_decay, 'lr': smm_learning_rate}, #2
-            {"params": smm_ev_params, "weight_decay": 0.0, 'lr': smm_ev_learning_rate}, #3
-            {"params": smm_dt_params, "weight_decay": 0.0, 'lr': smm_dt_learning_rate}, #4
-            {"params": smm_no_decay_params, "weight_decay": 0.0, 'lr': smm_learning_rate}, #5
-            {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate}, #6
-            {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
-            {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
-            {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
+            {"params": gru_ode_bayes_decay_params, "weight_decay": gru_ode_bayes_weight_decay, 'lr': gru_ode_bayes_learning_rate}, #2
+            {"params": gru_ode_bayes_no_decay_params, "weight_decay": 0.0, 'lr': gru_ode_bayes_learning_rate}, #3
+            {"params": mlp_decay_params, "weight_decay": mlp_weight_decay, 'lr': mlp_learning_rate}, #4
+            {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #5
+            {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #6
+            {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #7
             # {"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
         ]
     
@@ -413,29 +403,23 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def embedding_decay_group_indices(self):
         return [0]
     
-    def smm_group_indices(self):
+    def gru_ode_bayes_group_indices(self):
         return [2,5]
     
-    def smm_ev_group_indices(self):
-        return [3]
-    
-    def smm_dt_group_indices(self):
-        return [4]
-    
-    def smm_decay_group_indices(self):
-        return [2,3,4]
+    def gru_ode_bayes_decay_group_indices(self):
+        return [2]
         
     def mlp_group_indices(self):
-        return [6,7]
+        return [4,5]
     
     def mlp_decay_group_indices(self):
-        return [6]
+        return [4]
 
     def fusion_group_indices(self):
-        return [8,9]
+        return [6,7]
     
     def fusion_decay_group_indices(self):
-        return [8]
+        return [6]
 
     def smm_output(self):
         return self._smm_output_tensors
@@ -449,6 +433,12 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         input = torch.reshape( input, ( batch_size, self._prior_steps_count, self._input_width) )
 
+        log_time_delta = input[:, :, self._log_time_delta_feature_index : self._log_time_delta_feature_index + 1]
+        log_time_delta = log_time_delta - 4.605 # TODO: configure
+        
+        # Prepare log_dts for TkGRUODEBayesModule: Requires format (T, Batch, 1)
+        log_time_delta_t = log_time_delta.transpose(0, 1).contiguous()
+
         self._input_slice_tensors = []
         self._smm_output_tensors = []
 
@@ -459,15 +449,16 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             input_slice_tensor = input[:, :, ch0:ch1]
             input_slice_tensor = self._embedding[i]( input_slice_tensor )
             self._input_slice_tensors.append( input_slice_tensor )
+
+            # Transpose to (T, Batch, Features) for the ODE integration[cite: 2]
+            x_t = input_slice_tensor.transpose(0, 1)
+
+            # Synthesize masks tensor (1=observed, 0=missing) matching the sequence format[cite: 2, 5]
+            masks_t = torch.ones_like(x_t)
+
+            x_t = self._gru_ode_bayes[i](log_time_delta_t, x_t, masks_t)
+            x = x_t.transpose(0, 1)
             
-            x = self._smm_proj[i]( input_slice_tensor )
-            for ssm, norm in zip(self._smm[i], self._smm_norm[i]):
-                residual = x
-                x = norm(x)
-                x = ssm(x)
-                x = torch.nn.functional.silu(x)
-                x = x + residual            
-            x = self._smm_norm[i][-1]( x )
             self._smm_output_tensors.append( x )
 
         #  Combine Spatial (Source) and Temporal Positional Encodings
