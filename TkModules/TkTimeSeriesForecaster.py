@@ -210,7 +210,8 @@ class ScalarGroupEmbedding(torch.nn.Module):
         for i in range(len(specification)):
             self._proj.append( torch.nn.Linear( in_channels if i == 0 else specification[i-1], specification[i] ) )
             self._proj.append( torch.nn.SiLU() )
-        self._proj.append( torch.nn.Dropout(dropout) )
+            self._proj.append( torch.nn.Dropout(dropout) )
+        
         self._proj = torch.nn.ModuleList( self._proj )        
         self._init_weights()
 
@@ -243,6 +244,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._input_width = int(_cfg['TimeSeries']['InputWidth'])  
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
+        self._log_time_delta_feature_index = int(_cfg['TimeSeries']['LogTimeDeltaFeatureIndex'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
@@ -449,6 +451,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         input = torch.reshape( input, ( batch_size, self._prior_steps_count, self._input_width) )
 
+        log_time_delta = input[:, :, self._log_time_delta_feature_index : self._log_time_delta_feature_index + 1]
+        log_time_delta = log_time_delta - 4.605 # TODO: configure; 4.605 = ln(100) = ln(max_observed_time)
+
         self._input_slice_tensors = []
         self._smm_output_tensors = []
 
@@ -464,7 +469,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             for ssm, norm in zip(self._smm[i], self._smm_norm[i]):
                 residual = x
                 x = norm(x)
-                x = ssm(x)
+                x = ssm(x, log_time_delta)
                 x = torch.nn.functional.silu(x)
                 x = x + residual            
             x = self._smm_norm[i][-1]( x )

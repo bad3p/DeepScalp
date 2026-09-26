@@ -348,10 +348,14 @@ class PreprocessedData:
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 57 # sizeof quant_sample
+        return 60 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
+
+        # age and decay
+        age_seconds = max(0.0, base_timestamp - self.timestamp[i])
+        anchored_time_decay = math.exp(-age_seconds * self.time_decay_lambda )
 
         # slice 1 : price, volatility and trend
         sample.append( self.price_change_log_ema_norm[i] )
@@ -379,53 +383,58 @@ class PreprocessedData:
         sample.append( self.queue_depletion_imbalance_log_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] )
 
-        # slice 6 : price x liquidity / Spread
+        # slice 6: copy of time data for grouping with slices 1 - 5
+        sample.append( self.log_time_delta[i] )
+        sample.append( self.pacing_log_ema_norm[i] )
+        sample.append( anchored_time_decay )
+
+        # slice 7 : price x liquidity / Spread
         sample.append( self.price_change_log_ema_norm[i] * self.spread_log_ema_norm[i] )
         sample.append( self.ema_norm_volatility[i] * self.spread_log_ema_norm[i] )
         sample.append( self.price_change_log_ema_norm[i] * self.orderbook_log_ema_norm_volume[i] )
 
-        # slice 7 : price x orderbook structure
+        # slice 8 : price x orderbook structure
         sample.append( self.price_change_log_ema_norm[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.orderbook_microprice_ema_norm[i] - self.price_change_log_ema_norm[i] )
         sample.append( self.orderbook_slope_ema_norm[i] * self.price_change_log_ema_norm[i] )
 
-        # slice 8 : liquidity x orderbook structure
+        # slice 9 : liquidity x orderbook structure
         sample.append( self.spread_log_ema_norm[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.orderbook_log_ema_norm_volume[i] * self.orderbook_slope_ema_norm[i] )
 
-        # slice 9 : trade activity ? liquidity
+        # slice 10 : trade activity ? liquidity
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.spread_log_ema_norm[i] )
         sample.append( self.last_trades_log_ema_norm_num_events[i] * self.orderbook_log_ema_norm_volume[i] )
         sample.append( self.queue_depletion_intensity_log_ema_norm[i] * self.spread_log_ema_norm[i] )
 
-        # slice 10 : trade Activity x orderbook structure
+        # slice 11 : trade Activity x orderbook structure
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.order_arrival_intensity_log_ema_norm[i] * self.orderbook_slope_ema_norm[i] )
         sample.append( self.queue_depletion_intensity_log_ema_norm[i] * self.orderbook_microprice_ema_norm[i] )
 
-        # slice 11 : flow imbalance x price
+        # slice 12 : flow imbalance x price
         sample.append( self.price_change_log_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.price_change_log_ema_norm[i] * self.cumulative_order_flow_imbalance_log_ema_norm[i] )
 
-        # slice 12 : flow imbalance x orderbook
+        # slice 13 : flow imbalance x orderbook
         sample.append( self.queue_imbalance_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.orderbook_microprice_ema_norm[i] * self.cumulative_order_flow_imbalance_log_ema_norm[i] )
 
-        # slice 13 : flow imbalance x trade activity
+        # slice 14 : flow imbalance x trade activity
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] * self.last_trades_log_ema_norm_num_events[i] )
 
-        # slice 14 : higher order nonlinear interactions
+        # slice 15 : higher order nonlinear interactions
         sample.append( self.spread_log_ema_norm[i] * self.ema_norm_volatility[i] * self.queue_depletion_intensity_log_ema_norm[i] )
         sample.append( self.queue_imbalance_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] * self.orderbook_microprice_ema_norm[i] )
 
-        # slice 15 : alpha base & imbalance (depth shape structure)
+        # slice 16 : alpha base & imbalance (depth shape structure)
         sample.append( self.bid_alpha_ema_norm[i] )
         sample.append( self.ask_alpha_ema_norm[i] )
         sample.append( self.alpha_imbalance_ema_norm[i] )
         sample.append( self.mean_alpha_ema_norm[i] )
 
-        # slice 16: alpha x L1 structure (holistic book pressure)                    
+        # slice 17: alpha x L1 structure (holistic book pressure)                    
         # * If L1 imbalance points up AND bid depth is thicker than ask depth, strong bullish signal.
         # * Microprice vs Depth alignment 
         # * Divergence between slope (overall linear steepness) and alpha (power-law curvature)
@@ -433,7 +442,7 @@ class PreprocessedData:
         sample.append( self.orderbook_microprice_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.orderbook_slope_ema_norm[i] - self.mean_alpha_ema_norm[i] )
 
-        # slice 17: alpha x flow & trade activity (price impact/absorption)
+        # slice 18: alpha x flow & trade activity (price impact/absorption)
         # * Trade flow hitting the alpha shape: determines expected slippage
         # * How intense trade volume interacts with the overall depth concavity
         # * Order arrival intensity against depth shape (detects liquidity replenishment speed)
@@ -441,7 +450,7 @@ class PreprocessedData:
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.mean_alpha_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 18: alpha x volatility & spread (liquidity fragility)
+        # slice 19: alpha x volatility & spread (liquidity fragility)
         # * Fragility indicator: High volatility + sparse near-touch depth (high mean alpha) = danger
         # * Directional fragility: Volatility multiplied by depth asymmetry
         # * Spread expansion risk: Wide spread + heavy imbalance in depth shape
@@ -449,7 +458,7 @@ class PreprocessedData:
         sample.append( self.ema_norm_volatility[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.spread_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 19 : trend interactions (macro vs micro divergence)
+        # slice 20 : trend interactions (macro vs micro divergence)
         # * Trend x Queue Imbalance: Does the resting liquidity support the recent trend?
         #   (Positive = continuation, Negative = divergence/reversal warning)
         # * Trend x Trade Flow Imbalance: Are aggressive market orders still pushing with the trend?
@@ -458,14 +467,12 @@ class PreprocessedData:
         sample.append( self.trends_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )                
         sample.append( self.trends_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 20: time data
+        # slice 21: copy of time data for slices 7 - 20
         sample.append( self.log_time_delta[i] )
         sample.append( self.pacing_log_ema_norm[i] )
-        age_seconds = max(0.0, base_timestamp - self.timestamp[i])
-        anchored_time_decay = math.exp(-age_seconds * self.time_decay_lambda )
         sample.append( anchored_time_decay )
 
-        # slice 21: market volatility regime
+        # slice 22: market volatility regime
         # one_hot = [0.0] * self.num_volatility_regimes
         # one_hot[self.regimes[i]] = 1.0
         # sample.extend(one_hot)
