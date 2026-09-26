@@ -10,7 +10,7 @@ from TkModules.TkTCNN import TkTCNN
 from TkModules.TkStateSpace import TkStateSpaceModule
 
 # --------------------------------------------------------------------------------------------------------------
-# Gated residual fusion
+# Gated residual fusion with explicit time decay
 # --------------------------------------------------------------------------------------------------------------
 
 class MultiHeadFusionGRF(torch.nn.Module):
@@ -37,6 +37,9 @@ class MultiHeadFusionGRF(torch.nn.Module):
         # 1.1) Context attention
         self.context_attn = torch.nn.Linear(embed_dim, 1)
 
+        # 1.2) Time decay projection
+        self.time_decay_proj = torch.nn.Linear(1, embed_dim)
+
         # 2) Multi-head self-attention across sources
         self.mha = torch.nn.MultiheadAttention(
             embed_dim=embed_dim,
@@ -58,7 +61,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
         self.norm = torch.nn.LayerNorm(embed_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, inputs, pos_encoding = None):
+    def forward(self, inputs, pos_encoding=None, time_decay=None):
 
         # 1. Project to shared embedding (Pure Data)
         projected = []
@@ -73,10 +76,17 @@ class MultiHeadFusionGRF(torch.nn.Module):
         x = torch.cat(projected, dim=1) 
 
         # 2. Create position-infused keys/queries
+        x_attn = x
         if pos_encoding is not None:
-            x_attn = x + pos_encoding.expand(x.size(0), -1, -1)
-        else:
-            x_attn = x
+            x_attn = x_attn + pos_encoding.expand(x.size(0), -1, -1)
+
+        # Inject explicit time decay into the attention keys/queries
+        if time_decay is not None:
+            N = len(inputs)
+            # Expand time_decay from (B, T, 1) to (B, N*T, 1) to align with concatenated spatial/temporal layout
+            time_decay_expanded = time_decay.repeat(1, N, 1)
+            time_emb = self.time_decay_proj(time_decay_expanded)
+            x_attn = x_attn + time_emb
 
         # 3. Build global context using pure data
         context_scores = self.context_attn(x).squeeze(-1)
@@ -90,7 +100,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
             context_attn = context
 
         # 4. Contextual attention
-        # Q = Context (with pos), K = x_attn (with pos), V = x (PURE DATA)
+        # Q = Context (with pos), K = x_attn (with pos and time decay), V = x (PURE DATA)
         attn_out, attn_weights = self.mha(context_attn, x_attn, x, need_weights=True)
 
         # Broadcast attended context back to tokens
@@ -245,6 +255,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._log_time_delta_feature_index = int(_cfg['TimeSeries']['LogTimeDeltaFeatureIndex'])
+        self._time_decay_feature_index = int(_cfg['TimeSeries']['TimeDecayFeatureIndex'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
@@ -454,6 +465,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         log_time_delta = input[:, :, self._log_time_delta_feature_index : self._log_time_delta_feature_index + 1]
         log_time_delta = log_time_delta - 4.605 # TODO: configure; 4.605 = ln(100) = ln(max_observed_time)
 
+        time_decay = input[:, :, self._time_decay_feature_index : self._time_decay_feature_index + 1]
+
         self._input_slice_tensors = []
         self._smm_output_tensors = []
 
@@ -484,7 +497,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb )
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, time_decay )
         merged = fused
 
         # monitoring feedback
