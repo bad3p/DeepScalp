@@ -42,6 +42,46 @@ class TkOrderbook():
         self.limit_down = quotation_to_decimal(orderbook.limit_down)
         self.orderbook_ts = orderbook.orderbook_ts
 
+    def __eq__(self, other):
+        """Overrides the default implementation to compare content."""
+        if not isinstance(other, TkOrderbook):
+            return False
+            
+        return (
+            self.bids == other.bids and
+            self.asks == other.asks and
+            self.close_price == other.close_price and
+            self.close_price_ts == other.close_price_ts and
+            self.last_price == other.last_price and
+            self.last_price_ts == other.last_price_ts and
+            self.limit_up == other.limit_up and
+            self.limit_down == other.limit_down and
+            self.orderbook_ts == other.orderbook_ts
+        )
+
+    def average_pool(self, other):
+
+        def pool_side(side: str, is_bids: bool):
+            # Map exact price -> total aggregated quantity
+            price_volumes = defaultdict(Decimal)
+        
+            for price, qty in getattr(self, side):
+                price_volumes[price] += qty
+            for price, qty in getattr(other, side):
+                price_volumes[price] += qty
+                
+            # Average the quantity across the N orderbooks. 
+            # (If a price was missing in an orderbook, its resting qty was 0)
+            pooled = [(price, int(total_qty / 2)) for price, total_qty in price_volumes.items()]
+        
+            # Bids sort descending (highest price first); Asks sort ascending (lowest price first)
+            pooled.sort(key=lambda x: x[0], reverse=is_bids)
+            return pooled
+
+        self.bids = pool_side('bids', is_bids=True)
+        self.asks = pool_side('asks', is_bids=False)
+
+
 #------------------------------------------------------------------------------------------------------------------------
 # Last trades wrapper
 #------------------------------------------------------------------------------------------------------------------------
@@ -66,6 +106,12 @@ class TkLastTrades():
         else:
             raise ValueError("Invalid data source!")
         
+    def __eq__(self, other):
+        """Overrides the default implementation to compare content."""
+        if not isinstance(other, TkLastTrades):
+            return False
+            
+        return ( self.trades == other.trades )
 
     def validate(self, other, start_ts:int, end_ts:int):
     
@@ -77,6 +123,12 @@ class TkLastTrades():
                     return False
 
         return True
+
+    def union_pool(self, other):
+
+        # Convert lists to sets to automatically deduplicate, then combine with '|'
+        unique_combined_trades = set(self.trades) | set(other.trades)
+        self.trades = sorted(list(unique_combined_trades), key=lambda x: x[2])
 
 
 #------------------------------------------------------------------------------------------------------------------------

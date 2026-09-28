@@ -583,3 +583,48 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         emd_mse = (cdf_q - cdf_t) ** 2
         emd_mse = emd_mse.sum(dim=-1)
         return emd_mse
+
+    @staticmethod
+    def gaussian_smoothing_1d(x: torch.Tensor, kernel_size: int, sigma: float) -> torch.Tensor:
+        """
+        Applies 1D Gaussian smoothing to a tensor of shape [B, W].
+    
+        Args:
+            x (torch.Tensor): Input one-hot or dense tensor of shape [B, W].
+            kernel_size (int): The total width of the Gaussian window (should be odd).
+            sigma (float): Standard deviation of the Gaussian distribution.
+        
+        Returns:
+            torch.Tensor: Smoothed tensor of shape [B, W].
+        """
+        # 1. Create a 1D grid centered at 0
+        radius = kernel_size // 2
+        grid = torch.arange(-radius, radius + 1, dtype=torch.float32, device=x.device)
+    
+        # 2. Compute the 1D Gaussian kernel
+        # formula: exp(-x^2 / (2 * sigma^2))
+        kernel = torch.exp(-grid**2 / (2 * sigma**2))
+        kernel = kernel / kernel.sum()  # Normalize to sum to 1
+    
+        # 3. Reshape kernel for conv1d: [out_channels, in_channels, kernel_width]
+        # We want 1 input channel and 1 output channel
+        kernel = kernel.view(1, 1, -1)
+    
+        # 4. Reshape input tensor [B, W] -> [B, C, W] where C=1
+        x_unsqueezed = x.unsqueeze(1).float()
+    
+        # 5. Apply padding to maintain the dimension W
+        # Same padding for a given kernel size is equal to the radius
+        padding_size = radius
+    
+        # 6. Perform 1D convolution
+        smoothed = torch.nn.functional.conv1d(x_unsqueezed, kernel, padding=padding_size)
+    
+        # 7. Squeeze the channel dimension back to match original shape [B, W]
+        smoothed_sq = smoothed.squeeze(1)
+        
+        # 8. Normalize the output so the sum of the spatial dimension (W) is 1
+        # 1e-8 is added to prevent division by zero for empty rows
+        normalized = smoothed_sq / (smoothed_sq.sum(dim=-1, keepdim=True) + 1e-8)
+        
+        return normalized

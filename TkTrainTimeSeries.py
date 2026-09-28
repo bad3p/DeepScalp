@@ -437,12 +437,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         target_regime = target_regime.to(cuda)
         target_regime = torch.nn.functional.one_hot(target_regime.long(), num_classes=num_volatility_regimes)
         target_regime = torch.reshape( target_regime, ( training_batch_size, num_volatility_regimes) ).float()
+        target_regime = TkTimeSeriesForecaster.gaussian_smoothing_1d( target_regime, int(num_volatility_regimes/2), 1.0 )
 
         target_trend_regime = torch.Tensor( list( itertools.chain.from_iterable(trend_regime_samples) ) )
         target_trend_regime = torch.reshape( target_trend_regime, ( training_batch_size, 1) )
         target_trend_regime = target_trend_regime.to(cuda)
         target_trend_regime = torch.nn.functional.one_hot(target_trend_regime.long(), num_classes=num_trend_regimes)
         target_trend_regime = torch.reshape( target_trend_regime, ( training_batch_size, num_trend_regimes) ).float()
+        target_trend_regime = TkTimeSeriesForecaster.gaussian_smoothing_1d( target_trend_regime, int(num_trend_regimes/2), 1.0 )
         
         data_loader.start_load_test_data()
 

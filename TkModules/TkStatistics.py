@@ -840,15 +840,15 @@ class TkStatistics():
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
             # TODO: configure
-            total_nonzero = np.count_nonzero(normalized_volume_tensor)
-            if total_nonzero > 16:
-                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(9,1.0))
-            elif total_nonzero > 8:
-                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
-            elif total_nonzero > 4:
-                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))
-            elif total_nonzero > 2:
-                normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(3,1.0))
+            #total_nonzero = np.count_nonzero(normalized_volume_tensor)
+            #if total_nonzero > 16:
+            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(9,1.0))
+            #elif total_nonzero > 8:
+            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
+            #elif total_nonzero > 4:
+            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))
+            #elif total_nonzero > 2:
+            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(3,1.0))
 
 
         volume_tensor = np.log1p( volume_tensor )

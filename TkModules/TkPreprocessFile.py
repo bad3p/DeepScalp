@@ -111,50 +111,96 @@ class PreprocessedData:
 
     @staticmethod
     def interpolate_corrupted_datetimes(dt_list: list[datetime]) -> list[datetime]:
-        if not dt_list or len(dt_list) < 2:
-            return dt_list
+        n = len(dt_list)
+        if n == 0:
+            return []
+        if n == 1:
+            return dt_list.copy()
 
-        # Step 1: Identify valid indices using a greedy left-to-right check
-        valid_indices = [0]
-        for i in range(1, len(dt_list)):
-            # A valid item must be >= the last known valid item
-            if dt_list[i] >= dt_list[valid_indices[-1]]:
-                valid_indices.append(i)
+        # Step 1: Identify valid anchor points through iterative elimination
+        valid_indices = list(range(n))
+    
+        while True:
+            to_remove = set()
+            m = len(valid_indices)
+        
+            for j in range(m):
+                idx = valid_indices[j]
+            
+                # Rule 1: Replace if lesser than previous object
+                if j > 0:
+                    prev_idx = valid_indices[j-1]
+                    if dt_list[idx] < dt_list[prev_idx]:
+                        to_remove.add(idx)
+                        continue
+            
+                # Rule 2: Replace if equal to the next object
+                if j < m - 1:
+                    next_idx = valid_indices[j+1]
+                    if dt_list[idx] == dt_list[next_idx]:
+                        to_remove.add(idx)
+                        continue
+        
+            # Stop if no elements violate the rules in the current pass
+            if not to_remove:
+                break
+            
+            valid_indices = [idx for idx in valid_indices if idx not in to_remove]
+        
+            # Fallback if the array is fully eliminated (e.g., edge cases)
+            if not valid_indices:
+                valid_indices = [0]
+                break
 
-        if( len(valid_indices) < len(dt_list) ):
-            print('Found corrupted datetime sequence, attempting to fix...')
+        # Initialize output array with the valid anchor points
+        out = [None] * n
+        for idx in valid_indices:
+            out[idx] = dt_list[idx]
 
-        fixed_list = dt_list.copy()
+        # Step 2: Interpolation & Extrapolation
+    
+        # Handle Edge Case: Only 1 valid anchor remains
+        if len(valid_indices) == 1:
+            single_idx = valid_indices[0]
+            # Fallback delta when interpolation is impossible
+            delta = timedelta(seconds=1)
+            for i in range(n):
+                out[i] = dt_list[single_idx] + delta * (i - single_idx)
+            return out
 
-        # Step 2: Interpolate missing segments between valid boundaries
+        # Interpolate gaps between valid anchors
         for k in range(len(valid_indices) - 1):
-            start_idx = valid_indices[k]
-            end_idx = valid_indices[k + 1]
-            missing_count = end_idx - start_idx - 1
-
-            if missing_count > 0:
-                time_diff = fixed_list[end_idx] - fixed_list[start_idx]
-                # timedelta objects in Python can be directly divided by integers
-                step = time_diff / (missing_count + 1)
-
-                for j in range(1, missing_count + 1):
-                    fixed_list[start_idx + j] = fixed_list[start_idx] + (step * j)
-
-        # Step 3: Extrapolate if trailing elements are corrupted
+            i1 = valid_indices[k]
+            i2 = valid_indices[k+1]
+            dt1 = out[i1]
+            dt2 = out[i2]
+        
+            delta = (dt2 - dt1) / (i2 - i1)
+        
+            for i in range(i1 + 1, i2):
+                out[i] = dt1 + delta * (i - i1)
+            
+        # Extrapolate leading invalid objects backwards
+        first_valid = valid_indices[0]
+        if first_valid > 0:
+            i1 = valid_indices[0]
+            i2 = valid_indices[1]
+            delta = (out[i2] - out[i1]) / (i2 - i1)
+        
+            for i in range(first_valid):
+                out[i] = out[i1] + delta * (i - i1)
+            
+        # Extrapolate trailing invalid objects forwards
         last_valid = valid_indices[-1]
-        if last_valid < len(fixed_list) - 1:
-            # Determine a trend using the last two valid anchors, if available
-            if len(valid_indices) >= 2:
-                ref_start = valid_indices[-2]
-                ref_end = valid_indices[-1]
-                avg_step = (fixed_list[ref_end] - fixed_list[ref_start]) / (ref_end - ref_start)
-            else:
-                avg_step = timedelta(seconds=0) # Fallback if only 1 valid item exists
+        if last_valid < n - 1:
+            i1 = valid_indices[-2]
+            i2 = valid_indices[-1]
+            delta = (out[i2] - out[i1]) / (i2 - i1)
+        
+            for i in range(last_valid + 1, n):
+                out[i] = out[i2] + delta * (i - i2)
 
-            for j in range(last_valid + 1, len(fixed_list)):
-                fixed_list[j] = fixed_list[j - 1] + avg_step
-
-        return fixed_list
+        return out
 
     @staticmethod
     def fix_corrupted_datetimes(raw_samples:list):
@@ -199,11 +245,13 @@ class PreprocessedData:
             curr_ts = raw_samples[i*2].orderbook_ts
             self.timestamp[i] = raw_samples[i*2].orderbook_ts.timestamp()
             self.time_delta[i] = (curr_ts - prev_ts).total_seconds()            
-            if self.time_delta[i] < 0:
+            if self.time_delta[i] <= 0:
                 raise ValueError("Invalid time_delta!")
+        self.time_delta[0] = sum(self.time_delta) / len(self.time_delta)
+        print( 'Average delta time:',self.time_delta[0],' Max delta time:', max(self.time_delta))
 
         # Log-scaled time delta for immediate micro-burst detection
-        self.log_time_delta = [math.log(1.0 + td) for td in self.time_delta]            
+        self.log_time_delta = [math.log(td) for td in self.time_delta]
 
         # Normalized pacing: is the market acting faster or slower than recent history?
         self.pacing_log_ema_norm = TkStatistics.irregular_log_ema_normalize( self.time_delta, self.time_delta, half_life=fast_ema_half_life ).tolist()
@@ -348,14 +396,10 @@ class PreprocessedData:
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 60 # sizeof quant_sample
+        return 57 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
-
-        # age and decay
-        age_seconds = max(0.0, base_timestamp - self.timestamp[i])
-        anchored_time_decay = math.exp(-age_seconds * self.time_decay_lambda )
 
         # slice 1 : price, volatility and trend
         sample.append( self.price_change_log_ema_norm[i] )
@@ -383,58 +427,53 @@ class PreprocessedData:
         sample.append( self.queue_depletion_imbalance_log_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] )
 
-        # slice 6: copy of time data for grouping with slices 1 - 5
-        sample.append( self.log_time_delta[i] )
-        sample.append( self.pacing_log_ema_norm[i] )
-        sample.append( anchored_time_decay )
-
-        # slice 7 : price x liquidity / Spread
+        # slice 6 : price x liquidity / Spread
         sample.append( self.price_change_log_ema_norm[i] * self.spread_log_ema_norm[i] )
         sample.append( self.ema_norm_volatility[i] * self.spread_log_ema_norm[i] )
         sample.append( self.price_change_log_ema_norm[i] * self.orderbook_log_ema_norm_volume[i] )
 
-        # slice 8 : price x orderbook structure
+        # slice 7 : price x orderbook structure
         sample.append( self.price_change_log_ema_norm[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.orderbook_microprice_ema_norm[i] - self.price_change_log_ema_norm[i] )
         sample.append( self.orderbook_slope_ema_norm[i] * self.price_change_log_ema_norm[i] )
 
-        # slice 9 : liquidity x orderbook structure
+        # slice 8 : liquidity x orderbook structure
         sample.append( self.spread_log_ema_norm[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.orderbook_log_ema_norm_volume[i] * self.orderbook_slope_ema_norm[i] )
 
-        # slice 10 : trade activity ? liquidity
+        # slice 9 : trade activity ? liquidity
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.spread_log_ema_norm[i] )
         sample.append( self.last_trades_log_ema_norm_num_events[i] * self.orderbook_log_ema_norm_volume[i] )
         sample.append( self.queue_depletion_intensity_log_ema_norm[i] * self.spread_log_ema_norm[i] )
 
-        # slice 11 : trade Activity x orderbook structure
+        # slice 10 : trade Activity x orderbook structure
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.queue_imbalance_ema_norm[i] )
         sample.append( self.order_arrival_intensity_log_ema_norm[i] * self.orderbook_slope_ema_norm[i] )
         sample.append( self.queue_depletion_intensity_log_ema_norm[i] * self.orderbook_microprice_ema_norm[i] )
 
-        # slice 12 : flow imbalance x price
+        # slice 11 : flow imbalance x price
         sample.append( self.price_change_log_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.price_change_log_ema_norm[i] * self.cumulative_order_flow_imbalance_log_ema_norm[i] )
 
-        # slice 13 : flow imbalance x orderbook
+        # slice 12 : flow imbalance x orderbook
         sample.append( self.queue_imbalance_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.orderbook_microprice_ema_norm[i] * self.cumulative_order_flow_imbalance_log_ema_norm[i] )
 
-        # slice 14 : flow imbalance x trade activity
+        # slice 13 : flow imbalance x trade activity
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.trade_flow_imbalance_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] * self.last_trades_log_ema_norm_num_events[i] )
 
-        # slice 15 : higher order nonlinear interactions
+        # slice 14 : higher order nonlinear interactions
         sample.append( self.spread_log_ema_norm[i] * self.ema_norm_volatility[i] * self.queue_depletion_intensity_log_ema_norm[i] )
         sample.append( self.queue_imbalance_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] * self.orderbook_microprice_ema_norm[i] )
 
-        # slice 16 : alpha base & imbalance (depth shape structure)
+        # slice 15 : alpha base & imbalance (depth shape structure)
         sample.append( self.bid_alpha_ema_norm[i] )
         sample.append( self.ask_alpha_ema_norm[i] )
         sample.append( self.alpha_imbalance_ema_norm[i] )
         sample.append( self.mean_alpha_ema_norm[i] )
 
-        # slice 17: alpha x L1 structure (holistic book pressure)                    
+        # slice 16: alpha x L1 structure (holistic book pressure)                    
         # * If L1 imbalance points up AND bid depth is thicker than ask depth, strong bullish signal.
         # * Microprice vs Depth alignment 
         # * Divergence between slope (overall linear steepness) and alpha (power-law curvature)
@@ -442,7 +481,7 @@ class PreprocessedData:
         sample.append( self.orderbook_microprice_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.orderbook_slope_ema_norm[i] - self.mean_alpha_ema_norm[i] )
 
-        # slice 18: alpha x flow & trade activity (price impact/absorption)
+        # slice 17: alpha x flow & trade activity (price impact/absorption)
         # * Trade flow hitting the alpha shape: determines expected slippage
         # * How intense trade volume interacts with the overall depth concavity
         # * Order arrival intensity against depth shape (detects liquidity replenishment speed)
@@ -450,7 +489,7 @@ class PreprocessedData:
         sample.append( self.last_trades_log_ema_norm_volume[i] * self.mean_alpha_ema_norm[i] )
         sample.append( self.order_arrival_imbalance_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 19: alpha x volatility & spread (liquidity fragility)
+        # slice 18: alpha x volatility & spread (liquidity fragility)
         # * Fragility indicator: High volatility + sparse near-touch depth (high mean alpha) = danger
         # * Directional fragility: Volatility multiplied by depth asymmetry
         # * Spread expansion risk: Wide spread + heavy imbalance in depth shape
@@ -458,7 +497,7 @@ class PreprocessedData:
         sample.append( self.ema_norm_volatility[i] * self.alpha_imbalance_ema_norm[i] )
         sample.append( self.spread_log_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 20 : trend interactions (macro vs micro divergence)
+        # slice 19 : trend interactions (macro vs micro divergence)
         # * Trend x Queue Imbalance: Does the resting liquidity support the recent trend?
         #   (Positive = continuation, Negative = divergence/reversal warning)
         # * Trend x Trade Flow Imbalance: Are aggressive market orders still pushing with the trend?
@@ -467,17 +506,58 @@ class PreprocessedData:
         sample.append( self.trends_ema_norm[i] * self.trade_flow_imbalance_ema_norm[i] )                
         sample.append( self.trends_ema_norm[i] * self.alpha_imbalance_ema_norm[i] )
 
-        # slice 21: copy of time data for slices 7 - 20
+        # slice 20: copy of time data for slices 7 - 20
+        # age and decay
+        age_seconds = max(0.0, base_timestamp - self.timestamp[i])
+        anchored_time_decay = math.exp(-age_seconds * self.time_decay_lambda )
         sample.append( self.log_time_delta[i] )
         sample.append( self.pacing_log_ema_norm[i] )
         sample.append( anchored_time_decay )
 
-        # slice 22: market volatility regime
+        # slice 21: market volatility regime
         # one_hot = [0.0] * self.num_volatility_regimes
         # one_hot[self.regimes[i]] = 1.0
         # sample.extend(one_hot)
 
         return sample
+
+#------------------------------------------------------------------------------------------------------------------------
+# Try aferage pool of the duplicated elements in the given raw samples
+#------------------------------------------------------------------------------------------------------------------------
+
+def try_average_pool_duplicates(raw_samples:list):
+
+    raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
+
+    for i in range( raw_sample_count-1, -1, -1):
+
+        curr_orderbook = raw_samples[i*2]
+        curr_trades = raw_samples[i*2+1]
+        curr_ts = curr_orderbook.orderbook_ts
+
+        prev_orderbook = raw_samples[(i-1)*2]
+        prev_trades = raw_samples[(i-1)*2+1]
+        prev_ts = prev_orderbook.orderbook_ts
+
+        time_delta = (curr_ts - prev_ts).total_seconds()
+
+        if time_delta == 0:
+
+            if prev_orderbook != curr_orderbook:
+                prev_orderbook.average_pool( curr_orderbook )
+
+            if prev_trades != curr_trades:
+                prev_trades.union_pool( curr_trades )
+
+            del raw_samples[i*2+1]
+            del raw_samples[i*2]
+
+    num_pooled_samples = raw_sample_count - int( len(raw_samples) / 2 )
+
+    if num_pooled_samples > 0:
+        print( 'Found & pooled', num_pooled_samples, 'duplicated samples' )
+
+            
 
 #------------------------------------------------------------------------------------------------------------------------
 # Preprocessing for training, adopted for MP
@@ -517,6 +597,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
+        #try_average_pool_duplicates( raw_samples )
 
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -635,6 +716,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
+        #try_average_pool_duplicates( raw_samples )
 
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
