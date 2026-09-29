@@ -248,7 +248,7 @@ class PreprocessedData:
             if self.time_delta[i] <= 0:
                 raise ValueError("Invalid time_delta!")
         self.time_delta[0] = sum(self.time_delta) / len(self.time_delta)
-        print( 'Average delta time:',self.time_delta[0],' Max delta time:', max(self.time_delta))
+        #print( 'Average delta time:',self.time_delta[0],' Max delta time:', max(self.time_delta))
 
         # Log-scaled time delta for immediate micro-burst detection
         self.log_time_delta = [math.log(td) for td in self.time_delta]
@@ -601,6 +601,9 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
+        num_priority_samples = 0
+        num_ordinary_samples = 0
+
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
             data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
@@ -671,12 +674,18 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 ts_target_left_tail = future_trades_tails[i][0]
                 ts_target_right_tail = future_trades_tails[i][1]
                 is_priority_sample = ( ts_target_left_tail <= -priority_tail_threshold ) or ( ts_target_right_tail >= priority_tail_threshold )
+
+                ts_is_priority_sample = 1.0 if is_priority_sample else 0.0 
                 
                 if (step-1) % ts_data_stride == 0 or is_priority_sample or is_test_data_source:
-                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime], is_priority_sample, is_test_data_source, False) )
+                    if is_priority_sample:
+                        num_priority_samples = num_priority_samples + 1
+                    else:
+                        num_ordinary_samples = num_ordinary_samples + 1
+                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     
-    output_queue.put( (pid, [0], False, is_test_data_source, True) )
+    output_queue.put( (pid, [num_priority_samples, num_ordinary_samples, raw_sample_count], False, is_test_data_source, True) )
 
     quit(0)
 

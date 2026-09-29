@@ -85,6 +85,7 @@ if __name__ == "__main__":
     
     data_extension = config['Paths']['MarketDataFileExtension']
     test_data_ratio = float(config['TimeSeries']['TestDataRatio'])
+    data_stride = float(config['TimeSeries']['TSDataStride'])
 
     if ( os.path.isfile( join( data_path, time_series_training_data_filename)) or os.path.isfile( join( data_path, time_series_test_data_filename)) ):
         raise RuntimeError('Preprocessed data already exists! Delete it manually.')
@@ -170,6 +171,10 @@ if __name__ == "__main__":
         max_queue_size = 2048
         max_queue_fetch_steps = int( max_queue_size / max_num_processes )
 
+        num_samples = 0
+        num_priority_samples = 0
+        num_ordinary_samples = 0
+
         output_queue = mp.Queue( maxsize=max_queue_size )
         processes = []
 
@@ -236,6 +241,10 @@ if __name__ == "__main__":
                     is_test_data_source = tuple[3]
                     done = tuple[4]
                     if done:
+                        statistics = sample # process will return statistics instead of sample when processing is done
+                        num_priority_samples = num_priority_samples + statistics[0]
+                        num_ordinary_samples = num_ordinary_samples + statistics[1]
+                        num_samples = num_samples + statistics[2]
                         join_process( pid )
                     else:
                         append_sample(sample,is_priority_sample,is_test_data_source)
@@ -271,6 +280,18 @@ if __name__ == "__main__":
 
         end_time = time.time()
         print('Elapsed time:',end_time-start_time)
+
+        weight_priority = float(num_priority_samples) / num_samples
+        weight_ordinary = data_stride * float(num_ordinary_samples) / num_samples
+
+        statistics_str = 'num_samples = ' + str(num_samples) + '\n' 
+        statistics_str = statistics_str  + 'num_ordinary_samples = ' + str(num_ordinary_samples) + '\n' 
+        statistics_str = statistics_str  + 'num_priority_samples = ' + str(num_priority_samples) + '\n' 
+        statistics_str = statistics_str  + 'weight_ordinary = ' + str(weight_ordinary) + '\n' 
+        statistics_str = statistics_str  + 'weight_priority = ' + str(weight_priority) + '\n' 
+        print( statistics_str )
+        with open("training_set_statistics.txt", "w", encoding="utf-8") as f:
+            print( statistics_str, file=f )
     
         dpg.set_value("filename", '...all is done!')
         dpg.render_dearpygui_frame()
