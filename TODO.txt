@@ -22,4 +22,6 @@
  [x] Add label smoothing to auxiliary MLP targets and remove label smoothing from main target
  [x] Pool or interpolate duplicated samples during training and inference based on timestamp.
  [x] Use fair weights for ordinary and priority samples filtered from the training set.
- [ ] Use Continuous-Time ALiBi (Modifying the Attention Matrix) instead of injecting anchored time decay into attention mechanism
+ [x] Use Continuous-Time ALiBi (Modifying the Attention Matrix) instead of injecting anchored time decay into attention mechanism
+ [x] Remove spatial/source embedding from MHA since it could cause cross-correlations to be learned
+ [ ] Try EMA normalization as a part of the model forward pass with learnable time decay parameters.

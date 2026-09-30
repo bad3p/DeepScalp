@@ -10,8 +10,10 @@ from TkModules.TkTCNN import TkTCNN
 from TkModules.TkStateSpace import TkStateSpaceModule
 
 # --------------------------------------------------------------------------------------------------------------
-# Gated residual fusion with explicit time decay
+# Gated residual fusion with Continuous-Time ALiBi
 # --------------------------------------------------------------------------------------------------------------
+
+import torch
 
 class MultiHeadFusionGRF(torch.nn.Module):
     def __init__(
@@ -28,19 +30,25 @@ class MultiHeadFusionGRF(torch.nn.Module):
 
         self.pooling = pooling
         self.num_sources = len(input_dims)
+        self.num_heads = num_heads
 
         # 1) Project heterogeneous inputs
         self.projections = torch.nn.ModuleList([
             torch.nn.Linear(d, embed_dim) for d in input_dims
         ])
 
-        # 1.1) Context attention
+        # 1.1) Context attention[cite: 1]
         self.context_attn = torch.nn.Linear(embed_dim, 1)
 
-        # 1.2) Time decay projection
-        self.time_decay_proj = torch.nn.Linear(1, embed_dim)
+        # 1.2) Pre-compute Continuous-Time ALiBi slopes
+        # Slopes follow a geometric sequence: m = 2^(-8/num_heads * i)
+        slopes = torch.tensor(
+            [2 ** (-4 * i / num_heads) for i in range(1, num_heads + 1)], # 8 -> 4
+            dtype=torch.float32
+        )
+        self.register_buffer("alibi_slopes", slopes)
 
-        # 2) Multi-head self-attention across sources
+        # 2) Multi-head self-attention across sources[cite: 1]
         self.mha = torch.nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -48,81 +56,95 @@ class MultiHeadFusionGRF(torch.nn.Module):
             batch_first=True
         )
 
-        # 3) Gated residual fusion
+        # 3) Gated residual fusion[cite: 1]
         self.gate = torch.nn.Sequential(
             torch.nn.Linear(embed_dim * 2, embed_dim),
             torch.nn.Sigmoid()
         )
 
-        # 4) Pooling
+        # 4) Pooling[cite: 1]
         if pooling == "attn":
             self.pool_attn = torch.nn.Linear(embed_dim, 1)
 
         self.norm = torch.nn.LayerNorm(embed_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, inputs, pos_encoding=None, time_decay=None):
+    def forward(self, inputs, pos_encoding=None, log_time_delta=None):
 
-        # 1. Project to shared embedding (Pure Data)
+        # 1. Project to shared embedding (Pure Data)[cite: 1]
         projected = []
         for proj, h in zip(self.projections, inputs):
             p = proj(h)
-            # If input is (B, D), make it (B, 1, D). If it's (B, T, D), leave it.
             if p.dim() == 2:
                 p = p.unsqueeze(1)
             projected.append(p)
             
-        # Concatenate along the sequence dimension: (B, N*T, D)
+        # Concatenate along the sequence dimension: (B, N*T, D)[cite: 1]
         x = torch.cat(projected, dim=1) 
 
-        # 2. Create position-infused keys/queries
+        # 2. Create position-infused keys/queries[cite: 1]
         x_attn = x
         if pos_encoding is not None:
             x_attn = x_attn + pos_encoding.expand(x.size(0), -1, -1)
 
-        # Inject explicit time decay into the attention keys/queries
-        if time_decay is not None:
-            N = len(inputs)
-            # Expand time_decay from (B, T, 1) to (B, N*T, 1) to align with concatenated spatial/temporal layout
-            time_decay_expanded = time_decay.repeat(1, N, 1)
-            time_emb = self.time_decay_proj(time_decay_expanded)
-            x_attn = x_attn + time_emb
-
-        # 3. Build global context using pure data
+        # 3. Build global context using pure data[cite: 1]
         context_scores = self.context_attn(x).squeeze(-1)
         context_weights = torch.softmax(context_scores, dim=1)
         context = torch.sum(x * context_weights.unsqueeze(-1), dim=1, keepdim=True)
         
-        # (Optional) Inject position into the context if you want the query to know "where" it came from
         if pos_encoding is not None:
-            context_attn = context + pos_encoding.mean(dim=1, keepdim=True) # or a learned global pos
+            context_attn = context + pos_encoding.mean(dim=1, keepdim=True) 
         else:
             context_attn = context
 
-        # 4. Contextual attention
-        # Q = Context (with pos), K = x_attn (with pos and time decay), V = x (PURE DATA)
-        attn_out, attn_weights = self.mha(context_attn, x_attn, x, need_weights=True)
+        # 4. Continuous-Time ALiBi Attention Mask
+        attn_mask = None
+        if log_time_delta is not None:
+            B = x.size(0)
+            N = self.num_sources
+            
+            # Convert log time delta back to continuous temporal distance
+            time_distance = torch.exp(log_time_delta) # (B, T, 1)
+            
+            # Expand to match concatenated N sources: (B, N*T)
+            time_distance = time_distance.repeat(1, N, 1).squeeze(-1)
+            
+            # Apply geometric slopes to the temporal distance
+            # Shape: (B, num_heads, N*T)
+            alibi_bias = -self.alibi_slopes.view(1, -1, 1) * time_distance.unsqueeze(1)
+            
+            # Reshape to expected MultiheadAttention mask shape: (B * num_heads, L, S)
+            # L = 1 (context query), S = N*T (keys)
+            attn_mask = alibi_bias.view(B * self.num_heads, 1, x.size(1))
 
-        # Broadcast attended context back to tokens
-        attn_out = attn_out.expand(-1, x.size(1), -1)  # (B, N, D)
+        # 5. Contextual attention
+        # Q = Context, K = x_attn, V = x[cite: 1]
+        attn_out, attn_weights = self.mha(
+            context_attn, 
+            x_attn, 
+            x, 
+            need_weights=True,
+            attn_mask=attn_mask
+        )
 
-        # 5. Gated residual fusion (using pure data for the residual)
-        gate_input = torch.cat([x, attn_out], dim=-1)  # (B, N, 2D)
-        g = self.gate(gate_input)                      # (B, N, D)
+        # Broadcast attended context back to tokens[cite: 1]
+        attn_out = attn_out.expand(-1, x.size(1), -1)
+
+        # 6. Gated residual fusion[cite: 1]
+        gate_input = torch.cat([x, attn_out], dim=-1)
+        g = self.gate(gate_input)                     
 
         fused_tokens = g * attn_out + (1.0 - g) * x
 
-        # Normalize & Dropout
+        # Normalize & Dropout[cite: 1]
         fused_tokens = self.norm(fused_tokens)
         fused_tokens = self.dropout(fused_tokens)
 
-        # Pool across inputs
+        # Pool across inputs[cite: 1]
         if self.pooling == "mean":
             fused = fused_tokens.mean(dim=1)
-
         elif self.pooling == "max":
             fused, _ = fused_tokens.max(dim=1)
-
         elif self.pooling == "attn":
             scores = self.pool_attn(fused_tokens).squeeze(-1)
             weights = torch.softmax(scores, dim=1)
@@ -130,7 +152,6 @@ class MultiHeadFusionGRF(torch.nn.Module):
                 fused_tokens * weights.unsqueeze(-1),
                 dim=1
             )
-
         else:
             raise ValueError(f"Unknown pooling: {self.pooling}")
 
@@ -255,7 +276,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._target_width = int(_cfg['Autoencoders']['LastTradesWidth']) 
         self._input_slices = json.loads(_cfg['TimeSeries']['InputSlices'])
         self._log_time_delta_feature_index = int(_cfg['TimeSeries']['LogTimeDeltaFeatureIndex'])
-        self._time_decay_feature_index = int(_cfg['TimeSeries']['TimeDecayFeatureIndex'])
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
@@ -270,7 +290,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             raise RuntimeError('InputSlices and SMM config mismatched!')
         
         self._source_pos_embedding = torch.nn.Parameter( torch.randn(1, len(self._input_slices), self._fusion_embedding_dims) * 0.02 )
-        self._temporal_pos_embedding = torch.nn.Parameter( torch.randn(1, self._prior_steps_count, self._fusion_embedding_dims) * 0.02 )
         
         self._fusion_input_dims = []
 
@@ -329,7 +348,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         # enforce gate bias
         with torch.no_grad():
-            self._fusion.gate[0].bias.fill_(-2.0)
+            self._fusion.gate[0].bias.fill_(0.0) # -2.0
 
         # reinitialize MLP weights
         for m in self._mlp.modules():
@@ -362,7 +381,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         mlp_no_decay_params = []
 
         fusion_decay_params = [ ]
-        fusion_no_decay_params = [ self._source_pos_embedding, self._temporal_pos_embedding ]
+        fusion_no_decay_params = [ self._source_pos_embedding ]
 
         for name, param in self._embedding.named_parameters():
             if not param.requires_grad:
@@ -465,8 +484,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         log_time_delta = input[:, :, self._log_time_delta_feature_index : self._log_time_delta_feature_index + 1]
         log_time_delta = log_time_delta - 4.605 # TODO: configure; 4.605 = ln(100) = ln(max_observed_time)
 
-        time_decay = input[:, :, self._time_decay_feature_index : self._time_decay_feature_index + 1]
-
         self._input_slice_tensors = []
         self._smm_output_tensors = []
 
@@ -488,16 +505,18 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             x = self._smm_norm[i][-1]( x )
             self._smm_output_tensors.append( x )
 
-        #  Combine Spatial (Source) and Temporal Positional Encodings
-        # _source_pos: (1, N, D) -> (1, N, 1, D)
-        # _temporal_pos: (1, T, D) -> (1, 1, T, D)
-        # Broadcasting adds them to (1, N, T, D), then view flattens to (1, N*T, D)
-        pos_emb = self._source_pos_embedding.unsqueeze(2) + self._temporal_pos_embedding.unsqueeze(1)
-        pos_emb = pos_emb.view(1, -1, self._fusion_embedding_dims)
+        # Add dummy temporal dimension: (1, N, D) -> (1, N, 1, D)
+        # Expand it identically across all T time steps: (1, N, T, D)
+        T = self._prior_steps_count
+        N = len(self._input_slices)
+        pos_emb = self._source_pos_embedding.unsqueeze(2).expand(1, N, T, self._fusion_embedding_dims)
+
+        # Flatten N and T together to perfectly match the fusion layer's (B, N*T, D) shape
+        pos_emb = pos_emb.reshape(1, N * T, self._fusion_embedding_dims)
 
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, time_decay )
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, log_time_delta )
         merged = fused
 
         # monitoring feedback
