@@ -37,10 +37,10 @@ class MultiHeadFusionGRF(torch.nn.Module):
             torch.nn.Linear(d, embed_dim) for d in input_dims
         ])
 
-        # 1.1) Context attention[cite: 1]
+        # Context attention
         self.context_attn = torch.nn.Linear(embed_dim, 1)
 
-        # 1.2) Pre-compute Continuous-Time ALiBi slopes
+        # Pre-compute Continuous-Time ALiBi slopes
         # Slopes follow a geometric sequence: m = 2^(-8/num_heads * i)
         slopes = torch.tensor(
             [2 ** (-4 * i / num_heads) for i in range(1, num_heads + 1)], # 8 -> 4
@@ -48,7 +48,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
         )
         self.register_buffer("alibi_slopes", slopes)
 
-        # 2) Multi-head self-attention across sources[cite: 1]
+        # Multi-head self-attention across sources
         self.mha = torch.nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -56,13 +56,13 @@ class MultiHeadFusionGRF(torch.nn.Module):
             batch_first=True
         )
 
-        # 3) Gated residual fusion[cite: 1]
+        # Gated residual fusion
         self.gate = torch.nn.Sequential(
             torch.nn.Linear(embed_dim * 2, embed_dim),
             torch.nn.Sigmoid()
         )
 
-        # 4) Pooling[cite: 1]
+        # Pooling
         if pooling == "attn":
             self.pool_attn = torch.nn.Linear(embed_dim, 1)
 
@@ -71,7 +71,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
 
     def forward(self, inputs, pos_encoding=None, log_time_delta=None):
 
-        # 1. Project to shared embedding (Pure Data)[cite: 1]
+        # Project to shared embedding (Pure Data)
         projected = []
         for proj, h in zip(self.projections, inputs):
             p = proj(h)
@@ -79,15 +79,15 @@ class MultiHeadFusionGRF(torch.nn.Module):
                 p = p.unsqueeze(1)
             projected.append(p)
             
-        # Concatenate along the sequence dimension: (B, N*T, D)[cite: 1]
+        # Concatenate along the sequence dimension: (B, N*T, D)
         x = torch.cat(projected, dim=1) 
 
-        # 2. Create position-infused keys/queries[cite: 1]
+        # Create position-infused keys/queries
         x_attn = x
         if pos_encoding is not None:
             x_attn = x_attn + pos_encoding.expand(x.size(0), -1, -1)
 
-        # 3. Build global context using pure data[cite: 1]
+        # Build global context using pure data
         context_scores = self.context_attn(x).squeeze(-1)
         context_weights = torch.softmax(context_scores, dim=1)
         context = torch.sum(x * context_weights.unsqueeze(-1), dim=1, keepdim=True)
@@ -97,7 +97,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
         else:
             context_attn = context
 
-        # 4. Continuous-Time ALiBi Attention Mask
+        # Continuous-Time ALiBi Attention Mask
         attn_mask = None
         if log_time_delta is not None:
             B = x.size(0)
@@ -117,8 +117,8 @@ class MultiHeadFusionGRF(torch.nn.Module):
             # L = 1 (context query), S = N*T (keys)
             attn_mask = alibi_bias.view(B * self.num_heads, 1, x.size(1))
 
-        # 5. Contextual attention
-        # Q = Context, K = x_attn, V = x[cite: 1]
+        # Contextual attention
+        # Q = Context, K = x_attn, V = x
         attn_out, attn_weights = self.mha(
             context_attn, 
             x_attn, 
@@ -127,20 +127,20 @@ class MultiHeadFusionGRF(torch.nn.Module):
             attn_mask=attn_mask
         )
 
-        # Broadcast attended context back to tokens[cite: 1]
+        # Broadcast attended context back to tokens
         attn_out = attn_out.expand(-1, x.size(1), -1)
 
-        # 6. Gated residual fusion[cite: 1]
+        # Gated residual fusion
         gate_input = torch.cat([x, attn_out], dim=-1)
         g = self.gate(gate_input)                     
 
         fused_tokens = g * attn_out + (1.0 - g) * x
 
-        # Normalize & Dropout[cite: 1]
+        # Normalize & Dropout
         fused_tokens = self.norm(fused_tokens)
         fused_tokens = self.dropout(fused_tokens)
 
-        # Pool across inputs[cite: 1]
+        # Pool across inputs
         if self.pooling == "mean":
             fused = fused_tokens.mean(dim=1)
         elif self.pooling == "max":
