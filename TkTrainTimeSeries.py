@@ -252,6 +252,7 @@ target_true_depth = int(config['Autoencoders']['LastTradesDepth'])
 input_slices = json.loads(config['TimeSeries']['InputSlices'])
 display_slice = int(config['TimeSeries']['DisplaySlice'])
 training_batch_size = int(config['TimeSeries']['TrainingBatchSize'])
+ema_norm_learning_rate = float(config['TimeSeries']['EMANormLearningRate'])
 embedding_learning_rate = float(config['TimeSeries']['EmbeddingLearningRate'])
 smm_learning_rate = float(config['TimeSeries']['SMMLearningRate'])
 smm_ev_learning_rate = float(config['TimeSeries']['SMMEVLearningRate'])
@@ -279,7 +280,7 @@ ts_model.to(cuda)
 if os.path.isfile(ts_model_path):
     ts_model.load_state_dict(torch.load(ts_model_path))
 ts_optimizer = torch.optim.AdamW(     
-    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate ),
+    ts_model.get_trainable_parameters(embedding_weight_decay, smm_weight_decay, fusion_weight_decay, mlp_weight_decay, embedding_learning_rate, smm_learning_rate, smm_ev_learning_rate, smm_dt_learning_rate, fusion_learning_rate, mlp_learning_rate, ema_norm_learning_rate ),
     betas=(0.9, 0.95)
 )
 if os.path.isfile(ts_optimizer_path): 
@@ -368,11 +369,16 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                 dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_input_grad" )
                 dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_input_grad" )
                 dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Log(Abs(InputGrad*Input))", parent="x_axis_input_grad", tag="input_grad" )
+            with dpg.plot(label="EMA half-life", width=384, height=256):
+                dpg.add_plot_legend()
+                dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_ema_half_file" )
+                dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_ema_half_file" )
+                dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="EMA Half-life", parent="x_axis_ema_half_file", tag="ema_half_file" )
 
     dpg.show_viewport()
     dpg.set_primary_window("primary_window", True)
 
-    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float):
+    def override_learning_rate(embedding_lr:float, smm_lr:float, smm_ev_lr:float, smm_dt_lr:float, fusion_lr:float, mlp_lr:float, ema_lr:float):
         global ts_model
         global ts_optimizer
         for i in ts_model.embedding_group_indices():
@@ -387,6 +393,8 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
             ts_optimizer.param_groups[i]['lr'] = mlp_lr
         for i in ts_model.fusion_group_indices():
             ts_optimizer.param_groups[i]['lr'] = fusion_lr
+        for i in ts_model.ema_group_indices():
+            ts_optimizer.param_groups[i]['lr'] = ema_lr            
 
     def override_weight_decay(embedding_decay:float, smm_decay:float, fusion_decay:float, mlp_decay:float):
         global ts_model
@@ -408,13 +416,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     while dpg.is_dearpygui_running():
 
         lr_multiplier = learning_rate_multiplier.get_value( ts_smooth_epoch )
+        ema_lr = ema_norm_learning_rate * lr_multiplier
         embedding_lr = embedding_learning_rate * lr_multiplier
         smm_lr = smm_learning_rate * lr_multiplier
         smm_ev_lr = smm_ev_learning_rate * lr_multiplier
         smm_dt_lr = smm_dt_learning_rate * lr_multiplier
         fusion_lr = fusion_learning_rate.get_value( ts_smooth_epoch ) * lr_multiplier
         mlp_lr = mlp_learning_rate * lr_multiplier
-        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr )
+        override_learning_rate( embedding_lr, smm_lr, smm_ev_lr, smm_dt_lr, fusion_lr, mlp_lr, ema_lr )
 
         decay_multiplier = weight_decay_multiplier.get_value( ts_smooth_epoch )
         embedding_decay = embedding_weight_decay * decay_multiplier
@@ -519,6 +528,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input_grad_mean = torch.log(input_grad_mean)
 
         TkUI.set_series_from_tensor("x_axis_input_grad", "y_axis_input_grad", "input_grad", input_grad_mean, 0)
+        TkUI.set_series("x_axis_ema_half_file", "y_axis_ema_half_file", "ema_half_file", ts_model.ema_half_life())
 
         dpg.render_dearpygui_frame()
 
@@ -619,4 +629,6 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
     ts_training_history.save()
     torch.save( ts_model.state_dict(), ts_model_path )
     torch.save( ts_optimizer.state_dict(), ts_optimizer_path )    
+
+    print( ts_model.ema_half_life() )
 

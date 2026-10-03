@@ -1,4 +1,4 @@
-
+import math
 import configparser
 import torch
 import json
@@ -8,6 +8,7 @@ from TkModules.TkStackedLSTM import TkStackedLSTM
 from TkModules.TkSelfAttention import TkSelfAttention
 from TkModules.TkTCNN import TkTCNN
 from TkModules.TkStateSpace import TkStateSpaceModule
+
 
 # --------------------------------------------------------------------------------------------------------------
 # Gated residual fusion with Continuous-Time ALiBi
@@ -258,6 +259,92 @@ class ScalarGroupEmbedding(torch.nn.Module):
         return x
 
 # --------------------------------------------------------------------------------------------------------------
+# Continuous EMA Norm module with trainable half-life
+# --------------------------------------------------------------------------------------------------------------
+
+class ParallelContinuousEMANorm(torch.nn.Module):
+    def __init__(self, num_features, eps=1e-5, init_time_constants=None):
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+        
+        if init_time_constants is not None:
+            tau = torch.tensor(init_time_constants, dtype=torch.float32)
+            target_lambdas = 1.0 / tau
+            if target_lambdas.dim() == 0:
+                target_lambdas = target_lambdas.expand(num_features)
+        else:
+            target_lambdas = torch.full((num_features,), math.log(2.0))
+            
+        w_init = torch.log(torch.exp(target_lambdas) - 1.0)
+        self.w = torch.nn.Parameter(w_init)
+        
+        self.gamma = torch.nn.Parameter(torch.ones(num_features))
+        self.beta = torch.nn.Parameter(torch.zeros(num_features))
+
+    def _parallel_scan(self, u, lam_T):
+        """
+        Computes the parallel prefix sum in log-space for strictly non-negative inputs.
+        """
+        # Clamp strictly above 0 to prevent NaN gradients in backward pass
+        # The backward pass of clamp_min safely assigns a 0 gradient for inputs < 1e-12
+        u_clamped = u.clamp_min(1e-12)
+        
+        # Directly compute log. We no longer inject -inf for 0-values.
+        log_u = torch.log(u_clamped)
+        
+        # Parallel cumulative sum in log space: log( sum( exp(lam_T + log_u) ) )
+        scan = torch.logcumsumexp(lam_T + log_u, dim=1)
+        
+        # Multiply by exp(-lambda * T) by subtracting in log space, then exponentiate
+        return torch.exp(scan - lam_T)
+
+    def forward(self, x, dt, init_mu=None, init_var=None):
+        batch_size, seq_len, _ = x.shape
+        
+        # Reshape lambdas for broadcasting: (1, 1, num_features)
+        lambdas = torch.nn.functional.softplus(self.w).view(1, 1, -1)
+        
+        # Cumulative time vector T_t
+        T = torch.cumsum(dt, dim=1)
+        lam_T = lambdas * T
+        
+        # Decay factor for current step: alpha_t
+        alpha = torch.exp(-lambdas * dt)
+        
+        # --- 1. PARALLEL MEAN SCAN ---
+        u = (1 - alpha) * x
+        
+        # We must split 'u' into positive and negative streams because log(-x) is undefined
+        mu_pos = self._parallel_scan(torch.relu(u), lam_T)
+        mu_neg = self._parallel_scan(torch.relu(-u), lam_T)
+        mu = mu_pos - mu_neg
+        
+        # Apply the initial mean state decay
+        if init_mu is None:
+            init_mu = x[:, 0, :]
+        mu = mu + init_mu.unsqueeze(1) * torch.exp(-lam_T)
+        
+        # --- 2. PARALLEL VARIANCE SCAN ---
+        # With mu computed for all 't', variance v_t is just another non-negative scan
+        v = (1 - alpha) * (x - mu)**2
+        var = self._parallel_scan(v, lam_T)
+        
+        if init_var is None:
+            init_var = torch.zeros_like(x[:, 0, :])
+        var = var + init_var.unsqueeze(1) * torch.exp(-lam_T)
+        
+        # --- 3. NORMALIZATION ---
+        x_norm = (x - mu) / torch.sqrt(var + self.eps)
+        x_norm = x_norm * self.gamma + self.beta
+        
+        # Extract the final hidden states for the next sequence chunk
+        final_mu = mu[:, -1, :]
+        final_var = var[:, -1, :]
+        
+        return x_norm, (final_mu, final_var)
+
+# --------------------------------------------------------------------------------------------------------------
 # Time series forecasting model
 # --------------------------------------------------------------------------------------------------------------
 
@@ -285,6 +372,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
+        self._init_ema_half_life = json.loads(_cfg['TimeSeries']['InitEMAHalfLife'])        
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -293,6 +381,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._fusion_input_dims = []
 
+        self._ema_norm = []
         self._embedding = []
         self._smm_proj = []
         self._smm = []
@@ -302,6 +391,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             ch0 = self._input_slices[i][0]
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
+
+            self._ema_norm.append( ParallelContinuousEMANorm( num_features=slice_size, eps=1e-5, init_time_constants=self._init_ema_half_life[i]) )
 
             if not self._embedding_specification[i]:
                 self._embedding.append( torch.nn.Identity() )
@@ -333,6 +424,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._mlp_input_size = self._mlp_input_size + model_size
             self._fusion_input_dims.append( model_size )
 
+        self._ema_norm = torch.nn.ModuleList( self._ema_norm )
         self._embedding = torch.nn.ModuleList( self._embedding )
         self._smm_proj = torch.nn.ModuleList( self._smm_proj )
         self._smm = torch.nn.ModuleList( self._smm )
@@ -358,7 +450,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float, ema_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
@@ -423,7 +515,11 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 fusion_no_decay_params.append(param)
 
-        # other = [ ]
+        other = []
+        for ema_norm in self._ema_norm:
+            other.append( ema_norm.w )
+            other.append( ema_norm.gamma )
+            other.append( ema_norm.beta )
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
@@ -436,7 +532,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
-            # {"params": other, "weight_decay": 0.0, 'lr': mlp_learning_rate},
+            {"params": other, "weight_decay": 0.0, 'lr': ema_learning_rate}, #10
         ]
     
     def embedding_group_indices(self):
@@ -469,6 +565,22 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def fusion_decay_group_indices(self):
         return [8]
 
+    def ema_group_indices(self):
+        return [10]
+
+    def ema_half_life(self):
+
+        result = []
+        for ema_norm in self._ema_norm:
+            w = ema_norm.w.detach()
+            w = torch.exp( w )
+            w = w + 1
+            w = torch.log( w)
+            w = 1.0 / w
+            
+            result.extend( list(w) )
+        return result
+
     def smm_output(self):
         return self._smm_output_tensors
 
@@ -482,6 +594,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         input = torch.reshape( input, ( batch_size, self._prior_steps_count, self._input_width) )
 
         log_time_delta = input[:, :, self._log_time_delta_feature_index : self._log_time_delta_feature_index + 1]
+        time_delta = torch.exp( log_time_delta )
         log_time_delta = log_time_delta - 4.605 # TODO: configure; 4.605 = ln(100) = ln(max_observed_time)
 
         self._input_slice_tensors = []
@@ -492,8 +605,12 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
             input_slice_tensor = input[:, :, ch0:ch1]
-            input_slice_tensor = self._embedding[i]( input_slice_tensor )
+
+            input_slice_tensor, _ = self._ema_norm[i]( input_slice_tensor, time_delta )
+            
             self._input_slice_tensors.append( input_slice_tensor )
+
+            input_slice_tensor = self._embedding[i]( input_slice_tensor )
             
             x = self._smm_proj[i]( input_slice_tensor )
             for ssm, norm in zip(self._smm[i], self._smm_norm[i]):
