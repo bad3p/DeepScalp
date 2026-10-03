@@ -947,46 +947,6 @@ class TkStatistics():
         return norm_sequence
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Log-transformed EMA normalization supporting irregular time steps.
-    #------------------------------------------------------------------------------------------------------------------------
-
-    @staticmethod
-    def irregular_log_ema_normalize(sequence, time_deltas, half_life=250, eps=1e-12):
-
-        sequence = np.asarray(sequence, dtype=np.float64)
-        time_deltas = np.asarray(time_deltas, dtype=np.float64)
-
-        if len(sequence) != len(time_deltas):
-            raise ValueError("sequence and time_deltas must have the same length.")
-
-        # Apply symmetric log transform
-        log_sequence = np.sign(sequence) * np.log1p(np.abs(sequence))
-
-        # Calculate dynamic alphas based on the exact time elapsed between steps
-        decay_constant = np.log(2.0) / half_life
-        alphas = 1.0 - np.exp(-decay_constant * time_deltas)
-
-        mu = np.zeros_like(log_sequence)
-        var = np.zeros_like(log_sequence)
-
-        mu[0] = log_sequence[0]
-        var[0] = 0.0
-
-        for t in range(1, len(log_sequence)):
-            alpha = alphas[t]
-        
-            # Update mean using the dynamic alpha
-            mu[t] = alpha * log_sequence[t] + (1.0 - alpha) * mu[t - 1]
-        
-            # Update variance using the dynamic alpha
-            diff = log_sequence[t] - mu[t]
-            var[t] = alpha * (diff * diff) + (1.0 - alpha) * var[t - 1]
-
-        norm_sequence = (log_sequence - mu) / np.sqrt(var + eps)
-
-        return norm_sequence
-
-    #------------------------------------------------------------------------------------------------------------------------
     # Given the volatility, the method computes market volatility regime
     #------------------------------------------------------------------------------------------------------------------------
 
