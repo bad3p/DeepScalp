@@ -5,6 +5,7 @@ import numpy as np
 import random
 import math
 import bisect
+from typing import List, Tuple, Optional
 from numpy.lib.stride_tricks import sliding_window_view
 from collections import defaultdict
 from decimal import Decimal
@@ -1177,7 +1178,7 @@ class TkStatistics():
     # alpha : float = exponential decay parameter for depth weighting
     #------------------------------------------------------------------------------------------------------------------------
 
-    @staticmethod    
+    @staticmethod
     def depth_weighted_order_flow_imbalance(orderbook1 : TkOrderbook, orderbook2 : TkOrderbook, alpha=1.0):
     
         def build_signed_depth(bids, asks):
@@ -1245,7 +1246,171 @@ class TkStatistics():
             ofi += weight * delta
 
         return ofi
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Compute Integrated Order Flow Imbalance for the list of sequential LOB snapshots, applying an exponential 
+    # decay weight to deeper levels of the order book.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def depth_weighted_integrated_order_flow_imbalance(orderbooks: List['TkOrderbook'], depth: int = 5, decay_rate: float = 0.5) -> Decimal:
+
+        # Aggregates volumes by price, sorts to find the best levels, 
+        # and returns exactly 'n' levels. Pads with (None, 0) if the book is thin.
+
+        def get_top_n_levels(levels: list, is_bid: bool, n: int = 5) -> List[Tuple[Optional[Decimal], Decimal]]:
+
+            if not levels:
+                return [(None, Decimal(0))] * n
+
+            # Aggregate volumes by price (handles fragmented liquidity)
+            price_levels = {}
+            for price, qty in levels:
+                price_levels[price] = price_levels.get(price, Decimal(0)) + qty
+
+            # Sort prices: Bids descending (highest first), Asks ascending (lowest first)
+            sorted_prices = sorted(price_levels.keys(), reverse=is_bid)
+
+            # Extract the top N levels
+            top_n = [(price, price_levels[price]) for price in sorted_prices[:n]]
     
+            # Pad the list if there are fewer than 'n' levels available
+            while len(top_n) < n:
+                top_n.append((None, Decimal(0)))
+        
+            return top_n
+
+        # Main procedure
+
+        if not orderbooks or len(orderbooks) < 2:
+            return Decimal(0)
+
+        # Pre-calculate exponential decay weights: e^(-decay_rate * level_index)
+        # Cast to string first to safely initialize the Decimal object without float precision loss
+        weights = [Decimal(str(math.exp(-decay_rate * k))) for k in range(depth)]
+
+        integrated_ofi = Decimal(0)
+    
+        prev_bids = get_top_n_levels(orderbooks[0].bids, is_bid=True, n=depth)
+        prev_asks = get_top_n_levels(orderbooks[0].asks, is_bid=False, n=depth)
+
+        for i in range(1, len(orderbooks)):
+            curr_bids = get_top_n_levels(orderbooks[i].bids, is_bid=True, n=depth)
+            curr_asks = get_top_n_levels(orderbooks[i].asks, is_bid=False, n=depth)
+        
+            tick_ofi = Decimal(0)
+
+            for k in range(depth):
+                curr_bid_p, curr_bid_v = curr_bids[k]
+                prev_bid_p, prev_bid_v = prev_bids[k]
+            
+                # Bid Imbalance (e_k)
+                if curr_bid_p is None or prev_bid_p is None:
+                    e_k = Decimal(0)
+                elif curr_bid_p > prev_bid_p:
+                    e_k = curr_bid_v                  
+                elif curr_bid_p == prev_bid_p:
+                    e_k = curr_bid_v - prev_bid_v   
+                else: 
+                    e_k = -prev_bid_v                 
+                
+                curr_ask_p, curr_ask_v = curr_asks[k]
+                prev_ask_p, prev_ask_v = prev_asks[k]
+
+                # Ask Imbalance (f_k)
+                if curr_ask_p is None or prev_ask_p is None:
+                    f_k = Decimal(0)
+                elif curr_ask_p < prev_ask_p:
+                    f_k = curr_ask_v                  
+                elif curr_ask_p == prev_ask_p:
+                    f_k = curr_ask_v - prev_ask_v   
+                else: 
+                    f_k = -prev_ask_v                 
+                
+                # Apply the decay weight to this level's net imbalance
+                level_ofi = (e_k - f_k) * weights[k]
+                tick_ofi += level_ofi
+
+            integrated_ofi += tick_ofi
+        
+            prev_bids = curr_bids
+            prev_asks = curr_asks
+
+        return float(integrated_ofi)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes the cost of liquidity (slippage) in relative basis points (bps).
+    #   :param orderbook: Instance of TkOrderbook
+    #   :param size: The target volume to execute
+    #   :param side: 'buy' (sweeps asks) or 'sell' (sweeps bids)
+    #   :return: Total cost of liquidity in BPS
+    #   :return: max_penalty_bps when liquidity is insufficient to fill the size.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def compute_cost_of_liquidity_bps(
+        orderbook, 
+        size: Decimal, 
+        side: str, 
+        max_penalty_bps: Decimal = Decimal('5000')
+    ) -> float:
+
+        # Handle completely empty books (zero liquidity to even derive a mid-price)
+        if not orderbook.bids or not orderbook.asks:
+            return float(max_penalty_bps)
+
+        bids = sorted(orderbook.bids, key=lambda x: x[0], reverse=True)
+        asks = sorted(orderbook.asks, key=lambda x: x[0])
+
+        best_bid_price = bids[0][0]
+        best_ask_price = asks[0][0]
+        mid_price = (best_bid_price + best_ask_price) / Decimal('2')
+
+        book_levels = asks if side.lower() == 'buy' else bids
+    
+        remaining_size = size
+        total_consideration = Decimal('0')
+
+        # Sweep the book
+        for price, qty in book_levels:
+            executable_qty = min(remaining_size, qty)
+            total_consideration += price * executable_qty
+            remaining_size -= executable_qty
+        
+            if remaining_size <= 0:
+                break
+
+        # ML Handling: If the book is exhausted before the order is filled
+        if remaining_size > 0:
+            return float(max_penalty_bps)
+
+        # Standard VWAP and slippage calculation
+        vwap = total_consideration / size
+
+        if side.lower() == 'buy':
+            slippage_per_unit = vwap - mid_price
+        else:
+            slippage_per_unit = mid_price - vwap
+
+        bps_cost = (slippage_per_unit / mid_price) * Decimal('10000')
+    
+        # Clamp the final value to prevent extreme outliers from destabilizing training
+        return float(min(bps_cost, max_penalty_bps))
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Computes the normalized liquidity imbalance ratio.        
+    #   :param buy_cost: Cost of liquidity for buying (sweeping asks)
+    #   :param sell_cost: Cost of liquidity for selling (sweeping bids)
+    #   :return: A normalized imbalance score between -1 and 1
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def compute_liquidity_imbalance(buy_cost: float, sell_cost: float) -> float:
+        # Prevent division by zero if both costs are exactly zero (extremely rare)
+        if buy_cost > 0 and sell_cost > 0:
+            return (buy_cost - sell_cost) / (buy_cost + sell_cost)
+        else:
+            return 0.0
+
     #------------------------------------------------------------------------------------------------------------------------
     # Returns cumulative sum over input x using given window size
     #------------------------------------------------------------------------------------------------------------------------

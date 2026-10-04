@@ -73,13 +73,23 @@ class PreprocessedData:
     last_trades_num_events: list
     trade_flow_imbalance: list
     price_change: list    
-    order_flow_imbalance:list
-    cumulative_order_flow_imbalance:list
+    short_term_integrated_order_flow_imbalance:list
+    mid_term_integrated_order_flow_imbalance:list
     queue_imbalance:list
     queue_depletion_intensity:list
     queue_depletion_imbalance:list
     order_arrival_intensity:list
     order_arrival_imbalance:list
+    average_orderbook_volume: list
+    cost_of_buying_liquidity_10bps:list
+    cost_of_buying_liquidity_100bps:list
+    cost_of_buying_liquidity_500bps:list
+    cost_of_selling_liquidity_10bps:list
+    cost_of_selling_liquidity_100bps:list
+    cost_of_selling_liquidity_500bps:list
+    cost_of_liquidity_imbalance_10bps:list
+    cost_of_liquidity_imbalance_100bps:list
+    cost_of_liquidity_imbalance_500bps:list
 
     # EMA-smoothed data
 
@@ -189,7 +199,7 @@ class PreprocessedData:
         for i in range( 0, raw_sample_count ):
             raw_samples[i*2].orderbook_ts = fixed_orderbook_ts[i]    
 
-    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, regime_ema_half_life:float, trend_ema_half_life:float, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int):
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, regime_ema_half_life:float, trend_ema_half_life:float, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int, prior_steps_count:int):
 
         self.num_volatility_regimes = len(volatility_regimes) + 1
         self.num_trend_regimes = len(trend_regime_thresholds) + 1
@@ -313,7 +323,8 @@ class PreprocessedData:
             self.orderbook_microprice[i] = self.orderbook_microprice[i] / self.price[i]
             self.spread[i] = self.spread[i] / self.price[i]
 
-        self.order_flow_imbalance = [0] * raw_sample_count
+        self.short_term_integrated_order_flow_imbalance = [0] * raw_sample_count
+        self.mid_term_integrated_order_flow_imbalance = [0] * raw_sample_count
         self.queue_imbalance = [0] * raw_sample_count
         self.queue_depletion_intensity = [0] * raw_sample_count
         self.queue_depletion_imbalance = [0] * raw_sample_count
@@ -322,11 +333,9 @@ class PreprocessedData:
 
         for i in range( raw_sample_count ):
             if i == 0:
-                self.order_flow_imbalance[i] = 0.0
                 self.order_arrival_intensity[i] = 0.0
                 self.order_arrival_imbalance[i] = 0.0
             else:                    
-                self.order_flow_imbalance[i] = TkStatistics.depth_weighted_order_flow_imbalance( raw_samples[(i-1)*2], raw_samples[i*2], alpha=1.0 ) # TODO: configure alpha
                 bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=1.0, dt=self.time_delta[i] ) # TODO: configure alpha
                 self.order_arrival_intensity[i] = bid_intensity + ask_intensity
                 self.order_arrival_imbalance[i] = bid_intensity - ask_intensity
@@ -335,13 +344,68 @@ class PreprocessedData:
             self.queue_depletion_intensity[i] = bid_depletion + ask_depletion
             self.queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
 
-        self.cumulative_order_flow_imbalance = TkStatistics.rolling_sum( self.order_flow_imbalance, window=future_steps_count ).tolist()
+            if i == 0:
+                self.short_term_integrated_order_flow_imbalance[i] = 0.0
+            else:
+                self.short_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-1)*2], raw_samples[i*2]], depth = 8, decay_rate = 0.25 ) # TODO: configure depth and decay_rate
+
+            assert not math.isnan(self.short_term_integrated_order_flow_imbalance[i])
+
+            if i == 0:
+                self.mid_term_integrated_order_flow_imbalance[i] = 0.0
+            elif i == 1:
+                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
+            elif i == 2:
+                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-2)*2], raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
+            else:
+                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-3)*2], raw_samples[(i-2)*2], raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
+
+            assert not math.isnan(self.mid_term_integrated_order_flow_imbalance[i])
+
+        # self.cumulative_order_flow_imbalance = TkStatistics.rolling_sum( self.order_flow_imbalance, window=future_steps_count ).tolist()
+        self.average_orderbook_volume = TkStatistics.rolling_sum( self.orderbook_volume, window=prior_steps_count ).tolist()
+        orderbook_norm = [min(i+1, prior_steps_count) for i in range(len(self.average_orderbook_volume))]
+        self.average_orderbook_volume = [ int(a / b) for a, b in zip(self.average_orderbook_volume, orderbook_norm)]
+
+        self.cost_of_buying_liquidity_10bps = [0] * raw_sample_count
+        self.cost_of_buying_liquidity_100bps = [0] * raw_sample_count
+        self.cost_of_buying_liquidity_500bps = [0] * raw_sample_count
+        self.cost_of_selling_liquidity_10bps = [0] * raw_sample_count
+        self.cost_of_selling_liquidity_100bps = [0] * raw_sample_count
+        self.cost_of_selling_liquidity_500bps = [0] * raw_sample_count
+        self.cost_of_liquidity_imbalance_10bps = [0] * raw_sample_count
+        self.cost_of_liquidity_imbalance_100bps = [0] * raw_sample_count
+        self.cost_of_liquidity_imbalance_500bps = [0] * raw_sample_count
+
+        for i in range( raw_sample_count ):
+
+            average_orderbook_volume_10bps = max( 1, int(0.001 * self.average_orderbook_volume[i]) )
+            average_orderbook_volume_100bps = max( 1, int(0.01 * self.average_orderbook_volume[i]) )
+            average_orderbook_volume_500bps = max( 1, int(0.05 * self.average_orderbook_volume[i]) )
+
+            self.cost_of_buying_liquidity_10bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_10bps, "Buy" )
+            self.cost_of_buying_liquidity_100bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_100bps, "Buy" )
+            self.cost_of_buying_liquidity_500bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_500bps, "Buy" )
+
+            self.cost_of_selling_liquidity_10bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_10bps, "Sell" )
+            self.cost_of_selling_liquidity_100bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_100bps, "Sell" )
+            self.cost_of_selling_liquidity_500bps[i] = TkStatistics.compute_cost_of_liquidity_bps( raw_samples[i*2], average_orderbook_volume_500bps, "Sell" )
+
+            self.cost_of_liquidity_imbalance_10bps[i] = TkStatistics.compute_liquidity_imbalance( self.cost_of_buying_liquidity_10bps[i], self.cost_of_selling_liquidity_10bps[i] )
+            self.cost_of_liquidity_imbalance_100bps[i] = TkStatistics.compute_liquidity_imbalance( self.cost_of_buying_liquidity_100bps[i], self.cost_of_selling_liquidity_100bps[i] )
+            self.cost_of_liquidity_imbalance_500bps[i] = TkStatistics.compute_liquidity_imbalance( self.cost_of_buying_liquidity_500bps[i], self.cost_of_selling_liquidity_500bps[i] )
+
+            assert not math.isnan(self.cost_of_liquidity_imbalance_10bps[i])
+            assert not math.isnan(self.cost_of_liquidity_imbalance_100bps[i])
+            assert not math.isnan(self.cost_of_liquidity_imbalance_500bps[i])
+
+        self.average_orderbook_volume[0] = self.average_orderbook_volume[1] # TEST
 
     def get_interval_trades(self, start_ts:int, end_ts:int):
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 18 # sizeof quant_sample
+        return 22 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
@@ -367,7 +431,11 @@ class PreprocessedData:
         sample.append( self.order_arrival_intensity[i] )
         
         # slice 5 : flow imbalance
-        sample.append( self.cumulative_order_flow_imbalance[i] )
+        sample.append( self.short_term_integrated_order_flow_imbalance[i] )
+        sample.append( self.mid_term_integrated_order_flow_imbalance[i] )
+        sample.append( self.cost_of_liquidity_imbalance_10bps[i] )
+        sample.append( self.cost_of_liquidity_imbalance_100bps[i] )
+        sample.append( self.cost_of_liquidity_imbalance_500bps[i] )
         sample.append( self.trade_flow_imbalance[i] )
         sample.append( self.queue_depletion_imbalance[i] )
         sample.append( self.order_arrival_imbalance[i] )
@@ -465,7 +533,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count, prior_steps_count )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -591,7 +659,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count, prior_steps_count )
 
             price = data.price[-prior_steps_count:]
             orderbook_volume = data.orderbook_volume[-prior_steps_count:]
