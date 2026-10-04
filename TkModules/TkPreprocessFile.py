@@ -69,12 +69,16 @@ class PreprocessedData:
     orderbook_ask_alpha: list
     orderbook_alpha_imbalance: list
     orderbook_mean_alpha: list
+    average_last_trades_volume: list
     last_trades_volume: list
+    average_last_trades_num_events: list
     last_trades_num_events: list
     trade_flow_imbalance: list
-    price_change: list    
+    price_change: list
+    price_change_rate: list
     short_term_integrated_order_flow_imbalance:list
     mid_term_integrated_order_flow_imbalance:list
+    long_term_integrated_order_flow_imbalance:list
     queue_imbalance:list
     queue_depletion_intensity:list
     queue_depletion_imbalance:list
@@ -199,6 +203,16 @@ class PreprocessedData:
         for i in range( 0, raw_sample_count ):
             raw_samples[i*2].orderbook_ts = fixed_orderbook_ts[i]    
 
+    @staticmethod
+    def select_prior_orderbooks(raw_samples:list, last_index:int, count:int):
+        index = last_index
+        result = []
+        while count > 0 and index >= 0:
+            result.insert( 0, raw_samples[index*2] )
+            index = index - 1
+            count = count -1
+        return result
+
     def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, regime_ema_half_life:float, trend_ema_half_life:float, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int, prior_steps_count:int):
 
         self.num_volatility_regimes = len(volatility_regimes) + 1
@@ -254,6 +268,7 @@ class PreprocessedData:
                 trade_ts = int( trade_time.timestamp() )
                 assert trade_ts in self.all_trades
                 assert last_trades_sample.trades[j] in self.all_trades[trade_ts]
+        
 
         # extract features from orderbook & last trades
 
@@ -269,6 +284,7 @@ class PreprocessedData:
         self.orderbook_alpha_imbalance = [0] * raw_sample_count
         self.orderbook_mean_alpha = [0] * raw_sample_count
         self.last_trades_volume = [0] * raw_sample_count
+        self.last_trades_rate = [0] * raw_sample_count
         self.last_trades_num_events = [0] * raw_sample_count
         self.trade_flow_imbalance = [0] * raw_sample_count        
 
@@ -297,11 +313,33 @@ class PreprocessedData:
             last_trades_samples = [ (raw_samples[i*2+1], last_trades_time_threshold) ]
             last_trades_tensor, _, num_events, volume, buy_trades, sell_trades, _ = TkStatistics.last_trades_to_tensor( last_trades_samples, pivot_price, last_trades_width, last_trades_discretization )
             self.last_trades_volume[i] = volume
+            self.last_trades_rate[i] = volume / self.time_delta[i]
             self.last_trades_num_events[i] = num_events
             self.trade_flow_imbalance[i] = (buy_trades - sell_trades) / max(1.0, buy_trades + sell_trades)
 
             # adjust minimal time for next last trades sample
-            last_trades_time_threshold = orderbook_sample.orderbook_ts       
+            last_trades_time_threshold = orderbook_sample.orderbook_ts
+
+        # normalization for the window equal to the prior steps count
+        prior_steps_count_norm = [min(i+1, prior_steps_count) for i in range(raw_sample_count)]
+
+        # normalize orderbook volume
+        self.average_orderbook_volume = TkStatistics.rolling_sum( self.orderbook_volume, window=prior_steps_count ).tolist()
+        self.average_orderbook_volume = [ int(a / b) for a, b in zip(self.average_orderbook_volume, prior_steps_count_norm)]
+        self.orderbook_volume = [ a / b if b > 0.0 else 0.0 for a,b in zip(self.orderbook_volume, self.average_orderbook_volume) ]
+
+        # normalize last trades volume 
+        self.average_last_trades_volume = TkStatistics.rolling_sum( self.last_trades_volume, window=prior_steps_count ).tolist()
+        self.average_last_trades_volume = [ int(a / b) for a, b in zip(self.average_last_trades_volume, prior_steps_count_norm)]
+        self.last_trades_volume = [ a / b if b > 0.0 else 0.0 for a,b in zip(self.last_trades_volume, self.average_last_trades_volume) ]
+
+        # normalize last trades volume 
+        self.average_last_trades_num_events = TkStatistics.rolling_sum( self.last_trades_num_events, window=prior_steps_count ).tolist()
+        self.average_last_trades_num_events = [ int(a / b) for a, b in zip(self.average_last_trades_num_events, prior_steps_count_norm)]
+        self.last_trades_num_events = [ a / b if b > 0.0 else 0.0 for a,b in zip(self.last_trades_num_events, self.average_last_trades_num_events) ]
+
+        # recompute last trades volume rate
+        self.last_trades_rate = [ a / b for a,b in zip(self.last_trades_volume, self.time_delta) ]
 
         self.smooth_volatility = TkStatistics.irregular_ema_smoothing( self.volatility, self.time_delta, half_life=regime_ema_half_life ).tolist()
         for i in range( raw_sample_count ):
@@ -312,11 +350,14 @@ class PreprocessedData:
         self.trend_regimes = TkStatistics.trends_to_trend_regimes( self.smooth_trends, trend_regime_thresholds )
 
         self.price_change = [0.0] * raw_sample_count
+        self.price_change_rate = [0.0] * raw_sample_count
         for i in range( raw_sample_count ):
             if i == 0:
                 self.price_change[i] = 0.0
+                self.price_change_rate[i] = 0.0
             else:
                 self.price_change[i] = ( self.price[i] - self.price[i-1] ) / self.price[i]
+                self.price_change_rate[i] = self.price_change[i] / self.time_delta[i]
 
         # normalize microprice offset and spread
         for i in range( raw_sample_count ):
@@ -325,6 +366,7 @@ class PreprocessedData:
 
         self.short_term_integrated_order_flow_imbalance = [0] * raw_sample_count
         self.mid_term_integrated_order_flow_imbalance = [0] * raw_sample_count
+        self.long_term_integrated_order_flow_imbalance = [0] * raw_sample_count
         self.queue_imbalance = [0] * raw_sample_count
         self.queue_depletion_intensity = [0] * raw_sample_count
         self.queue_depletion_imbalance = [0] * raw_sample_count
@@ -343,29 +385,29 @@ class PreprocessedData:
             bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], alpha=1.0 ) # TODO: configure alpha
             self.queue_depletion_intensity[i] = bid_depletion + ask_depletion
             self.queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
-
-            if i == 0:
-                self.short_term_integrated_order_flow_imbalance[i] = 0.0
+            
+            orderbooks = PreprocessedData.select_prior_orderbooks( raw_samples, i, 2 )
+            if len(orderbooks) > 1:
+                self.short_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( orderbooks, depth = 8, decay_rate = 0.125 ) # TODO: configure depth and decay_rate
             else:
-                self.short_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-1)*2], raw_samples[i*2]], depth = 8, decay_rate = 0.25 ) # TODO: configure depth and decay_rate
-
+                self.short_term_integrated_order_flow_imbalance[i] = 0.0
             assert not math.isnan(self.short_term_integrated_order_flow_imbalance[i])
 
-            if i == 0:
-                self.mid_term_integrated_order_flow_imbalance[i] = 0.0
-            elif i == 1:
-                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
-            elif i == 2:
-                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-2)*2], raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
+            orderbooks = PreprocessedData.select_prior_orderbooks( raw_samples, i, 8 )
+            if len(orderbooks) > 1:
+                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( orderbooks, depth = 16, decay_rate = 0.25 ) # TODO: configure depth and decay_rate
             else:
-                self.mid_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( [raw_samples[(i-3)*2], raw_samples[(i-2)*2], raw_samples[(i-1)*2], raw_samples[i*2]], depth = 16, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
-
+                self.mid_term_integrated_order_flow_imbalance[i] = 0.0            
             assert not math.isnan(self.mid_term_integrated_order_flow_imbalance[i])
 
+            orderbooks = PreprocessedData.select_prior_orderbooks( raw_samples, i, 16 )
+            if len(orderbooks) > 1:
+                self.long_term_integrated_order_flow_imbalance[i] = TkStatistics.depth_weighted_integrated_order_flow_imbalance( orderbooks, depth = 32, decay_rate = 0.5 ) # TODO: configure depth and decay_rate
+            else:
+                self.long_term_integrated_order_flow_imbalance[i] = 0.0
+            assert not math.isnan(self.long_term_integrated_order_flow_imbalance[i])
+
         # self.cumulative_order_flow_imbalance = TkStatistics.rolling_sum( self.order_flow_imbalance, window=future_steps_count ).tolist()
-        self.average_orderbook_volume = TkStatistics.rolling_sum( self.orderbook_volume, window=prior_steps_count ).tolist()
-        orderbook_norm = [min(i+1, prior_steps_count) for i in range(len(self.average_orderbook_volume))]
-        self.average_orderbook_volume = [ int(a / b) for a, b in zip(self.average_orderbook_volume, orderbook_norm)]
 
         self.cost_of_buying_liquidity_10bps = [0] * raw_sample_count
         self.cost_of_buying_liquidity_100bps = [0] * raw_sample_count
@@ -405,13 +447,14 @@ class PreprocessedData:
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 22 # sizeof quant_sample
+        return 25 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
 
         # slice 1 : price, volatility and trend
         sample.append( self.price_change[i] )
+        sample.append( self.price_change_rate[i] )
         sample.append( self.volatility[i] )
         sample.append( self.trends[i] )
 
@@ -426,6 +469,7 @@ class PreprocessedData:
 
         # slice 4 : trade activity / trade flow intensity
         sample.append( self.last_trades_volume[i] )
+        sample.append( self.last_trades_rate[i] )
         sample.append( self.last_trades_num_events[i] )
         sample.append( self.queue_depletion_intensity[i] )
         sample.append( self.order_arrival_intensity[i] )
@@ -433,6 +477,7 @@ class PreprocessedData:
         # slice 5 : flow imbalance
         sample.append( self.short_term_integrated_order_flow_imbalance[i] )
         sample.append( self.mid_term_integrated_order_flow_imbalance[i] )
+        sample.append( self.long_term_integrated_order_flow_imbalance[i] )
         sample.append( self.cost_of_liquidity_imbalance_10bps[i] )
         sample.append( self.cost_of_liquidity_imbalance_100bps[i] )
         sample.append( self.cost_of_liquidity_imbalance_500bps[i] )
@@ -440,10 +485,12 @@ class PreprocessedData:
         sample.append( self.queue_depletion_imbalance[i] )
         sample.append( self.order_arrival_imbalance[i] )
 
-        # slice 6: time data
+        # slice 7: time data
         age_seconds = max(0.0, base_timestamp - self.timestamp[i])
         sample.append( self.log_time_delta[i] )
         sample.append( age_seconds )
+
+        assert not any(math.isnan(x) for x in sample)
 
         return sample
 

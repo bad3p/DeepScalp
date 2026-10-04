@@ -27,3 +27,4 @@
  [x] Compute price_change in percents
  [ ] Modify observed buyer & seller pressure data in TkPreprocessFile.py according to direction flag in TkLastTrades
  [ ] Investigate price_change normalized to volatility 
+ [ ] Investigate momentary last trades statistics normalized to rolling means

@@ -5,6 +5,7 @@ import numpy as np
 import random
 import math
 import bisect
+from datetime import datetime, date
 from typing import List, Tuple, Optional
 from numpy.lib.stride_tricks import sliding_window_view
 from collections import defaultdict
@@ -1415,8 +1416,8 @@ class TkStatistics():
     # Returns cumulative sum over input x using given window size
     #------------------------------------------------------------------------------------------------------------------------
 
-    @staticmethod    
-    def rolling_sum(x, window:int):
+    @staticmethod
+    def rolling_sum_old(x, window:int):
         x = np.asarray(x)
         c = np.cumsum(x)
         out = c.copy()
@@ -1426,6 +1427,24 @@ class TkStatistics():
 
         return out
 
+    @staticmethod
+    def rolling_sum(x, window: int):
+        x = np.asarray(x)
+        c = np.cumsum(x)
+    
+        if window >= len(x):
+            return c
+
+        # allocate uninitialized memory instead of copying the entire array
+        out = np.empty_like(c)
+    
+        # copy only the initial window segment
+        out[:window] = c[:window]
+    
+        # perform subtraction directly into the output array to avoid a temporary array
+        np.subtract(c[window:], c[:-window], out=out[window:])
+    
+        return out
 
     #------------------------------------------------------------------------------------------------------------------------
     # Depth-weighted queue imbalance accounting for missing price levels.
@@ -1741,6 +1760,61 @@ class TkStatistics():
                     break
     
         return trend_regimes
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # MOEX Seasonality
+    # Takes a datetime object and returns cyclical seasonality features based on the trading session schedule.
+    # Returns: sin_morning, cos_morning, sin_main, cos_main, sin_evening, cos_evening
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_trading_seasonality(dt: datetime) -> tuple:
+
+        # Initialize all features to 0.0 (inactive states)
+        sin_morning = cos_morning = 0.0
+        sin_main = cos_main = 0.0
+        sin_evening = cos_evening = 0.0
+    
+        # Define rule boundaries based on the September 14, 2026 cutoff
+        rule_change_date = date(2026, 9, 14)
+    
+        if dt.date() < rule_change_date:
+            # Rule 1: Before Sept 14, 2026
+            morning_start, morning_end = 4, 7
+            main_start, main_end = 7, 16
+            evening_start, evening_end = 16, 21
+        else:
+            # Rule 2: On or after Sept 14, 2026
+            morning_start, morning_end = 4, 6
+            main_start, main_end = 6, 16
+            evening_start, evening_end = 16, 21
+        
+        # Convert current time to total seconds since midnight for precise fractional mapping
+        current_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
+
+        # Helper to calculate the cyclic position within a given session window.
+        def calc_sin_cos(start_hour, end_hour, current_sec):            
+            start_sec = start_hour * 3600
+            end_sec = end_hour * 3600
+            session_duration = end_sec - start_sec
+        
+            # Calculate how far we are into the session (0.0 to 1.0)
+            fraction_passed = (current_sec - start_sec) / session_duration
+        
+            # Map fraction to a 2*pi radian circle
+            angle = math.pi * fraction_passed
+            return math.sin(angle), math.cos(angle)
+
+        # Determine which session is currently active and calculate its features
+        hour = dt.hour
+        if morning_start <= hour < morning_end:
+            sin_morning, cos_morning = calc_sin_cos(morning_start, morning_end, current_seconds)
+        elif main_start <= hour < main_end:
+            sin_main, cos_main = calc_sin_cos(main_start, main_end, current_seconds)
+        elif evening_start <= hour < evening_end:
+            sin_evening, cos_evening = calc_sin_cos(evening_start, evening_end, current_seconds)
+        
+        return sin_morning, cos_morning, sin_main, cos_main, sin_evening, cos_evening
 
     #------------------------------------------------------------------------------------------------------------------------
     # Gaussian smoothing

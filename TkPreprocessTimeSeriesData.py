@@ -114,6 +114,9 @@ if __name__ == "__main__":
                 dpg.add_text( default_value="MPC Queue Size: " )
                 dpg.add_text( tag="mpc_queue_size", default_value="0", color=[255, 254, 255])
             with dpg.group(horizontal=True):
+                dpg.add_text( default_value="Processing speed: " )
+                dpg.add_text( tag="processing_speed", default_value="0", color=[255, 254, 255])
+            with dpg.group(horizontal=True):
                 dpg.add_text( default_value="Files remaining: " )
                 dpg.add_text( tag="files_remaining", default_value="0/0", color=[255, 254, 255])
             with dpg.group(horizontal=True):
@@ -213,6 +216,9 @@ if __name__ == "__main__":
                 TkUI.set_series("x_axis_target","y_axis_target","target_series", ts_target_sample_view)                
                 dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
 
+        first_sample_time = None
+        last_sample_time = None
+
         while len(data_sources) > 0 or len(processes) > 0:
 
             while len(processes) < max_num_processes and len(data_sources) > 0:
@@ -233,7 +239,7 @@ if __name__ == "__main__":
 
             dpg.set_value("mpc_queue_size", str(output_queue.qsize()))
 
-            max_queue_fetch_steps = int(output_queue.qsize() / 2)
+            max_queue_fetch_steps = int(output_queue.qsize() / 2) + 1
 
             for step in range(max_queue_fetch_steps):
                 try:
@@ -249,8 +255,15 @@ if __name__ == "__main__":
                         num_ordinary_samples = num_ordinary_samples + statistics[1]
                         num_samples = num_samples + statistics[2]
                         join_process( pid )
+                        time_delta = last_sample_time - first_sample_time
+                        processing_speed = int( num_samples / time_delta )
+                        dpg.set_value("processing_speed", str(processing_speed))
                     else:
                         append_sample(sample,is_priority_sample,is_test_data_source)
+                        if first_sample_time is None:
+                            first_sample_time = time.time()
+                        else:
+                            last_sample_time = time.time()
                 except Empty:
                     time.sleep( 0.0 )
                     break  # nothing in the queue right now
