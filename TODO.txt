@@ -25,6 +25,8 @@
  [x] Remove spatial/source embedding from MHA since it could cause cross-correlations to be learned
  [x] Try EMA normalization as a part of the model forward pass with learnable time decay parameters.
  [x] Compute price_change in percents
+ [x] Investigate momentary last trades statistics normalized to rolling means
+ [ ] Investigate separate last_buys and last_sells instead of last_trades
  [ ] Modify observed buyer & seller pressure data in TkPreprocessFile.py according to direction flag in TkLastTrades
  [ ] Investigate price_change normalized to volatility 
- [ ] Investigate momentary last trades statistics normalized to rolling means
+ [ ] Investigate extra aux regularization MLP predicting trade count (a mathematically distinct, orthogonal signal: conviction).
