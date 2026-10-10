@@ -1340,6 +1340,117 @@ class TkStatistics():
         return float(integrated_ofi)
 
     #------------------------------------------------------------------------------------------------------------------------
+    # Compute Order Flow Imbalance feature for the list of sequential LOB snapshots, 
+    # * applying an exponential decay weight to deeper levels of the order book,
+    # * considering temporal irregularities
+    # * computes either OFI rate or OFI diffusive shock
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def depth_weighted_order_flow_imbalance_feature(
+        orderbooks: List[TkOrderbook],
+        delta_time: List[float], 
+        depth: int = 8, 
+        depth_decay_rate: float = 0.5,
+        feature_mode: str = 'rate' # 'rate' or 'shock'
+    ) -> float:
+
+        def get_top_n_levels(levels: list, is_bid: bool, n: int = 5) -> List[Tuple[Optional[Decimal], Decimal]]:
+            if not levels:
+                return [(None, Decimal(0))] * n
+
+            # Aggregate volumes by price (handles fragmented liquidity)
+            price_levels = {}
+            for price, qty in levels:
+                price_levels[price] = price_levels.get(price, Decimal(0)) + qty
+
+            # Sort prices: Bids descending (highest first), Asks ascending (lowest first)
+            sorted_prices = sorted(price_levels.keys(), reverse=is_bid)
+
+            # Extract the top N levels
+            top_n = [(price, price_levels[price]) for price in sorted_prices[:n]]
+    
+            # Pad the list if there are fewer than 'n' levels available
+            while len(top_n) < n:
+                top_n.append((None, Decimal(0)))
+        
+            return top_n
+
+        if not orderbooks or len(orderbooks) < 2:
+            return 0.0
+
+        if len(delta_time) < len(orderbooks):
+            raise ValueError("delta_time must provide an interval for every step between orderbooks.")
+
+        if feature_mode not in ('rate', 'shock'):
+            raise ValueError("feature_mode must be 'rate' or 'shock'.")
+
+        # Pre-calculate exponential decay weights: e^(-decay_rate * level_index)
+        weights = [Decimal(str(math.exp(-depth_decay_rate * k))) for k in range(depth)]
+
+        integrated_ofi = Decimal(0)
+    
+        prev_bids = get_top_n_levels(orderbooks[0].bids, is_bid=True, n=depth)
+        prev_asks = get_top_n_levels(orderbooks[0].asks, is_bid=False, n=depth)
+
+        for i in range(1, len(orderbooks)):
+            curr_bids = get_top_n_levels(orderbooks[i].bids, is_bid=True, n=depth)
+            curr_asks = get_top_n_levels(orderbooks[i].asks, is_bid=False, n=depth)
+        
+            dt = delta_time[i]
+            
+            # Guard against division by zero for simultaneous snapshots
+            safe_dt = max(dt, 1e-9) 
+
+            tick_ofi = Decimal(0)
+
+            for k in range(depth):
+                curr_bid_p, curr_bid_v = curr_bids[k]
+                prev_bid_p, prev_bid_v = prev_bids[k]
+            
+                # Bid Imbalance (e_k)
+                if curr_bid_p is None or prev_bid_p is None:
+                    e_k = Decimal(0)
+                elif curr_bid_p > prev_bid_p:
+                    e_k = curr_bid_v                  
+                elif curr_bid_p == prev_bid_p:
+                    e_k = curr_bid_v - prev_bid_v   
+                else: 
+                    e_k = -prev_bid_v                
+                
+                curr_ask_p, curr_ask_v = curr_asks[k]
+                prev_ask_p, prev_ask_v = prev_asks[k]
+
+                # Ask Imbalance (f_k)
+                if curr_ask_p is None or prev_ask_p is None:
+                    f_k = Decimal(0)
+                elif curr_ask_p < prev_ask_p:
+                    f_k = curr_ask_v                  
+                elif curr_ask_p == prev_ask_p:
+                    f_k = curr_ask_v - prev_ask_v   
+                else: 
+                    f_k = -prev_ask_v                
+                
+                # Apply the decay weight to this level's net imbalance
+                level_ofi = (e_k - f_k) * weights[k]
+                tick_ofi += level_ofi
+
+            # Normalize temporal sampling
+            if feature_mode == 'rate':
+                # Deterministic assumption: flow is proportional to time
+                scaled_ofi = tick_ofi / Decimal(str(safe_dt))
+            else:
+                # Diffusive assumption: volume volatility scales with sqrt(time)
+                scaled_ofi = tick_ofi / Decimal(str(math.sqrt(safe_dt)))
+
+            integrated_ofi += scaled_ofi
+        
+            prev_bids = curr_bids
+            prev_asks = curr_asks
+
+        return float(integrated_ofi)
+
+    #------------------------------------------------------------------------------------------------------------------------
     # Computes the cost of liquidity (slippage) in relative basis points (bps).
     #   :param orderbook: Instance of TkOrderbook
     #   :param size: The target volume to execute
@@ -1507,11 +1618,11 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------            
 
     @staticmethod
-    def depth_weighted_queue_depletion_rate(orderbook : TkOrderbook, last_trades : TkLastTrades, alpha: float):
+    def depth_weighted_queue_depletion_rate(orderbook : TkOrderbook, last_trades : TkLastTrades, time_threshold, alpha: float):
 
         bids = [ ( float(bid[0]), bid[1]) for bid in orderbook.bids]
         asks = [ ( float(ask[0]), ask[1]) for ask in orderbook.asks]
-        trades = [ ( float(trade[0]), trade[1]) for trade in last_trades.trades]
+        trades = [ ( float(trade[0]), trade[1], trade[2]) for trade in last_trades.trades]
 
         # Sort and convert to mutable lists with initial depth levels: [price, qty, level]
         # Bids descending (highest price first), Asks ascending (lowest price first)
@@ -1569,7 +1680,11 @@ class TkStatistics():
             return level
 
         # Process the explicit trades against the uncrossed, re-indexed book
-        for trade_price, trade_qty in trades:
+        for trade_price, trade_qty, trade_time in trades:
+
+            if time_threshold != None and trade_time < time_threshold:
+                continue
+
             if best_bid_p is not None and best_ask_p is not None:
                 if trade_price >= best_ask_p:
                     level = get_ask_level(trade_price)
@@ -1623,11 +1738,13 @@ class TkStatistics():
         #lob_prev_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in prev_orderbook.asks]
         #lob_curr_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in curr_orderbook.bids]
         #lob_curr_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in curr_orderbook.asks]
-        trades = [ ( trade[0], trade[1]) for trade in last_trades.trades ]
+        trades = [ ( trade[0], trade[1], trade[2]) for trade in last_trades.trades ]
     
         # Aggregate trades by price to identify consumed liquidity
         trade_vols = {}
-        for price, qty in trades:
+        for price, qty, time in trades:
+            if time < prev_orderbook.orderbook_ts:
+                continue
             trade_vols[price] = trade_vols.get(price, 0.0) + qty
 
         # Convert tuple lists to dictionaries for fast O(1) lookups

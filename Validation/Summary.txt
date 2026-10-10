@@ -12,3 +12,4 @@
  2026_09_27_24x4.json                 9           21.43%               33          78.57%                    -7.98%            -1.30%     TIDAS SSM, Explicit Time decay in MHA, No main label smoothing, interpolated samples with DT=0
  2026_10_02_24x4.json                 6           50.00%                6          50.00%                    +0.238%           +0.02%     TIDAS SSM, ALiBi MHA, 16 features with learnable EMA, priority samples weighted fairly
  2026_10_05_24x4.json                14           45.16%               16          51.61%                    -1.538%           +1.31%     TIDAS SSM, ALiBi MHA, 20 features with learnable EMA, priority samples weighted fairly
+ 2026_10_06_24x4.json                11           55.0%                 9          45.0%                     -0.92%            +0.24%     TIDAS SSM, ALiBi MHA, 23 features with learnable EMA, priority samples weighted fairly
