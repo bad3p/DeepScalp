@@ -572,7 +572,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
             future_trades_volume = [None] * (raw_sample_count)
             future_trades_tails = [None] * (raw_sample_count)
 
-            for i in range( start_range, end_range+1 ):            
+            for i in range( start_range, end_range+1 ):
                 ts_base_price = data.price[i]
 
                 #prev_orderbook_sample = raw_samples[i*2]
@@ -610,6 +610,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 ts_trend_regime = data.trend_regimes[i+1]
                 ts_input = [None] * prior_steps_count
                 ts_base_timestamp = data.timestamp[i]
+                ts_datetime = raw_samples[i*2].orderbook_ts
                 
                 for j in range( prior_steps_count ):
                     k = i-prior_steps_count+j+1
@@ -629,17 +630,17 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 ts_target_right_tail = future_trades_tails[i][1]
                 is_priority_sample = ( ts_target_left_tail <= -priority_tail_threshold ) or ( ts_target_right_tail >= priority_tail_threshold )
 
-                ts_is_priority_sample = 1.0 if is_priority_sample else 0.0 
+                ts_is_priority_sample = 1.0 if is_priority_sample else 0.0
                 
                 if (step-1) % ts_data_stride == 0 or is_priority_sample or is_test_data_source:
                     if is_priority_sample:
                         num_priority_samples = num_priority_samples + 1
                     else:
                         num_ordinary_samples = num_ordinary_samples + 1
-                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
+                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime, ts_is_priority_sample], ts_datetime, ticker, is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     
-    output_queue.put( (pid, [num_priority_samples, num_ordinary_samples, raw_sample_count], False, is_test_data_source, True) )
+    output_queue.put( (pid, [num_priority_samples, num_ordinary_samples, raw_sample_count], datetime.min, ticker, False, is_test_data_source, True) )
 
     quit(0)
 
@@ -694,6 +695,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
             
             ts_input = [None] * prior_steps_count
             ts_base_timestamp = data.timestamp[raw_sample_count-1]
+            ts_datetime = raw_samples[i*2].orderbook_ts
                 
             for j in range( prior_steps_count ):
                 k = raw_sample_count-prior_steps_count+j
@@ -703,6 +705,6 @@ def preprocess_file_for_inference(ticker:str, filename:str):
 
             last_trades, last_trades_descriptor, last_trades_volume = TkStatistics.trades_distribution( raw_samples[-1], data.price[-1], last_trades_width, last_trades_discretization )
                                 
-            return ts_input, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, trades_volume
+            return ts_input, ts_datetime, data.price[-1], data.min_price_increment, last_trades, last_trades_descriptor, price, orderbook_volume, trades_volume
         
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None

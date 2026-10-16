@@ -71,6 +71,7 @@ class TkTimeSeriesDataLoader():
         self._test_data_stream = open( join(self._data_path, self._time_series_test_data_filename), 'rb+')
 
         self._input_samples = None
+        self._baseline_samples = None
         self._target_true_samples = None
         self._regime_samples = None
         self._trend_regime_samples = None
@@ -145,7 +146,8 @@ class TkTimeSeriesDataLoader():
         regime_sample = data_chunk[2]
         trend_regime_sample = data_chunk[3]
         is_priority_sample = data_chunk[4]
-        return input_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
+        baseline_sample = data_chunk[5]
+        return input_sample, baseline_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
@@ -155,7 +157,8 @@ class TkTimeSeriesDataLoader():
         regime_sample = data_chunk[2]
         trend_regime_sample = data_chunk[3]
         is_priority_sample = data_chunk[4]
-        return input_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
+        baseline_sample = data_chunk[5]
+        return input_sample, baseline_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
     
     @staticmethod
     def sort_mutual(*lists: List[Any]) -> tuple[List[Any], ...]:
@@ -174,17 +177,19 @@ class TkTimeSeriesDataLoader():
 
         def load_training_data_thread():            
             self._input_samples = [None] * self._training_batch_size
+            self._baseline_samples = [None] * self._training_batch_size
             self._target_true_samples = [None] * self._training_batch_size
             self._regime_samples = [None] * self._training_batch_size
             self._trend_regime_samples = [None] * self._training_batch_size
             self._priority_flags = [None] * self._training_batch_size
             for batch_id in range(self._training_batch_size):
-                input_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_training_sample( self._training_sample_id )
+                input_sample, baseline_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_training_sample( self._training_sample_id )
                 self._training_sample_id = self._training_sample_id + 1
                 if self._training_sample_id >= len(self._training_index):
                     self._training_sample_id = 0
                     self._training_index = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])                    
                 self._input_samples[batch_id] = input_sample
+                self._baseline_samples[batch_id] = baseline_sample
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
                 self._trend_regime_samples[batch_id] = [trend_regime_sample]
@@ -199,16 +204,18 @@ class TkTimeSeriesDataLoader():
 
         def load_test_data_thread():
             self._input_samples = [None] * self._test_batch_size
+            self._baseline_samples = [None] * self._test_batch_size
             self._target_true_samples = [None] * self._test_batch_size
             self._regime_samples = [None] * self._test_batch_size
             self._trend_regime_samples = [None] * self._test_batch_size
             self._priority_flags = [None] * self._test_batch_size
             for batch_id in range(self._test_batch_size):
-                input_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_test_sample( self._test_sample_id )
+                input_sample, baseline_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_test_sample( self._test_sample_id )
                 self._test_sample_id = self._test_sample_id + 1
                 if self._test_sample_id >= len(self._test_index):
                     self._test_sample_id = 0
-                self._input_samples[batch_id] = input_sample                
+                self._input_samples[batch_id] = input_sample
+                self._baseline_samples[batch_id] = baseline_sample
                 self._target_true_samples[batch_id] = target_true_sample
                 self._regime_samples[batch_id] = [regime_sample]
                 self._trend_regime_samples[batch_id] = [trend_regime_sample]
@@ -216,7 +223,7 @@ class TkTimeSeriesDataLoader():
 
             # sort arrays mutually by regime, in descending order
             # this will push volative samples to the front of the list, therefore allowing GUI to display *them* rather than quitet samples
-            self._regime_samples, self._trend_regime_samples, self._input_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._trend_regime_samples, self._input_samples, self._target_true_samples )
+            self._regime_samples, self._trend_regime_samples, self._input_samples, self._baseline_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._trend_regime_samples, self._input_samples, self._baseline_samples, self._target_true_samples )
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
         self._loading_thread.start()
@@ -226,7 +233,7 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is not active!')
         self._loading_thread.join()
         self._loading_thread = None
-        return self._input_samples, self._target_true_samples, self._regime_samples, self._trend_regime_samples, self._priority_flags
+        return self._input_samples, self._baseline_samples, self._target_true_samples, self._regime_samples, self._trend_regime_samples, self._priority_flags
          
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -241,7 +248,8 @@ data_path = config['Paths']['DataPath']
 ts_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesModelFileName'] )
 ts_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesOptimizerFileName'] )
 ts_history_path = join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesTrainingHistoryFileName'] )
-last_trades_reconstruction_channel = int(config['Autoencoders']['LastTradesReconstructionChannel'])
+last_trades_training_reconstruction_channel = int(config['Autoencoders']['LastTradesTrainingReconstructionChannel'])
+last_trades_test_reconstruction_channel = int(config['Autoencoders']['LastTradesTestReconstructionChannel'])
 num_volatility_regimes = len( json.loads(config['TimeSeries']['VolatilityRegimes']) ) + 1
 num_trend_regimes = len( json.loads( config['TimeSeries']['TrendRegimes'] ) ) + 1
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
@@ -274,6 +282,8 @@ weight_decay_multiplier = TkAnnealing(config['TimeSeries']['WeightDecayMultiplie
 priority_sample_weight = TkAnnealing(config['TimeSeries']['PrioritySampleWeight'])
 ordinary_sample_weight = TkAnnealing(config['TimeSeries']['OrdinarySampleWeight'])
 cooldown = float( config['TimeSeries']['Cooldown'] )
+baseline_per_feature_alpha = json.loads(config['Baseline']['PerFeatureAlpha'])
+num_baseline_features = len(baseline_per_feature_alpha)
 
 ts_model = TkTimeSeriesForecaster(config)
 ts_model.to(cuda)
@@ -434,7 +444,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         show_priority_sample = not show_priority_sample
 
-        input_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
+        input_samples, baseline_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
         test_batch_size = data_loader.test_batch_size()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
@@ -442,10 +452,14 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input = input.to(cuda)
         input = input.requires_grad_()
 
+        baseline = torch.Tensor( list( itertools.chain.from_iterable(baseline_samples) ) )
+        baseline = torch.reshape( baseline, ( training_batch_size, num_baseline_features) )
+        baseline = baseline.to(cuda)
+
         target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
         target_true = torch.reshape( target_true, ( training_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
-        target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        target_true = target_true[:, (last_trades_training_reconstruction_channel):(last_trades_training_reconstruction_channel+1), :]
         target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )        
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
@@ -471,7 +485,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y, y_regime, y_trend_regime = ts_model.forward( input )
+        y, y_regime, y_trend_regime = ts_model.forward( input, baseline )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
@@ -532,16 +546,20 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        input_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
+        input_samples, baseline_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( test_batch_size, prior_steps_count * input_width) )
         input = input.to(cuda)
 
+        baseline = torch.Tensor( list( itertools.chain.from_iterable(baseline_samples) ) )
+        baseline = torch.reshape( baseline, ( test_batch_size, num_baseline_features) )
+        baseline = baseline.to(cuda)
+
         target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
         target_true = torch.reshape( target_true, ( test_batch_size, target_true_depth, target_true_width ) )
         target_true = target_true.to(cuda)
-        target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        target_true = target_true[:, (last_trades_test_reconstruction_channel):(last_trades_test_reconstruction_channel+1), :]
         target_true = torch.reshape( target_true, (test_batch_size, target_true_width) )
 
         target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
@@ -560,7 +578,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y, y_regime, y_trend = ts_model.forward( input )
+        y, y_regime, y_trend = ts_model.forward( input, baseline )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1

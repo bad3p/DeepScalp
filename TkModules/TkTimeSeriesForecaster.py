@@ -373,6 +373,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
         self._init_ema_half_life = json.loads(_cfg['TimeSeries']['InitEMAHalfLife'])        
+        self._baseline_per_feature_alpha = json.loads(_cfg['Baseline']['PerFeatureAlpha'])
+        self._num_baseline_features = len(self._baseline_per_feature_alpha)
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -438,7 +440,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             pooling="attn"
         )
 
-        # enforce gate bias
+        # enforce fusion gate bias
         with torch.no_grad():
             self._fusion.gate[0].bias.fill_(0.0) # -2.0
 
@@ -447,6 +449,17 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
                 torch.nn.init.constant_(m.bias, 0)        
+
+        # baseline layer
+        baseline_encoded_dim = self._num_baseline_features * 2 # TODO:configure
+        baseline_dropout = 0.05555555555 # TODO:configure
+        self._baseline_encoder = torch.nn.Sequential(
+            # feature mixing (N -> 2N)
+            torch.nn.Linear(self._num_baseline_features, baseline_encoded_dim),
+            torch.nn.SiLU(),
+            torch.nn.LayerNorm(baseline_encoded_dim),
+            torch.nn.Dropout(baseline_dropout)
+        )
         
         self._smm_output_tensors = None
 
@@ -500,6 +513,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 mlp_no_decay_params.append(param)
 
         for name, param in self._trend_mlp.named_parameters():
+            if not param.requires_grad:
+                continue
+            if not any(nd in name for nd in ["bias", "norm"]):
+                mlp_decay_params.append(param)
+            else:
+                mlp_no_decay_params.append(param)
+
+        for name, param in self._baseline_encoder.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -587,7 +608,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def input_slice(self, idx:int):
         return self._input_slice_tensors[idx]
 
-    def forward(self, input):
+    def forward(self, input, baseline):
 
         batch_size = input.shape[0]
 
@@ -634,10 +655,13 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
         fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, log_time_delta )
-        merged = fused
+
+        # Encode baseline properties
+        baseline_encoded = self._baseline_encoder(baseline)
+        merged = torch.cat([fused, baseline_encoded], dim=-1)
 
         # monitoring feedback
-        self._smm_output_tensors = fused
+        self._smm_output_tensors = merged
 
         # regime prediction branch
         y_regime = self._regime_mlp.forward( merged )

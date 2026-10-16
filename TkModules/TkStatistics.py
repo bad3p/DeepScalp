@@ -837,25 +837,23 @@ class TkStatistics():
         bid_volume = np.flip( bid_volume )
         volume_tensor = np.concatenate((bid_volume, ask_volume))
         normalized_volume_tensor = volume_tensor.copy()
+        smooth_volume_tensor = volume_tensor.copy()
         if total_volume > 0:
-            normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume            
+            normalized_volume_tensor = normalized_volume_tensor * 1.0 / total_volume
             assert almost_equal( np.sum(normalized_volume_tensor), 1.0), "|Normalized volume tensor| != 1.0"
 
-            # TODO: configure
-            #total_nonzero = np.count_nonzero(normalized_volume_tensor)
-            #if total_nonzero > 16:
-            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(9,1.0))
-            #elif total_nonzero > 8:
-            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(7,1.0))
-            #elif total_nonzero > 4:
-            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(5,1.0))
-            #elif total_nonzero > 2:
-            #    normalized_volume_tensor = TkStatistics.smooth_with_given_kernel(normalized_volume_tensor, TkStatistics.generate_gaussian_kernel(3,1.0))
-
+            total_nonzero = np.count_nonzero(normalized_volume_tensor)
+            if total_nonzero > 2:
+                smooth_volume_tensor = TkStatistics.savgol_filter_exact(normalized_volume_tensor, 15, 3) # TODO: configure
+                if smooth_volume_tensor.sum() > 0:
+                    smooth_volume_tensor /= smooth_volume_tensor.sum()
+            else:
+                smooth_volume_tensor = normalized_volume_tensor.copy()
 
         volume_tensor = np.log1p( volume_tensor )
 
-        result_tensor = np.stack([log_delta_price_tensor, volume_tensor, normalized_volume_tensor], axis=1)
+        result_tensor = np.stack([log_delta_price_tensor, volume_tensor, normalized_volume_tensor, smooth_volume_tensor], axis=1)
+        result_tensor = result_tensor.astype( np.float32 )
 
         assert not np.isnan(result_tensor).any(), "NaNs in result tensor!"
 
@@ -1971,3 +1969,46 @@ class TkStatistics():
         smoothed_array = np.convolve(data_array, kernel_normalized, mode='same')
     
         return smoothed_array
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Gaussian smoothing
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def savgol_filter_exact(data, window_size, poly_order):
+
+        if window_size % 2 == 0:
+            raise ValueError("window_size must be an odd number.")
+        if window_size <= poly_order:
+            raise ValueError("window_size must be strictly greater than poly_order.")
+        if len(data) < window_size:
+            raise ValueError("Data length must be at least as large as window_size.")
+
+        m = (window_size - 1) // 2
+        z = np.arange(-m, m + 1)
+    
+        # Build the Vandermonde matrix and its pseudo-inverse
+        J = np.vstack([z**i for i in range(poly_order + 1)]).T
+        J_pinv = np.linalg.pinv(J)
+    
+        # Calculate the Hat Matrix (Projection Matrix)
+        # H @ Y gives the exact polynomial fit for an entire window Y
+        H = J @ J_pinv
+    
+        smoothed = np.empty_like(data, dtype=float)
+    
+        # Center Points: Standard Convolution
+        # The middle row of H (or first row of J_pinv) gives the weights for the center point (z=0)
+        center_coeffs = J_pinv[0]
+        smoothed[m:-m] = np.convolve(data, center_coeffs[::-1], mode='valid')
+    
+        # Left Edge: Evaluate the first window at the negative z offsets
+        # Multiply the Hat matrix by the first window of data, and take the first 'm' results
+        smoothed[:m] = (H @ data[:window_size])[:m]
+    
+        # Right Edge: Evaluate the last window at the positive z offsets
+        # Multiply the Hat matrix by the last window of data, and take the last 'm' results
+        smoothed[-m:] = (H @ data[-window_size:])[-m:]
+
+        smoothed = np.clip(smoothed, 0, None)
+    
+        return smoothed

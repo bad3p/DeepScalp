@@ -35,6 +35,7 @@ from TkModules.TkInstrument import TkInstrument
 from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
 from TkModules.TkPreprocessFile import preprocess_file_for_training
+from TkModules.TkBaseline import TkBaseline
 
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -87,8 +88,13 @@ if __name__ == "__main__":
     test_data_ratio = float(config['TimeSeries']['TestDataRatio'])
     data_stride = float(config['TimeSeries']['TSDataStride'])
 
+    baseline_file_name = config['Paths']['BaselineFileName']
+
     if ( os.path.isfile( join( data_path, time_series_training_data_filename)) or os.path.isfile( join( data_path, time_series_test_data_filename)) ):
         raise RuntimeError('Preprocessed data already exists! Delete it manually.')
+
+    print("Loading baseline...")
+    baseline = TkBaseline.load( join( data_path, baseline_file_name) )
     
     training_index = []
     test_index = []
@@ -136,6 +142,7 @@ if __name__ == "__main__":
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_target" )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_target" )
                     dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_target", tag="target_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Smooth target", parent="x_axis_target", tag="target_smooth_series" )
 
         dpg.show_viewport()
         dpg.set_primary_window("primary_window", True)
@@ -211,9 +218,11 @@ if __name__ == "__main__":
                 feedback_time = time.time()
                 ts_input = sample[0]
                 ts_target = sample[1]
-                TkUI.set_series("x_axis_input","y_axis_input","input_series", ts_input)
-                ts_target_sample_view = ts_target[-1]
-                TkUI.set_series("x_axis_target","y_axis_target","target_series", ts_target_sample_view)                
+                TkUI.set_series("x_axis_input","y_axis_input","input_series", ts_input)                
+                ts_target_sample_view = ts_target[-2]
+                ts_target_smooth_sample_view = ts_target[-1]
+                TkUI.set_series("x_axis_target","y_axis_target","target_series", ts_target_sample_view)
+                TkUI.set_series("x_axis_target","y_axis_target","target_smooth_series", ts_target_smooth_sample_view)
                 dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
 
         first_sample_time = None
@@ -246,9 +255,11 @@ if __name__ == "__main__":
                     tuple = output_queue.get_nowait()
                     pid = tuple[0]
                     sample = tuple[1]
-                    is_priority_sample = tuple[2]
-                    is_test_data_source = tuple[3]
-                    done = tuple[4]
+                    dt = tuple[2]
+                    ticker = tuple[3]
+                    is_priority_sample = tuple[4]
+                    is_test_data_source = tuple[5]
+                    done = tuple[6]
                     if done:
                         statistics = sample # process will return statistics instead of sample when processing is done
                         num_priority_samples = num_priority_samples + statistics[0]
@@ -259,6 +270,7 @@ if __name__ == "__main__":
                         processing_speed = int( num_samples / time_delta )
                         dpg.set_value("processing_speed", str(processing_speed))
                     else:
+                        sample.append( baseline.sample_baseline(ticker,dt))
                         append_sample(sample,is_priority_sample,is_test_data_source)
                         if first_sample_time is None:
                             first_sample_time = time.time()
@@ -279,12 +291,15 @@ if __name__ == "__main__":
                 tuple = output_queue.get_nowait()
                 pid = tuple[0]
                 sample = tuple[1]
-                is_priority_sample = tuple[2]
-                is_test_data_source = tuple[3]
-                done = tuple[4]
+                dt = tuple[2]
+                ticker = tuple[3]
+                is_priority_sample = tuple[4]
+                is_test_data_source = tuple[5]
+                done = tuple[6]
                 if done:
                     join_process( pid )
                 else:
+                    sample.append( baseline.sample_baseline(ticker,dt) )
                     append_sample(sample,is_priority_sample,is_test_data_source)
             except Empty:
                 pass  # nothing in the queue right now
