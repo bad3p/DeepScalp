@@ -48,7 +48,6 @@ class TkTimeSeriesDataLoader():
         self._time_series_index_filename = _cfg['Paths']['TimeSeriesIndexFileName']
         self._time_series_training_data_filename = _cfg['Paths']['TimeSeriesTrainingDataFileName']
         self._time_series_test_data_filename = _cfg['Paths']['TimeSeriesTestDataFileName']
-        self._num_market_regimes = len(json.loads(config['TimeSeries']['VolatilityRegimes'])) + 1
                 
         self._training_batch_size = int(_cfg['TimeSeries']['TrainingBatchSize'])
 
@@ -71,30 +70,9 @@ class TkTimeSeriesDataLoader():
         self._test_data_stream = open( join(self._data_path, self._time_series_test_data_filename), 'rb+')
 
         self._input_samples = None
-        self._target_true_samples = None
-        self._regime_samples = None
-        self._trend_regime_samples = None
+        self._long_target_true_samples = None
+        self._short_target_true_samples = None
         self._loading_thread = None
-
-        # print( self.get_regime_distribution() )
-
-    def get_regime_distribution(self):
-
-        regimes = [0] * self._num_market_regimes
-
-        for i in range( len(self._training_index) ):
-            _, _, regime_sample = self.get_training_sample( i )
-            regime_sample = int( regime_sample )
-            regimes[regime_sample] = regimes[regime_sample] + 1
-
-        norm = 0
-        for i in range( self._num_market_regimes ):
-            norm = norm + regimes[i]
-
-        for i in range( self._num_market_regimes ):
-            regimes[i] = regimes[i] / norm
-
-        return regimes
 
     @staticmethod
     def shuffle_table(table):
@@ -141,21 +119,19 @@ class TkTimeSeriesDataLoader():
         self._training_data_stream.seek( self._training_index[idx], 0 )
         data_chunk = TkIO.read_from_file( self._training_data_stream )
         input_sample = data_chunk[0]
-        target_true_sample = data_chunk[1]
-        regime_sample = data_chunk[2]
-        trend_regime_sample = data_chunk[3]
-        is_priority_sample = data_chunk[4]
-        return input_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
+        long_target_true_sample = data_chunk[1]
+        short_target_true_sample = data_chunk[2]        
+        is_priority_sample = data_chunk[3]
+        return input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
         data_chunk = TkIO.read_from_file( self._test_data_stream )
         input_sample = data_chunk[0]
-        target_true_sample = data_chunk[1]
-        regime_sample = data_chunk[2]
-        trend_regime_sample = data_chunk[3]
-        is_priority_sample = data_chunk[4]
-        return input_sample, target_true_sample, regime_sample, trend_regime_sample, is_priority_sample
+        long_target_true_sample = data_chunk[1]
+        short_target_true_sample = data_chunk[2]        
+        is_priority_sample = data_chunk[3]
+        return input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
     
     @staticmethod
     def sort_mutual(*lists: List[Any]) -> tuple[List[Any], ...]:
@@ -174,20 +150,18 @@ class TkTimeSeriesDataLoader():
 
         def load_training_data_thread():            
             self._input_samples = [None] * self._training_batch_size
-            self._target_true_samples = [None] * self._training_batch_size
-            self._regime_samples = [None] * self._training_batch_size
-            self._trend_regime_samples = [None] * self._training_batch_size
+            self._long_target_true_samples = [None] * self._training_batch_size
+            self._short_target_true_samples = [None] * self._training_batch_size            
             self._priority_flags = [None] * self._training_batch_size
             for batch_id in range(self._training_batch_size):
-                input_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_training_sample( self._training_sample_id )
+                input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_training_sample( self._training_sample_id )
                 self._training_sample_id = self._training_sample_id + 1
                 if self._training_sample_id >= len(self._training_index):
                     self._training_sample_id = 0
                     self._training_index = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])                    
                 self._input_samples[batch_id] = input_sample
-                self._target_true_samples[batch_id] = target_true_sample
-                self._regime_samples[batch_id] = [regime_sample]
-                self._trend_regime_samples[batch_id] = [trend_regime_sample]
+                self._long_target_true_samples[batch_id] = long_target_true_sample
+                self._short_target_true_samples[batch_id] = short_target_true_sample
                 self._priority_flags[batch_id] = priority_flag
                         
         self._loading_thread = threading.Thread( target=load_training_data_thread )
@@ -199,24 +173,22 @@ class TkTimeSeriesDataLoader():
 
         def load_test_data_thread():
             self._input_samples = [None] * self._test_batch_size
-            self._target_true_samples = [None] * self._test_batch_size
-            self._regime_samples = [None] * self._test_batch_size
-            self._trend_regime_samples = [None] * self._test_batch_size
+            self._long_target_true_samples = [None] * self._test_batch_size
+            self._short_target_true_samples = [None] * self._test_batch_size            
             self._priority_flags = [None] * self._test_batch_size
             for batch_id in range(self._test_batch_size):
-                input_sample, target_true_sample, regime_sample, trend_regime_sample, priority_flag = self.get_test_sample( self._test_sample_id )
+                input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_test_sample( self._test_sample_id )
                 self._test_sample_id = self._test_sample_id + 1
                 if self._test_sample_id >= len(self._test_index):
                     self._test_sample_id = 0
                 self._input_samples[batch_id] = input_sample                
-                self._target_true_samples[batch_id] = target_true_sample
-                self._regime_samples[batch_id] = [regime_sample]
-                self._trend_regime_samples[batch_id] = [trend_regime_sample]
+                self._long_target_true_samples[batch_id] = long_target_true_sample
+                self._short_target_true_samples[batch_id] = short_target_true_sample
                 self._priority_flags[batch_id] = priority_flag
 
-            # sort arrays mutually by regime, in descending order
-            # this will push volative samples to the front of the list, therefore allowing GUI to display *them* rather than quitet samples
-            self._regime_samples, self._trend_regime_samples, self._input_samples, self._target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._regime_samples, self._trend_regime_samples, self._input_samples, self._target_true_samples )
+            # sort arrays mutually by priority, in descending order
+            # this will push priority samples to the front of the list, therefore allowing GUI to display *them* rather than quiter samples
+            self._priority_flags, self._input_samples, self._long_target_true_samples, self._short_target_true_samples = TkTimeSeriesDataLoader.sort_mutual( self._priority_flags, self._input_samples, self._long_target_true_samples, self._short_target_true_samples )
 
         self._loading_thread = threading.Thread( target=load_test_data_thread )
         self._loading_thread.start()
@@ -226,7 +198,7 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is not active!')
         self._loading_thread.join()
         self._loading_thread = None
-        return self._input_samples, self._target_true_samples, self._regime_samples, self._trend_regime_samples, self._priority_flags
+        return self._input_samples, self._long_target_true_samples, self._short_target_true_samples, self._priority_flags
          
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -242,8 +214,6 @@ ts_model_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSerie
 ts_optimizer_path =  join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesOptimizerFileName'] )
 ts_history_path = join( config['Paths']['ModelsPath'], config['Paths']['TimeSeriesTrainingHistoryFileName'] )
 last_trades_reconstruction_channel = int(config['Autoencoders']['LastTradesReconstructionChannel'])
-num_volatility_regimes = len( json.loads(config['TimeSeries']['VolatilityRegimes']) ) + 1
-num_trend_regimes = len( json.loads( config['TimeSeries']['TrendRegimes'] ) ) + 1
 prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
 input_width = int(config['TimeSeries']['InputWidth'])
 target_code_width = int(config['Autoencoders']['LastTradesAutoencoderCodeLayerSize'])
@@ -265,8 +235,8 @@ fusion_weight_decay = float(config['TimeSeries']['FusionWeightDecay'])
 mlp_weight_decay = float(config['TimeSeries']['MLPWeightDecay']) 
 history_size = int( config['TimeSeries']['HistorySize'] )
 start_epoch_to_display = int( config['TimeSeries']['StartEpochToDisplay'] )
-regime_loss_weight = TkAnnealing(config['TimeSeries']['RegimeLossWeight']) 
-trend_loss_weight = TkAnnealing(config['TimeSeries']['TrendLossWeight']) 
+long_target_loss_weight = TkAnnealing(config['TimeSeries']['LongTargetLossWeight']) 
+short_target_loss_weight = TkAnnealing(config['TimeSeries']['ShortTargetLossWeight']) 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 orderbook_depth = int(config['Autoencoders']['OrderbookDepth'])
 learning_rate_multiplier = TkAnnealing(config['TimeSeries']['LearningRateMultiplier']) 
@@ -286,8 +256,6 @@ ts_optimizer = torch.optim.AdamW(
 if os.path.isfile(ts_optimizer_path): 
     ts_optimizer.load_state_dict(torch.load(ts_optimizer_path))
 
-ts_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
-ts_trend_regime_loss = lambda x,y: -(y * torch.log_softmax(x, dim=1)).sum(dim=1) # torch.nn.CrossEntropyLoss(reduction="none")
 ts_recon_accuracy = lambda x,y: tail_mean_distance_with_center(x,y) # lambda x,y: TkTimeSeriesForecaster.emd_1d_from_logits(x, y) # MS_SSIM_1D_Loss(window_size=7) # torch.nn.BCELoss(reduction="none") #
 ts_training_history = TkTimeSeriesTrainingHistory(ts_history_path, history_size)
 
@@ -324,18 +292,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_smm_"+ui_tag )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_smm_"+ui_tag )
                     dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="SMM", parent="x_axis_smm_"+ui_tag, tag=ui_tag+"_smm_series" )
-                with dpg.plot(label="Aux", width=256, height=256):
+                with dpg.plot(label="Aux", width=384, height=256):
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_aux_"+ui_tag )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_aux_"+ui_tag )
-                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_aux_"+ui_tag, tag=ui_tag+"_aux_output_series" )
-                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_aux_"+ui_tag, tag=ui_tag+"_aux_target_series" )
-                with dpg.plot(label="Trend", width=256, height=256):
-                    dpg.add_plot_legend()
-                    dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_trend_"+ui_tag )
-                    dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_trend_"+ui_tag )
-                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_trend_"+ui_tag, tag=ui_tag+"_trend_output_series" )
-                    dpg.add_bar_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_trend_"+ui_tag, tag=ui_tag+"_trend_target_series" )                    
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Output", parent="x_axis_aux_"+ui_tag, tag=ui_tag+"_aux_output_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_aux_"+ui_tag, tag=ui_tag+"_aux_target_series" )
                 with dpg.plot(label="Output", width=384, height=256):
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_true_"+ui_tag )
@@ -434,7 +396,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         show_priority_sample = not show_priority_sample
 
-        input_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
+        input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
         test_batch_size = data_loader.test_batch_size()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
@@ -442,25 +404,17 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         input = input.to(cuda)
         input = input.requires_grad_()
 
-        target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
-        target_true = torch.reshape( target_true, ( training_batch_size, target_true_depth, target_true_width ) )
-        target_true = target_true.to(cuda)
-        target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
-        target_true = torch.reshape( target_true, (training_batch_size, target_true_width) )        
+        long_target_true = torch.Tensor( list( itertools.chain.from_iterable(long_target_true_samples) ) )
+        long_target_true = torch.reshape( long_target_true, ( training_batch_size, target_true_depth, target_true_width ) )
+        long_target_true = long_target_true.to(cuda)
+        long_target_true = long_target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        long_target_true = torch.reshape( long_target_true, (training_batch_size, target_true_width) )
 
-        target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
-        target_regime = torch.reshape( target_regime, ( training_batch_size, 1) )
-        target_regime = target_regime.to(cuda)
-        target_regime = torch.nn.functional.one_hot(target_regime.long(), num_classes=num_volatility_regimes)
-        target_regime = torch.reshape( target_regime, ( training_batch_size, num_volatility_regimes) ).float()
-        target_regime = TkTimeSeriesForecaster.gaussian_smoothing_1d( target_regime, int(num_volatility_regimes/2), 1.0 )
-
-        target_trend_regime = torch.Tensor( list( itertools.chain.from_iterable(trend_regime_samples) ) )
-        target_trend_regime = torch.reshape( target_trend_regime, ( training_batch_size, 1) )
-        target_trend_regime = target_trend_regime.to(cuda)
-        target_trend_regime = torch.nn.functional.one_hot(target_trend_regime.long(), num_classes=num_trend_regimes)
-        target_trend_regime = torch.reshape( target_trend_regime, ( training_batch_size, num_trend_regimes) ).float()
-        target_trend_regime = TkTimeSeriesForecaster.gaussian_smoothing_1d( target_trend_regime, int(num_trend_regimes/2), 1.0 )
+        short_target_true = torch.Tensor( list( itertools.chain.from_iterable(short_target_true_samples) ) )
+        short_target_true = torch.reshape( short_target_true, ( training_batch_size, target_true_depth, target_true_width ) )
+        short_target_true = short_target_true.to(cuda)
+        short_target_true = short_target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        short_target_true = torch.reshape( short_target_true, (training_batch_size, target_true_width) )
 
         priority_sample_weight_value = priority_sample_weight.get_value( ts_smooth_epoch )
         ordinary_sample_weight_value = ordinary_sample_weight.get_value( ts_smooth_epoch )
@@ -471,45 +425,44 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y, y_regime, y_trend_regime = ts_model.forward( input )
+        y_long, y_short = ts_model.forward( input )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", target_regime, display_batch_id) 
-        TkUI.set_series_from_tensor("x_axis_trend_training","y_axis_trend_training","training_trend_output_series", torch.nn.functional.softmax(y_trend_regime,dim=-1).detach(), display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_trend_training","y_axis_trend_training","training_trend_target_series", target_trend_regime, display_batch_id)         
-        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", target_true, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_output_series", torch.nn.functional.softmax(y_short,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_training","y_axis_aux_training","training_aux_target_series", short_target_true, display_batch_id)         
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_output_series", torch.nn.functional.softmax(y_long,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_training","y_axis_true_training","training_decoded_target_series", long_target_true, display_batch_id)
 
-        js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y, target_true)
-        #kl_loss = TkTimeSeriesForecaster.kl_divergence_from_logits(y, target_true)
-        emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y, target_true)
-        #emd_mse_loss = TkTimeSeriesForecaster.emd_mse_1d_from_logits(y, target_true)
+        long_js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y_long, long_target_true)
+        #long_kl_loss = TkTimeSeriesForecaster.kl_divergence_from_logits(y_long, long_target_true)
+        long_emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y_long, long_target_true)
+        #long_emd_mse_loss = TkTimeSeriesForecaster.emd_mse_1d_from_logits(y_long, long_target_true)
         
-        y_recon_loss = ( ( emd_loss + js_loss * 0.005 ) * sample_loss_weights ).mean() # TODO: configure js_loss weight
+        y_long_recon_loss = ( ( long_emd_loss + long_js_loss * 0.005 ) * sample_loss_weights ).mean() # TODO: configure js_loss weight
         
-        #print( kl_loss.mean().item(), emd_mse_loss.mean().item() )        
+        short_js_loss = TkTimeSeriesForecaster.js_divergence_from_logits(y_short, short_target_true)
+        #short_kl_loss = TkTimeSeriesForecaster.kl_divergence_from_logits(y_short, short_target_true)
+        short_emd_loss = TkTimeSeriesForecaster.emd_1d_from_logits(y_short, short_target_true)
+        #short_emd_mse_loss = TkTimeSeriesForecaster.emd_mse_1d_from_logits(y_short, short_target_true)
 
-        y_regime_loss = ( ts_regime_loss( y_regime, target_regime ) * sample_loss_weights).mean()
-        y_trend_loss = ( ts_trend_regime_loss( y_trend_regime, target_trend_regime ) * sample_loss_weights).mean()
+        y_short_recon_loss = ( ( short_emd_loss + short_js_loss * 0.005 ) * sample_loss_weights ).mean() # TODO: configure js_loss weight
 
         # print( y_regime_loss.mean().item(), y_trend_loss.mean().item(), y_recon_loss.mean().item() )
         # print( ts_smooth_epoch, regime_loss_weight.get_value( ts_smooth_epoch ), trend_loss_weight.get_value( ts_smooth_epoch ) )
         print( 
-            ts_smooth_epoch, 
-            y_regime_loss.mean().item() * regime_loss_weight.get_value( ts_smooth_epoch ), 
-            y_trend_loss.mean().item() * trend_loss_weight.get_value( ts_smooth_epoch ), 
-            y_recon_loss.mean().item(),
+            ts_smooth_epoch,
+            y_short_recon_loss.mean().item() * short_target_loss_weight.get_value( ts_smooth_epoch ), 
+            y_long_recon_loss.mean().item() * long_target_loss_weight.get_value( ts_smooth_epoch ),
             priority_sample_weight_value
         )
 
-        y_loss = y_recon_loss + y_regime_loss * regime_loss_weight.get_value( ts_smooth_epoch ) + y_trend_loss * trend_loss_weight.get_value( ts_smooth_epoch )
+        y_loss = y_long_recon_loss * long_target_loss_weight.get_value( ts_smooth_epoch ) + y_short_recon_loss * short_target_loss_weight.get_value( ts_smooth_epoch )
         ts_optimizer.zero_grad()
         y_loss.backward()
         torch.nn.utils.clip_grad_norm_( ts_model.parameters(), max_norm=1.0 ) # TODO: configure
         ts_optimizer.step()
-        y_loss_val = y_recon_loss.item()
+        y_loss_val = y_loss.item()
 
         TkUI.set_series_from_tensor("x_axis_smm_training", "y_axis_smm_training", "training_smm_series", ts_model.smm_output(), display_batch_id)
 
@@ -532,55 +485,47 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        input_samples, target_true_samples, regime_samples, trend_regime_samples, priority_flags = data_loader.complete_loading()
+        input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( test_batch_size, prior_steps_count * input_width) )
         input = input.to(cuda)
 
-        target_true = torch.Tensor( list( itertools.chain.from_iterable(target_true_samples) ) )
-        target_true = torch.reshape( target_true, ( test_batch_size, target_true_depth, target_true_width ) )
-        target_true = target_true.to(cuda)
-        target_true = target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
-        target_true = torch.reshape( target_true, (test_batch_size, target_true_width) )
+        long_target_true = torch.Tensor( list( itertools.chain.from_iterable(long_target_true_samples) ) )
+        long_target_true = torch.reshape( long_target_true, ( test_batch_size, target_true_depth, target_true_width ) )
+        long_target_true = long_target_true.to(cuda)
+        long_target_true = long_target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        long_target_true = torch.reshape( long_target_true, (test_batch_size, target_true_width) )
 
-        target_regime = torch.Tensor( list( itertools.chain.from_iterable(regime_samples) ) )
-        target_regime = torch.reshape( target_regime, ( test_batch_size, 1) )
-        target_regime = target_regime.to(cuda)
-        target_regime = torch.nn.functional.one_hot(target_regime.long(), num_classes=num_volatility_regimes)
-        target_regime = torch.reshape( target_regime, ( test_batch_size, num_volatility_regimes) ).float()
-
-        target_trend_regime = torch.Tensor( list( itertools.chain.from_iterable(trend_regime_samples) ) )
-        target_trend_regime = torch.reshape( target_trend_regime, ( test_batch_size, 1) )
-        target_trend_regime = target_trend_regime.to(cuda)
-        target_trend_regime = torch.nn.functional.one_hot(target_trend_regime.long(), num_classes=num_trend_regimes)
-        target_trend_regime = torch.reshape( target_trend_regime, ( test_batch_size, num_trend_regimes) ).float()
+        short_target_true = torch.Tensor( list( itertools.chain.from_iterable(short_target_true_samples) ) )
+        short_target_true = torch.reshape( short_target_true, ( test_batch_size, target_true_depth, target_true_width ) )
+        short_target_true = short_target_true.to(cuda)
+        short_target_true = short_target_true[:, (last_trades_reconstruction_channel):(last_trades_reconstruction_channel+1), :]
+        short_target_true = torch.reshape( short_target_true, (test_batch_size, target_true_width) )
 
         ts_smooth_epoch = ts_training_history.get_smooth_epoch( data_loader.training_epoch_size() * training_batch_size )
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y, y_regime, y_trend = ts_model.forward( input )
+        y_long, y_short = ts_model.forward( input )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_test", "y_axis_input_test","test_input_series", input, 0)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_regime,dim=-1).detach(), display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", target_regime, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_trend_test","y_axis_trend_test","test_trend_output_series", torch.nn.functional.softmax(y_trend_regime,dim=-1).detach(), display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_trend_test","y_axis_trend_test","test_trend_target_series", target_trend_regime, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y,dim=-1).detach(), display_batch_id) # y, display_batch_id)
-        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", target_true, display_batch_id)        
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_output_series", torch.nn.functional.softmax(y_short,dim=-1).detach(), display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_aux_test","y_axis_aux_test","test_aux_target_series", short_target_true, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_output_series", torch.nn.functional.softmax(y_long,dim=-1).detach(), display_batch_id) # y, display_batch_id)
+        TkUI.set_series_from_tensor("x_axis_true_test","y_axis_true_test","test_decoded_target_series", long_target_true, display_batch_id)        
 
         input_slice_size = ( input_slices[display_slice][1] - input_slices[display_slice][0] ) * prior_steps_count
         input_slice = ts_model.input_slice(display_slice)
         input_slice = torch.reshape( input_slice, ( test_batch_size, input_slice.shape[1] * input_slice.shape[2] ) )
         TkUI.set_series_from_tensor("x_axis_slice_test", "y_axis_slice_test", "test_slice_series", input_slice, 0)
 
-        y = torch.reshape( y, (y.shape[0],y.shape[1]) )
-        y = torch.nn.functional.softmax(y,dim=-1).detach()
+        y_long = torch.reshape( y_long, (y_long.shape[0],y_long.shape[1]) )
+        y_long = torch.nn.functional.softmax(y_long,dim=-1).detach()
         
-        y_accuracy = ts_recon_accuracy( y, target_true ).detach()
+        y_accuracy = ts_recon_accuracy( y_long, long_target_true ).detach()
         y_accuracy = y_accuracy.mean()
         y_accuracy_val = y_accuracy.item()
         

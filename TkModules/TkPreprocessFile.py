@@ -44,12 +44,8 @@ from dataclasses import dataclass
 class PreprocessedData:
 
     all_trades:dict
-    num_volatility_regimes:int
-    num_trend_regimes:int
     min_price_increment:float
-    regimes:list
     trends:list    
-    trend_regimes:list
 
     # time data
 
@@ -93,11 +89,6 @@ class PreprocessedData:
     cost_of_liquidity_imbalance_10bps:list
     cost_of_liquidity_imbalance_100bps:list
     cost_of_liquidity_imbalance_500bps:list
-
-    # EMA-smoothed data
-
-    smooth_volatility:list
-    smooth_trends:list
 
     @staticmethod
     def interpolate_corrupted_datetimes(dt_list: list[datetime]) -> list[datetime]:
@@ -214,11 +205,8 @@ class PreprocessedData:
             count = count -1
         return orderbooks, dt
 
-    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, regime_ema_half_life:float, trend_ema_half_life:float, trend_steps_count:int, volatility_regimes:list, trend_regime_thresholds:list, future_steps_count:int, prior_steps_count:int):
-
-        self.num_volatility_regimes = len(volatility_regimes) + 1
-        self.num_trend_regimes = len(trend_regime_thresholds) + 1
-        
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, trend_steps_count:int, future_steps_count:int, prior_steps_count:int):
+       
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
         # discretisation may vary (the exchange might occasionally change it per instrument)
@@ -275,7 +263,6 @@ class PreprocessedData:
 
         self.price = [0.0] * raw_sample_count
         self.volatility = [0.0] * raw_sample_count
-        self.regimes = [0.0] * raw_sample_count
         self.spread = [0.0] * raw_sample_count
         self.orderbook_volume = [0] * raw_sample_count
         self.orderbook_slope = [0] * raw_sample_count
@@ -325,13 +312,7 @@ class PreprocessedData:
             # adjust minimal time for next last trades sample
             last_trades_time_threshold = orderbook_sample.orderbook_ts
 
-        self.smooth_volatility = TkStatistics.irregular_ema_smoothing( self.volatility, self.time_delta, half_life=regime_ema_half_life ).tolist()
-        for i in range( raw_sample_count ):
-            self.regimes[i] = TkStatistics.volatility_to_market_regime( self.smooth_volatility[i], volatility_regimes )
-
         self.trends = TkStatistics.price_to_trends( self.price, trend_steps_count ).tolist()
-        self.smooth_trends = TkStatistics.irregular_ema_smoothing( self.trends, self.time_delta, half_life=trend_ema_half_life ).tolist()
-        self.trend_regimes = TkStatistics.trends_to_trend_regimes( self.smooth_trends, trend_regime_thresholds )
 
         self.price_change = [0.0] * raw_sample_count
         self.price_change_rate = [0.0] * raw_sample_count
@@ -541,13 +522,10 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
         ts_data_stride = int(config['TimeSeries']['TSDataStride'])        
         trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])
-        trend_regimes = json.loads(config['TimeSeries']['TrendRegimes'])
-        volatility_regimes = json.loads(config['TimeSeries']['VolatilityRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
-        future_interval = float(config['TimeSeries']['FutureInterval'])
-        regime_ema_half_life = float(config['TimeSeries']['RegimeEMAHalfLife'])
-        trend_ema_half_life = float(config['TimeSeries']['TrendEMAHalfLife'])
+        long_future_interval = float(config['TimeSeries']['LongFutureInterval'])
+        short_future_interval = float(config['TimeSeries']['ShortFutureInterval'])
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
@@ -560,7 +538,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count, prior_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -568,32 +546,39 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
             # encode future trades distribution
 
-            future_trades = [None] * (raw_sample_count)
-            future_trades_volume = [None] * (raw_sample_count)
-            future_trades_tails = [None] * (raw_sample_count)
+            long_future_trades = [None] * (raw_sample_count)
+            long_future_trades_volume = [None] * (raw_sample_count)
+            long_future_trades_tails = [None] * (raw_sample_count)
+
+            short_future_trades = [None] * (raw_sample_count)
+            short_future_trades_volume = [None] * (raw_sample_count)
+            short_future_trades_tails = [None] * (raw_sample_count)
 
             for i in range( start_range, end_range+1 ):            
                 ts_base_price = data.price[i]
 
-                #prev_orderbook_sample = raw_samples[i*2]
-                #last_trades_samples = [ (raw_samples[(i+1)*2+1], prev_orderbook_sample.orderbook_ts)]
-                #for j in range( 2, future_steps_count+1 ):
-                #    prev_orderbook_sample = raw_samples[(i+j-1)*2]
-                #    last_trades_samples.append( ( raw_samples[(i+j)*2+1], prev_orderbook_sample.orderbook_ts ) )
-
                 start_ts = int( raw_samples[i*2].orderbook_ts.timestamp() )
-                end_ts = start_ts + int( future_interval )
-                interval_last_trades_samples = [ ( data.get_interval_trades( start_ts, end_ts ), raw_samples[i*2].orderbook_ts) ]                
+                end_ts = start_ts + int( long_future_interval )
+                interval_last_trades_samples = [ ( data.get_interval_trades( start_ts, end_ts ), raw_samples[i*2].orderbook_ts) ]
 
                 for j in range( 1, future_steps_count+1 ):
                     assert interval_last_trades_samples[0][0].validate( raw_samples[(i+j)*2+1], start_ts, end_ts )
 
                 future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( interval_last_trades_samples, ts_base_price, last_trades_width, last_trades_discretization, force_categorical=True )
             
-                future_trades[i] = future_last_trades_tensor
-                future_trades_volume[i] = future_volume
-                future_trades_tails[i] = future_trades_mean_tails
+                long_future_trades[i] = future_last_trades_tensor
+                long_future_trades_volume[i] = future_volume
+                long_future_trades_tails[i] = future_trades_mean_tails
 
+                end_ts = start_ts + int( short_future_interval )
+                interval_last_trades_samples = [ ( data.get_interval_trades( start_ts, end_ts ), raw_samples[i*2].orderbook_ts) ]
+
+                future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( interval_last_trades_samples, ts_base_price, last_trades_width, last_trades_discretization, force_categorical=True )
+
+                short_future_trades[i] = future_last_trades_tensor
+                short_future_trades_volume[i] = future_volume
+                short_future_trades_tails[i] = future_trades_mean_tails
+                                
             # combine data samples
 
             callback_indices = [start_range + int(i / 10.0 * range_len) for i in range(1,10)]
@@ -606,8 +591,6 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
                 step = step + 1
 
-                ts_regime = data.regimes[i+1] 
-                ts_trend_regime = data.trend_regimes[i+1]
                 ts_input = [None] * prior_steps_count
                 ts_base_timestamp = data.timestamp[i]
                 
@@ -616,7 +599,8 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                     ts_input[j] = data.quant_sample(k, ts_base_timestamp)
                                 
                 ts_input = list( itertools.chain.from_iterable(ts_input) )
-                ts_target = future_trades[i].tolist()
+                ts_long_target = long_future_trades[i].tolist()
+                ts_short_target = short_future_trades[i].tolist()
 
                 # sample similatiry check
                 lsh_query = sample_lhs.query( ts_input, num_results=1 )
@@ -625,8 +609,8 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                     continue
                 sample_lhs.index( ts_input )
                 
-                ts_target_left_tail = future_trades_tails[i][0]
-                ts_target_right_tail = future_trades_tails[i][1]
+                ts_target_left_tail = long_future_trades_tails[i][0]
+                ts_target_right_tail = long_future_trades_tails[i][1]
                 is_priority_sample = ( ts_target_left_tail <= -priority_tail_threshold ) or ( ts_target_right_tail >= priority_tail_threshold )
 
                 ts_is_priority_sample = 1.0 if is_priority_sample else 0.0 
@@ -636,7 +620,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                         num_priority_samples = num_priority_samples + 1
                     else:
                         num_ordinary_samples = num_ordinary_samples + 1
-                    output_queue.put( (pid, [ts_input, ts_target, ts_regime, ts_trend_regime, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
+                    output_queue.put( (pid, [ts_input, ts_long_target, ts_short_target, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     
     output_queue.put( (pid, [num_priority_samples, num_ordinary_samples, raw_sample_count], False, is_test_data_source, True) )
@@ -670,13 +654,9 @@ def preprocess_file_for_inference(ticker:str, filename:str):
         ts_sample_similatiry = float(config['TimeSeries']['TSSampleSimilatiry'])
         ts_data_stride = int(config['TimeSeries']['TSDataStride'])
         trend_steps_count = int(config['TimeSeries']['TrendStepsCount'])
-        trend_regimes = json.loads(config['TimeSeries']['TrendRegimes'])
-        volatility_regimes = json.loads(config['TimeSeries']['VolatilityRegimes'])
         prior_steps_count = int(config['TimeSeries']['PriorStepsCount'])
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
         future_interval = float(config['TimeSeries']['FutureInterval'])
-        regime_ema_half_life = float(config['TimeSeries']['RegimeEMAHalfLife'])
-        trend_ema_half_life = float(config['TimeSeries']['TrendEMAHalfLife'])
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
@@ -686,7 +666,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, regime_ema_half_life, trend_ema_half_life, trend_steps_count, volatility_regimes, trend_regimes, future_steps_count, prior_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count )
 
             price = data.price[-prior_steps_count:]
             orderbook_volume = data.orderbook_volume[-prior_steps_count:]

@@ -355,8 +355,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         super(TkTimeSeriesForecaster, self).__init__()
 
         self._cfg = _cfg
-        self._num_market_regimes = len(json.loads(_cfg['TimeSeries']['VolatilityRegimes'])) + 1
-        self._num_trend_regimes = len( json.loads( _cfg['TimeSeries']['TrendRegimes'] ) ) + 1
         self._prior_steps_count = int(_cfg['TimeSeries']['PriorStepsCount']) 
         self._display_slice = int(_cfg['TimeSeries']['DisplaySlice'])  
         self._input_width = int(_cfg['TimeSeries']['InputWidth'])  
@@ -366,9 +364,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._embedding_specification = json.loads(_cfg['TimeSeries']['Embedding'])
         self._embedding_dropout = float(_cfg['TimeSeries']['EmbeddingDropout'])
         self._smm_specification = json.loads(_cfg['TimeSeries']['SMM'])
-        self._mlp = TkModel( json.loads(_cfg['TimeSeries']['MLP']) )
-        self._regime_mlp = TkModel( json.loads(_cfg['TimeSeries']['RegimeMLP']) )
-        self._trend_mlp = TkModel( json.loads(_cfg['TimeSeries']['TrendMLP']) )
+        self._long_mlp = TkModel( json.loads(_cfg['TimeSeries']['LongMLP']) )
+        self._short_mlp = TkModel( json.loads(_cfg['TimeSeries']['ShortMLP']) )
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
@@ -443,10 +440,14 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._fusion.gate[0].bias.fill_(0.0) # -2.0
 
         # reinitialize MLP weights
-        for m in self._mlp.modules():
+        for m in self._long_mlp.modules():
             if isinstance(m, torch.nn.Linear):
                 torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                torch.nn.init.constant_(m.bias, 0)        
+                torch.nn.init.constant_(m.bias, 0)
+        for m in self._short_mlp.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                torch.nn.init.constant_(m.bias, 0)
         
         self._smm_output_tensors = None
 
@@ -483,7 +484,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 embedding_no_decay_params.append(param)
 
-        for name, param in self._mlp.named_parameters():
+        for name, param in self._long_mlp.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -491,15 +492,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             else:
                 mlp_no_decay_params.append(param)
 
-        for name, param in self._regime_mlp.named_parameters():
-            if not param.requires_grad:
-                continue
-            if not any(nd in name for nd in ["bias", "norm"]):
-                mlp_decay_params.append(param)
-            else:
-                mlp_no_decay_params.append(param)
-
-        for name, param in self._trend_mlp.named_parameters():
+        for name, param in self._short_mlp.named_parameters():
             if not param.requires_grad:
                 continue
             if not any(nd in name for nd in ["bias", "norm"]):
@@ -639,30 +632,13 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         # monitoring feedback
         self._smm_output_tensors = fused
 
-        # regime prediction branch
-        y_regime = self._regime_mlp.forward( merged )
-        y_regime = torch.reshape( y_regime, (y_regime.shape[0], self._num_market_regimes ) )
+        y_long = self._long_mlp( merged )
+        y_long = torch.reshape( y_long, (y_long.shape[0],y_long.shape[1]*y_long.shape[2]))
 
-        # trend prediction branch
-        y_trend_regime = self._trend_mlp.forward( merged )
-        y_trend_regime = torch.reshape( y_trend_regime, (y_trend_regime.shape[0], self._num_trend_regimes ) )
+        y_short = self._short_mlp( merged )
+        y_short = torch.reshape( y_short, (y_short.shape[0],y_short.shape[1]*y_short.shape[2]))
 
-        y = self._mlp( merged )
-        y = torch.reshape( y, (y.shape[0],y.shape[1]*y.shape[2]))
-
-        #if not self.training:
-        #    y = torch.nn.functional.softmax(y, dim=1)
-        #    y_regime = torch.nn.functional.softmax(y_regime, dim=1)
-
-        # monitoring feedback
-        # if self.training:
-        #     self._smm_output_tensors = merged
-        # else:
-        #     self._smm_output_tensors = torch.cat( self._smm_output_tensors, dim=-1)
-        # self._smm_output_tensors = gates
-        # self._smm_output_tensors = self._smm_output_tensors[self._display_slice]
-
-        return y, y_regime, y_trend_regime
+        return y_long, y_short
 
     @staticmethod    
     def kl_divergence_from_logits(logits, target, eps=1e-8):

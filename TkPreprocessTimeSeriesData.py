@@ -135,7 +135,8 @@ if __name__ == "__main__":
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis_target" )
                     dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis_target" )
-                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_target", tag="target_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_target", tag="long_target_series" )
+                    dpg.add_line_series( [j for j in range(0, 32)], [random.random() for j in range(0, 32)], label="Target", parent="x_axis_target", tag="short_target_series" )
 
         dpg.show_viewport()
         dpg.set_primary_window("primary_window", True)
@@ -210,10 +211,13 @@ if __name__ == "__main__":
             if is_priority_sample and (time.time() - feedback_time) > 1.0:
                 feedback_time = time.time()
                 ts_input = sample[0]
-                ts_target = sample[1]
+                ts_long_target = sample[1]
+                ts_short_target = sample[2]
                 TkUI.set_series("x_axis_input","y_axis_input","input_series", ts_input)
-                ts_target_sample_view = ts_target[-1]
-                TkUI.set_series("x_axis_target","y_axis_target","target_series", ts_target_sample_view)                
+                ts_long_target_sample_view = ts_long_target[-1]
+                ts_short_target_sample_view = ts_short_target[-1]
+                TkUI.set_series("x_axis_target","y_axis_target","long_target_series", ts_long_target_sample_view)
+                TkUI.set_series("x_axis_target","y_axis_target","short_target_series", ts_short_target_sample_view)
                 dpg.set_value("samples_processed", str(len(training_index)) + "/" + str(len(test_index)))
 
         first_sample_time = None

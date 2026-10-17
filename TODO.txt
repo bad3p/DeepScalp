@@ -26,7 +26,9 @@
  [x] Try EMA normalization as a part of the model forward pass with learnable time decay parameters.
  [x] Compute price_change in percents
  [x] Investigate momentary last trades statistics normalized to rolling means
+ [x] Investigate multi-horizon foirecast
  [ ] Investigate separate last_buys and last_sells instead of last_trades
  [ ] Modify observed buyer & seller pressure data in TkPreprocessFile.py according to direction flag in TkLastTrades
  [ ] Investigate price_change normalized to volatility 
  [ ] Investigate extra aux regularization MLP predicting trade count (a mathematically distinct, orthogonal signal: conviction).
+ [ ] Investigate wasserstein distance (or better - Unbalanced Optimal Transport) as a metric of orderbook dynamics
