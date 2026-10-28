@@ -1971,3 +1971,99 @@ class TkStatistics():
         smoothed_array = np.convolve(data_array, kernel_normalized, mode='same')
     
         return smoothed_array
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Calculates the joint Shannon entropy of multiple discrete arrays in bits.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def joint_entropy(*arrays):
+        # Stack arrays vertically to treat columns as joint states
+        stacked = np.vstack(arrays)
+    
+        # Find unique state combinations and count their occurrences
+        _, counts = np.unique(stacked, axis=1, return_counts=True)
+    
+        # Calculate probabilities and standard Shannon entropy
+        probabilities = counts / np.sum(counts)
+        return -np.sum(probabilities * np.log2(probabilities))
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Calculates Directed Transfer Entropy (Source -> Target) for k=1 history.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def transfer_entropy(source, target):
+        # Create lagged vectors for time t and t+1
+        x_t = source[:-1]
+        y_t = target[:-1]
+        y_next = target[1:]
+    
+        # Calculate the four required entropy components
+        h_y_next_y_t = TkStatistics.joint_entropy(y_next, y_t)
+        h_y_t_x_t = TkStatistics.joint_entropy(y_t, x_t)
+        h_y_next_y_t_x_t = TkStatistics.joint_entropy(y_next, y_t, x_t)
+        h_y_t = TkStatistics.joint_entropy(y_t)
+    
+        # Combine using the TE identity
+        te = h_y_next_y_t + h_y_t_x_t - h_y_next_y_t_x_t - h_y_t
+    
+        # Clip to 0 to handle microscopic negative values from floating-point imprecision
+        return max(0.0, te)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Splits a 1D numpy array into 3 equal-frequency states: 0, 1, 2
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def discretize_tertiles(signal):
+        # Calculate the threshold values for the bottom 33% and top 33%
+        p33 = np.percentile(signal, 33.333)
+        p67 = np.percentile(signal, 66.667)
+    
+        # np.digitize bins the array: 
+        # Values < p33 become 0
+        # Values between p33 and p67 become 1
+        # Values > p67 become 2
+        return np.digitize(signal, bins=[p33, p67])
+
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Splits a 1D numpy array into `num_bins` equal-frequency states (from 0 to num_bins-1).
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def discretize_quantiles(signal, num_bins):
+        if num_bins < 2:
+            raise ValueError("num_bins must be at least 2")
+
+        # Generate the percentile cutoffs
+        # e.g., for 4 bins: np.linspace creates [0, 25, 50, 75, 100]
+        # [1:-1] slices off the 0 and 100, leaving [25, 50, 75]
+        percentiles = np.linspace(0, 100, num_bins + 1)[1:-1]
+    
+        # Calculate the exact values in the signal at those percentiles
+        thresholds = np.percentile(signal, percentiles)
+    
+        # Assign each value in the signal to a bin
+        return np.digitize(signal, bins=thresholds)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Converts an array of raw values into a histogram with a fixed bin size.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    def compute_histogram(data, bin_size):
+
+        # Handle empty array edge case
+        if len(data) == 0:
+            return np.array([]), np.array([])
+        
+        min_val, max_val = np.min(data), np.max(data)
+    
+        # Calculate exact bins needed. max(1, ...) forces at least one 
+        # bin if all values in the array are identical.
+        num_bins = max(1, math.ceil((max_val - min_val) / bin_size))
+    
+        # Multiply by bin indices to generate edges without floating-point drift
+        bin_edges = min_val + np.arange(num_bins + 1) * bin_size
+
+        counts, edges = np.histogram(data, bins=bin_edges)
+    
+        return counts, edges
