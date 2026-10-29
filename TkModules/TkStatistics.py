@@ -2094,53 +2094,92 @@ class TkStatistics():
         return np.sign(x) * np.sqrt(inner_sqrt - term1)
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Rolling Quantile (Gauss Rank) Normalization with Expanding Initial Window.
+    # Rolling Gauss Rank Normalization for irregular time series.
+    #   
+    #   Args:
+    #       data (np.ndarray): 1D array of observations.
+    #       deltas (np.ndarray): 1D array of time elapsed since previous sample.
+    #       time_window (float): The fixed lookback time duration (e.g., 60.0 seconds).
+    #       
+    #   Returns:
+    #       np.ndarray: Array of robust Z-scores.
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def rolling_gauss_rank(data, window):
-
+    def irregular_rolling_gauss_rank(data, deltas, time_window):
+    
         data = np.asarray(data, dtype=float)
+        deltas = np.asarray(deltas, dtype=float)
         n = len(data)
         result = np.empty_like(data, dtype=float)
     
         if n == 0:
             return result
         
-        # Handle the initial "expanding window" period (eliminates NaNs)
-        # Ranks data[i] against data[0:i+1]
-        limit = min(n, window - 1)
-        for i in range(limit):
-            if i == 0:
-                # The first element is always at the 50th percentile of a 1-element window
-                result[i] = 0.0 
+        # Convert deltas to an absolute timeline
+        timestamps = np.cumsum(deltas)
+    
+        # Vectorized lookup of the starting index for every time window
+        # side='left' ensures we include events that happened exactly 'time_window' ago
+        start_indices = np.searchsorted(timestamps, timestamps - time_window, side='left')
+    
+        # Process dynamic windows
+        for i in range(n):
+            start_idx = start_indices[i]
+        
+            # Extract the dynamic time-based window
+            window_data = data[start_idx : i + 1]
+            w_len = len(window_data)
+        
+            if w_len == 1:
+                result[i] = 0.0
                 continue
             
-            current_window = data[:i+1]
+            # Calculate ordinal rank
+            rank = np.sum(window_data <= data[i]) - 1 
         
-            # Calculate the ordinal rank of the newest element
-            # Counts elements strictly smaller, plus any preceding equal elements
-            rank = np.sum(current_window <= data[i]) - 1 
-        
-            p = (rank + 0.5) / (i + 1)
+            p = (rank + 0.5) / w_len
             x = 2.0 * p - 1.0
             result[i] = np.sqrt(2.0) * TkStatistics.erfinv_approx(x)
         
-        # Handle the rest of the array with the fast vectorized sliding window
-        if n >= window:
-            windows = sliding_window_view(data, window_shape=window)
+        return result
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Rolling Robust Z-Score for irregular time series.
+    # Uses a dynamic window based on elapsed time rather than event count.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def irregular_rolling_robust_zscore(data, deltas, time_window, epsilon=1e-8):
+
+        data = np.asarray(data, dtype=float)
+        deltas = np.asarray(deltas, dtype=float)
+        n = len(data)
+        result = np.empty_like(data, dtype=float)
+    
+        if n == 0:
+            return result
         
-            # Rank elements in each window
-            ranks = np.argsort(np.argsort(windows, axis=1), axis=1)
+        timestamps = np.cumsum(deltas)
+        start_indices = np.searchsorted(timestamps, timestamps - time_window, side='left')
+    
+        for i in range(n):
+            start_idx = start_indices[i]
+            window_data = data[start_idx : i + 1]
+            w_len = len(window_data)
         
-            # Extract the rank of the newest observation in each window
-            current_ranks = ranks[:, -1]
+            if w_len == 1:
+                result[i] = 0.0
+                continue
+            
+            # Compute Median and IQR on the ragged window
+            med = np.median(window_data)
+            q75, q25 = np.percentile(window_data, [75, 25])
+            iqr = q75 - q25
         
-            p = (current_ranks + 0.5) / window
-            x = 2.0 * p - 1.0
-            z_scores = np.sqrt(2.0) * TkStatistics.erfinv_approx(x)
-        
-            # Assign directly to the remaining slice
-            result[window - 1:] = z_scores
+            if iqr == 0:
+                iqr = epsilon
+            
+            result[i] = (data[i] - med) / iqr
         
         return result
