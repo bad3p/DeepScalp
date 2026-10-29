@@ -1992,6 +1992,7 @@ class TkStatistics():
     # Calculates Directed Transfer Entropy (Source -> Target) for k=1 history.
     #------------------------------------------------------------------------------------------------------------------------
 
+    @staticmethod
     def transfer_entropy(source, target):
         # Create lagged vectors for time t and t+1
         x_t = source[:-1]
@@ -2014,6 +2015,7 @@ class TkStatistics():
     # Splits a 1D numpy array into 3 equal-frequency states: 0, 1, 2
     #------------------------------------------------------------------------------------------------------------------------
 
+    @staticmethod
     def discretize_tertiles(signal):
         # Calculate the threshold values for the bottom 33% and top 33%
         p33 = np.percentile(signal, 33.333)
@@ -2030,6 +2032,7 @@ class TkStatistics():
     # Splits a 1D numpy array into `num_bins` equal-frequency states (from 0 to num_bins-1).
     #------------------------------------------------------------------------------------------------------------------------
 
+    @staticmethod
     def discretize_quantiles(signal, num_bins):
         if num_bins < 2:
             raise ValueError("num_bins must be at least 2")
@@ -2049,6 +2052,7 @@ class TkStatistics():
     # Converts an array of raw values into a histogram with a fixed bin size.
     #------------------------------------------------------------------------------------------------------------------------
 
+    @staticmethod
     def compute_histogram(data, bin_size):
 
         # Handle empty array edge case
@@ -2067,3 +2071,76 @@ class TkStatistics():
         counts, edges = np.histogram(data, bins=bin_edges)
     
         return counts, edges
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Winitzki's approximation for the inverse error function.
+    # Bypasses the need for scipy.special.erfinv.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def erfinv_approx(x):
+
+        # Clip to strictly avoid log(0) at the absolute extremes
+        x = np.clip(x, -0.99999, 0.99999)
+    
+        # Constant a for Winitzki's approximation
+        a = 8.0 * (np.pi - 3.0) / (3.0 * np.pi * (4.0 - np.pi)) 
+    
+        ln_term = np.log(1.0 - x**2)
+        term1 = 2.0 / (np.pi * a) + ln_term / 2.0
+        term2 = ln_term / a
+    
+        inner_sqrt = np.sqrt(term1**2 - term2)
+        return np.sign(x) * np.sqrt(inner_sqrt - term1)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Rolling Quantile (Gauss Rank) Normalization with Expanding Initial Window.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def rolling_gauss_rank(data, window):
+
+        data = np.asarray(data, dtype=float)
+        n = len(data)
+        result = np.empty_like(data, dtype=float)
+    
+        if n == 0:
+            return result
+        
+        # Handle the initial "expanding window" period (eliminates NaNs)
+        # Ranks data[i] against data[0:i+1]
+        limit = min(n, window - 1)
+        for i in range(limit):
+            if i == 0:
+                # The first element is always at the 50th percentile of a 1-element window
+                result[i] = 0.0 
+                continue
+            
+            current_window = data[:i+1]
+        
+            # Calculate the ordinal rank of the newest element
+            # Counts elements strictly smaller, plus any preceding equal elements
+            rank = np.sum(current_window <= data[i]) - 1 
+        
+            p = (rank + 0.5) / (i + 1)
+            x = 2.0 * p - 1.0
+            result[i] = np.sqrt(2.0) * TkStatistics.erfinv_approx(x)
+        
+        # Handle the rest of the array with the fast vectorized sliding window
+        if n >= window:
+            windows = sliding_window_view(data, window_shape=window)
+        
+            # Rank elements in each window
+            ranks = np.argsort(np.argsort(windows, axis=1), axis=1)
+        
+            # Extract the rank of the newest observation in each window
+            current_ranks = ranks[:, -1]
+        
+            p = (current_ranks + 0.5) / window
+            x = 2.0 * p - 1.0
+            z_scores = np.sqrt(2.0) * TkStatistics.erfinv_approx(x)
+        
+            # Assign directly to the remaining slice
+            result[window - 1:] = z_scores
+        
+        return result

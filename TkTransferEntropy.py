@@ -17,6 +17,7 @@ import threading
 import multiprocessing as mp
 from queue import Empty  # for non-blocking queue reads
 from joblib import Parallel, delayed
+from npeet import entropy_estimators as ee
 from t_tech.invest.constants import INVEST_GRPC_API
 from t_tech.invest import Client
 from t_tech.invest import InstrumentType
@@ -32,11 +33,20 @@ from TkModules.TkStatistics import TkStatistics
 from TkModules.TkUI import TkUI
 from TkModules.TkPreprocessFile import PreprocessedData
 
+
 #------------------------------------------------------------------------------------------------------------------------
 # Computes transfer entropy & put the result to output queue
 #------------------------------------------------------------------------------------------------------------------------
 
-def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:list, ema_norm_step_variants:list, ema_norm_base_time:float):
+def conditional_mutual_information( x, y ):
+    jitter_x = np.random.normal(0, 1e-10, size=x.shape)
+    jitter_y = np.random.normal(0, 1e-10, size=y.shape)
+    a_t = (x[1:-1] + jitter_x[1:-1]).reshape(-1, 1)
+    b_t = (y[:-2] + jitter_y[:-2]).reshape(-1, 1)
+    b_next = (y[1:-1] + jitter_y[1:-1]).reshape(-1, 1)
+    return max( 0.0, ee.cmi(x=b_next, y=a_t, z=b_t, k=20, base=2) )
+
+def compute_transfer_entropy(output_queue, ticker:str, filenames:list, features:list, ema_norm_step_variants:list, ema_norm_base_time:float):
 
     pid = os.getpid()
 
@@ -46,7 +56,7 @@ def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:li
         config = configparser.ConfigParser()
         config.read( 'TkConfig.ini' )
         
-        data_path = config['Paths']['DataPath']        
+        data_path = config['Paths']['DataPath']
         orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
         last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
         last_trades_discretization = float(config['Autoencoders']['LastTradesDiscretization'])
@@ -55,8 +65,11 @@ def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:li
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
 
         share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
-        raw_samples = TkIO.read_at_path( join( data_path, filename) )
         
+        raw_samples = []
+        for filename in filenames:
+            raw_samples.extend( TkIO.read_at_path( join( data_path, filename) ) )
+       
         preprocessed_data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count )
         
         price_history = []
@@ -66,7 +79,8 @@ def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:li
             orderbook_sample = raw_samples[i*2]
             price_history.append( float(orderbook_sample.last_price) )
         
-        price_history_delta = np.diff( price_history )
+        #price_history_delta = np.diff( price_history )
+        price_history_delta = np.log( np.array(price_history[1:]) / np.array(price_history)[:-1])
         
         #price_history_1 = np.array(price_history)[1:-3]
         #price_history_2 = np.array(price_history)[2:-2]
@@ -75,8 +89,12 @@ def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:li
         #price_history_mean_next_4 = (price_history_1 + price_history_2 + price_history_3 + price_history_4) / 4.0
         #price_history_delta = price_history_mean_next_4 - price_history[:-4]
         
-        price_history_delta_discrete = TkStatistics.discretize_quantiles(price_history_delta, 3)
-        
+        price_history_delta_discrete = TkStatistics.discretize_quantiles(price_history_delta, 5)
+
+        gauss_rank_features = [ 'orderbook_volume', 'last_trades_volume', 'average_trade_size',
+                                'last_trades_rate', 'queue_depletion_intensity', 'order_arrival_intensity',
+                                'last_trades_num_events', 'last_trades_frequency' ]
+       
         for feature in features:
         
             if feature == 'baseline':
@@ -87,12 +105,17 @@ def compute_transfer_entropy(output_queue, ticker:str, filename:str, features:li
                 
             for ema_norm_step_count in ema_norm_step_variants:
                 ema_norm_time = ema_norm_base_time * ema_norm_step_count
-                preprocessed_feature = TkStatistics.irregular_ema_normalize( feature_data, preprocessed_data.time_delta, ema_norm_time ).tolist()
+
+                if feature in gauss_rank_features:
+                    preprocessed_feature = TkStatistics.rolling_gauss_rank( feature_data, ema_norm_step_count ).tolist()
+                else:
+                    preprocessed_feature = TkStatistics.irregular_ema_normalize( feature_data, preprocessed_data.time_delta, ema_norm_time ).tolist()
+
                 #preprocessed_feature = preprocessed_feature[:-4] # match length of price_history_delta 
                 preprocessed_feature = preprocessed_feature[:-1] # match length of price_history_delta 
-                preprocessed_feature_discrete = TkStatistics.discretize_quantiles(preprocessed_feature, 3)
-                te = TkStatistics.transfer_entropy( preprocessed_feature_discrete, price_history_delta_discrete )
-                #te = TkStatistics.transfer_entropy( price_history_delta_discrete, preprocessed_feature_discrete )
+                #preprocessed_feature_discrete = TkStatistics.discretize_quantiles(preprocessed_feature, 5)
+                #te = TkStatistics.transfer_entropy( preprocessed_feature_discrete, price_history_delta_discrete )
+                te = conditional_mutual_information( np.array(preprocessed_feature), np.array(price_history_delta) )
                 output_queue.put( (pid, False, feature, ema_norm_step_count, te) )                
 
     output_queue.put( (pid, True, '', 0, 0.0) )
@@ -122,7 +145,18 @@ if __name__ == "__main__":
     ema_norm_base_time = 67.0
 
     data_files = [fileName for fileName in listdir(data_path) if (market_data_extension in fileName) and isfile(join(data_path, fileName))]
-    random.shuffle(data_files)
+
+    files_by_ticker = TkInstrument.group_by_ticker(data_files)
+
+    # sort by date
+
+    data_files = []
+    for ticker in files_by_ticker:
+        num_data_sources = len(files_by_ticker[ticker])
+        for i in range(num_data_sources):
+            date_and_filename = files_by_ticker[ticker][i]
+            filename = date_and_filename[1]
+            data_files.append( filename )
 
     ema_norm_step_variants = [ int(prior_steps_count/4), int(prior_steps_count/3), int(prior_steps_count/2), prior_steps_count]
 
@@ -158,8 +192,6 @@ if __name__ == "__main__":
         for ema_norm_step_count in ema_norm_step_variants:
             transfer_entropy_samples[feature][ema_norm_step_count] = []
 
-    print( 'Data files found:', len(data_files) )
-
     with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.create_context()
@@ -190,6 +222,7 @@ if __name__ == "__main__":
         dpg.show_viewport()
         dpg.set_primary_window("primary_window", True)
 
+        max_num_data_files = 6
         max_num_processes = 12
         max_queue_size = 2048
         max_queue_fetch_steps = int( max_queue_size / max_num_processes )
@@ -211,18 +244,23 @@ if __name__ == "__main__":
                 filename = data_files[0]
                 del data_files[0]
 
-                if 'evening' in str.lower(filename):
-                    continue
-
                 ticker = filename[ 0: filename.find("_") ]
 
-                process = mp.Process(target=compute_transfer_entropy, args=(output_queue, ticker, filename, features, ema_norm_step_variants, ema_norm_base_time ))
-                process.start()
-                processes.append(process)
+                filenames = [filename]
+
+                while len(data_files) > 0 and data_files[0][ 0: filename.find("_") ] == ticker and len(filenames) < max_num_data_files:
+                    filename = data_files[0]
+                    del data_files[0]
+                    filenames.append( filename )
+                    files_processed = files_processed + 1
+
+                if len(filenames) == max_num_data_files:
+                    process = mp.Process(target=compute_transfer_entropy, args=(output_queue, ticker, filenames, features, ema_norm_step_variants, ema_norm_base_time ))
+                    process.start()
+                    processes.append(process)
 
                 dpg.set_value("filename", filename)
-                dpg.set_value("files_processed", str(files_processed))
-                files_processed = files_processed + 1
+                dpg.set_value("files_processed", str(files_processed))                
 
             max_queue_fetch_steps = int(output_queue.qsize() / 2) + 1
 
@@ -249,6 +287,7 @@ if __name__ == "__main__":
                 feature = tuple[0]
                 ema_norm_step_count = tuple[1]
                 te_histogram, te_labels = TkStatistics.compute_histogram( transfer_entropy_samples[feature][ema_norm_step_count], 0.001 )
+                te_labels = (te_labels[:-1] + te_labels[1:]) / 2
                 te_histogram = np.log1p(te_histogram)
                 te_histogram = te_histogram.tolist()
                 te_labels = te_labels.tolist()
