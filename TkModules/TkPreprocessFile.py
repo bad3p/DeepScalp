@@ -205,7 +205,7 @@ class PreprocessedData:
             count = count -1
         return orderbooks, dt
 
-    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, trend_steps_count:int, future_steps_count:int, prior_steps_count:int):
+    def __init__(self, share:TkInstrument, raw_samples:list, orderbook_width:int, last_trades_width:int, last_trades_discretization:float, trend_steps_count:int, future_steps_count:int, prior_steps_count:int, preprocessing_specifications:dict = None):
        
         raw_sample_count = int( len(raw_samples) / 2 ) # [ orderbook, last_trades, .... ]
 
@@ -401,7 +401,34 @@ class PreprocessedData:
             self.cost_of_liquidity_imbalance_100bps[i] = TkStatistics.compute_liquidity_imbalance( self.cost_of_buying_liquidity_100bps[i], self.cost_of_selling_liquidity_100bps[i] )
             self.cost_of_liquidity_imbalance_500bps[i] = TkStatistics.compute_liquidity_imbalance( self.cost_of_buying_liquidity_500bps[i], self.cost_of_selling_liquidity_500bps[i] )
 
-        average_orderbook_volume = None # TEST breakpoint
+        # preprocessing
+
+        if not preprocessing_specifications is None:
+            for feature in preprocessing_specifications:
+                feature_data = getattr(self, feature)
+                preprocessed_feature_data = None
+                alg = preprocessing_specifications[feature]["alg"]
+                if alg == "symlog1p":
+                    preprocessed_feature_data = ( np.sign(feature_data) * np.log1p(np.abs(feature_data)) ).tolist()
+                elif alg == "log":
+                    preprocessed_feature_data = np.log(feature_data + np.finfo(np.float32).eps ).tolist()
+                elif alg == "fracdiff":                    
+                    preprocessed_feature_data = TkStatistics.irregular_fractional_differentiation( feature_data, self.time_delta, preprocessing_specifications[feature]["frac"], preprocessing_specifications[feature]["time"] ).tolist()
+                elif alg == "rrz":
+                    epsilon = preprocessing_specifications[feature]["epsilon"]
+                    preprocessed_feature_data = TkStatistics.irregular_rolling_robust_zscore( feature_data, self.time_delta, preprocessing_specifications[feature]["time"], epsilon ).tolist()
+                elif alg == "rgr":
+                    preprocessed_feature_data = TkStatistics.irregular_rolling_gauss_rank( feature_data, self.time_delta, preprocessing_specifications[feature]["time"] ).tolist()
+                elif alg == "ema":
+                    preprocessed_feature_data = TkStatistics.irregular_ema_normalize( feature_data, self.time_delta, 0.4, preprocessing_specifications[feature]["time"] ).tolist()
+                if not preprocessed_feature_data is None:
+
+                    for i in range(len(preprocessed_feature_data)):
+                        if abs(preprocessed_feature_data[i] > 1000.0):
+                            print( feature, feature_data[i], preprocessed_feature_data[i])
+
+                    setattr(self, feature, preprocessed_feature_data)
+
 
     def get_interval_trades(self, start_ts:int, end_ts:int):
         return TkLastTrades( self.all_trades, start_ts, end_ts )
@@ -449,7 +476,7 @@ class PreprocessedData:
         # slice 7: time data
         age_seconds = max(0.0, base_timestamp - self.timestamp[i])
         sample.append( self.log_time_delta[i] )
-        sample.append( age_seconds )
+        sample.append( math.log( age_seconds + 1 ) )
 
         assert not any(math.isnan(x) for x in sample)
 
@@ -527,6 +554,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
         long_future_interval = float(config['TimeSeries']['LongFutureInterval'])
         short_future_interval = float(config['TimeSeries']['ShortFutureInterval'])
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
+        preprocessing_specifications = json.loads(config['TimeSeries']['PreprocessingSpecs'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
         #try_average_pool_duplicates( raw_samples )
@@ -538,7 +566,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
         if raw_sample_count >= prior_steps_count + future_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count, preprocessing_specifications )
 
             start_range = prior_steps_count - 1
             end_range = raw_sample_count - future_steps_count - 1
@@ -658,6 +686,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
         future_steps_count = int(config['TimeSeries']['FutureStepsCount'])
         future_interval = float(config['TimeSeries']['FutureInterval'])
         priority_tail_threshold = float(config['TimeSeries']['PriorityTailThreshold'])
+        preprocessing_specifications = json.loads(config['TimeSeries']['PreprocessingSpecs'])
 
         raw_samples = TkIO.read_at_path( join( data_path, filename) )
         #try_average_pool_duplicates( raw_samples )
@@ -666,7 +695,7 @@ def preprocess_file_for_inference(ticker:str, filename:str):
 
         if raw_sample_count >= prior_steps_count:
 
-            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count )
+            data = PreprocessedData( share, raw_samples, orderbook_width, last_trades_width, last_trades_discretization, trend_steps_count, future_steps_count, prior_steps_count, preprocessing_specifications )
 
             price = data.price[-prior_steps_count:]
             orderbook_volume = data.orderbook_volume[-prior_steps_count:]

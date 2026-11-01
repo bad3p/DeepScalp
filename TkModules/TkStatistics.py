@@ -2106,10 +2106,10 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def irregular_rolling_gauss_rank(data, deltas, time_window):
+    def irregular_rolling_gauss_rank(data, delta_times, time_window):
     
         data = np.asarray(data, dtype=float)
-        deltas = np.asarray(deltas, dtype=float)
+        delta_times = np.asarray(delta_times, dtype=float)
         n = len(data)
         result = np.empty_like(data, dtype=float)
     
@@ -2117,7 +2117,7 @@ class TkStatistics():
             return result
         
         # Convert deltas to an absolute timeline
-        timestamps = np.cumsum(deltas)
+        timestamps = np.cumsum(delta_times)
     
         # Vectorized lookup of the starting index for every time window
         # side='left' ensures we include events that happened exactly 'time_window' ago
@@ -2150,17 +2150,17 @@ class TkStatistics():
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
-    def irregular_rolling_robust_zscore(data, deltas, time_window, epsilon=1e-8):
+    def irregular_rolling_robust_zscore(data, delta_times, time_window, epsilon=1e-8):
 
         data = np.asarray(data, dtype=float)
-        deltas = np.asarray(deltas, dtype=float)
+        delta_times = np.asarray(delta_times, dtype=float)
         n = len(data)
         result = np.empty_like(data, dtype=float)
     
         if n == 0:
             return result
         
-        timestamps = np.cumsum(deltas)
+        timestamps = np.cumsum(delta_times)
         start_indices = np.searchsorted(timestamps, timestamps - time_window, side='left')
     
         for i in range(n):
@@ -2177,9 +2177,106 @@ class TkStatistics():
             q75, q25 = np.percentile(window_data, [75, 25])
             iqr = q75 - q25
         
-            if iqr == 0:
-                iqr = epsilon
+            # Enforce a hard floor to defeat floating-point near-zeros
+            if iqr < epsilon:
+                std = np.std(window_data)
+                iqr = max(std, epsilon) 
             
-            result[i] = (data[i] - med) / iqr
+            # Define dynamic bounds (e.g., 5 IQRs from the quartiles)
+            # This mathematically restricts the maximum possible Z-score to ~ +/- 5.5
+            lower_bound = q25 - 5.0 * iqr
+            upper_bound = q75 + 5.0 * iqr
+            
+            # Clip the raw observation to the dynamic bounds
+            clipped_val = np.clip(data[i], lower_bound, upper_bound)
+            
+            # Calculate the robust Z-score
+            result[i] = (clipped_val - med) / iqr
         
         return result
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Generates the discrete binomial weights up to a maximum lag.
+    # These serve as the base curve for continuous time interpolation.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def get_continuous_base_weights(d, max_lag):
+    
+        if max_lag <= 0:
+            return np.array([])
+    
+        weights = np.empty(max_lag, dtype=float)
+        weights[0] = 1.0
+    
+        if max_lag > 1:
+            k = np.arange(1, max_lag)
+            # Ratio for the next weight in the binomial series
+            ratios = -(d - k + 1) / k
+            weights[1:] = np.cumprod(ratios)
+        
+        return weights
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Applies fractional differentiation to an irregularly sampled array X.
+    #   
+    #   Args:
+    #       data (np.ndarray): 1D array of time series values (e.g., price or trend).
+    #       delta_times (np.ndarray): 1D array of time elapsed since the previous sample.
+    #       d (float): The fractional differencing parameter (typically 0 < d < 1).
+    #       time_window (float): The maximum historical time duration to look back.
+    #       
+    #   Returns:
+    #       np.ndarray: The fractionally differenced array.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def irregular_fractional_differentiation(data, delta_times, d, time_window):
+
+        data = np.asarray(data, dtype=float)
+        delta_times = np.asarray(delta_times, dtype=float)
+        n = len(data)
+        result = np.zeros_like(data)
+    
+        if n == 0:
+            return result
+        
+        # Map deltas to an absolute continuous timeline
+        timestamps = np.cumsum(delta_times)
+    
+        # Establish the "Base Tick" to normalize elapsed time into an effective lag
+        valid_deltas = delta_times[delta_times > 0]
+        base_dt = np.median(valid_deltas) if len(valid_deltas) > 0 else 1.0
+    
+        # Precompute the base weight curve up to the maximum possible effective lag
+        max_eff_lag = int(time_window / base_dt) + 2
+        base_weights = TkStatistics.get_continuous_base_weights(d, max_eff_lag)
+        base_lags = np.arange(max_eff_lag)
+    
+        # Vectorized lookup for the start index of every time-bound window
+        start_indices = np.searchsorted(timestamps, timestamps - time_window, side='left')
+    
+        # Apply dynamic weights to ragged windows
+        for i in range(n):
+            start_idx = start_indices[i]
+        
+            # Extract the chronological data for this specific time window
+            window_X = data[start_idx : i + 1]
+        
+            if len(window_X) == 1:
+                result[i] = window_X[0]
+                continue
+            
+            # Calculate exact time elapsed from current step 'i' backwards to each past event
+            elapsed_times = timestamps[i] - timestamps[start_idx : i + 1]
+        
+            # Convert elapsed times to effective continuous lags
+            eff_lags = elapsed_times / base_dt
+        
+            # Interpolate the exact weights based on the continuous lags
+            weights = np.interp(eff_lags, base_lags, base_weights)
+        
+            # The fractional difference is the dot product of the historical values and their time-decayed weights
+            result[i] = np.sum(window_X * weights)
+        
+        return result    

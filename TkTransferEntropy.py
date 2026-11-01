@@ -91,6 +91,12 @@ def compute_transfer_entropy(output_queue, ticker:str, filenames:list, features:
         
         price_history_delta_discrete = TkStatistics.discretize_quantiles(price_history_delta, 5)
 
+        log_transform_features = ['volatility']
+
+        symmetric_log_transform_features = ['price_change', 'price_change_rate']
+
+        fractional_differentiation_features = ['orderbook_microprice']
+
         gauss_rank_features = [ 'orderbook_volume', 'last_trades_volume', 'average_trade_size',
                                 'last_trades_rate', 'queue_depletion_intensity', 'order_arrival_intensity',
                                 'last_trades_num_events', 'last_trades_frequency' ]
@@ -98,7 +104,7 @@ def compute_transfer_entropy(output_queue, ticker:str, filenames:list, features:
         rolling_robust_zscore_features = [ 'queue_imbalance', 'order_flow_imbalance_rate', 'trade_flow_imbalance',
                                            'order_flow_imbalance_shock', 'queue_depletion_imbalance', 'order_arrival_imbalance',
                                            'cost_of_liquidity_imbalance_10bps', 'cost_of_liquidity_imbalance_100bps', 'cost_of_liquidity_imbalance_500bps',
-                                           'spread', 'orderbook_slope' ]
+                                           'spread', 'orderbook_slope', 'trends' ]
 
        
         for feature in features:
@@ -111,8 +117,13 @@ def compute_transfer_entropy(output_queue, ticker:str, filenames:list, features:
                 
             for ema_norm_step_count in ema_norm_step_variants:
                 ema_norm_time = ema_norm_base_time * ema_norm_step_count
-
-                if feature in gauss_rank_features:
+                if feature in log_transform_features:
+                    preprocessed_feature = np.log(feature_data + np.finfo(np.float32).eps )
+                elif feature in symmetric_log_transform_features:
+                    preprocessed_feature = np.sign(feature_data) * np.log1p(np.abs(feature_data))
+                elif feature in fractional_differentiation_features:
+                    preprocessed_feature = TkStatistics.irregular_fractional_differentiation( feature_data, preprocessed_data.time_delta, 0.4, ema_norm_time ).tolist()
+                elif feature in gauss_rank_features:
                     preprocessed_feature = TkStatistics.irregular_rolling_gauss_rank( feature_data, preprocessed_data.time_delta, ema_norm_time ).tolist()
                 elif feature in rolling_robust_zscore_features:
                     preprocessed_feature = TkStatistics.irregular_rolling_robust_zscore( feature_data, preprocessed_data.time_delta, ema_norm_time ).tolist()

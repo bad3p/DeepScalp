@@ -369,7 +369,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_embedding_dims = int(_cfg['TimeSeries']['FusionEmbeddingDims']) 
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
-        self._init_ema_half_life = json.loads(_cfg['TimeSeries']['InitEMAHalfLife'])        
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -378,7 +377,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._fusion_input_dims = []
 
-        self._ema_norm = []
         self._embedding = []
         self._smm_proj = []
         self._smm = []
@@ -388,8 +386,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             ch0 = self._input_slices[i][0]
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
-
-            self._ema_norm.append( ParallelContinuousEMANorm( num_features=slice_size, eps=1e-5, init_time_constants=self._init_ema_half_life[i]) )
 
             if not self._embedding_specification[i]:
                 self._embedding.append( torch.nn.Identity() )
@@ -421,7 +417,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             self._mlp_input_size = self._mlp_input_size + model_size
             self._fusion_input_dims.append( model_size )
 
-        self._ema_norm = torch.nn.ModuleList( self._ema_norm )
         self._embedding = torch.nn.ModuleList( self._embedding )
         self._smm_proj = torch.nn.ModuleList( self._smm_proj )
         self._smm = torch.nn.ModuleList( self._smm )
@@ -451,7 +446,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         
         self._smm_output_tensors = None
 
-    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float, ema_learning_rate:float):
+    def get_trainable_parameters(self, embedding_weight_decay:float, smm_weight_decay:float, fusion_weight_decay:float, mlp_weight_decay:float, embedding_learning_rate:float, smm_learning_rate:float, smm_ev_learning_rate:float, smm_dt_learning_rate:float, fusion_learning_rate:float, mlp_learning_rate:float):
 
         embedding_decay_params = []
         embedding_no_decay_params = []
@@ -509,10 +504,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
                 fusion_no_decay_params.append(param)
 
         other = []
-        for ema_norm in self._ema_norm:
-            other.append( ema_norm.w )
-            other.append( ema_norm.gamma )
-            other.append( ema_norm.beta )
 
         return [
             {"params": embedding_decay_params, "weight_decay": embedding_weight_decay, 'lr': embedding_learning_rate}, #0
@@ -525,7 +516,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             {"params": mlp_no_decay_params, "weight_decay": 0.0, 'lr': mlp_learning_rate}, #7
             {"params": fusion_decay_params, "weight_decay": fusion_weight_decay, 'lr': fusion_learning_rate}, #8
             {"params": fusion_no_decay_params, "weight_decay": 0.0, 'lr': fusion_learning_rate}, #9
-            {"params": other, "weight_decay": 0.0, 'lr': ema_learning_rate}, #10
+            {"params": other, "weight_decay": 0.0, 'lr': 0.0}, #10
         ]
     
     def embedding_group_indices(self):
@@ -556,23 +547,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         return [8,9]
     
     def fusion_decay_group_indices(self):
-        return [8]
-
-    def ema_group_indices(self):
-        return [10]
-
-    def ema_half_life(self):
-
-        result = []
-        for ema_norm in self._ema_norm:
-            w = ema_norm.w.detach()
-            w = torch.exp( w )
-            w = w + 1
-            w = torch.log( w)
-            w = 1.0 / w
-            
-            result.extend( list(w) )
-        return result
+        return [8]    
 
     def smm_output(self):
         return self._smm_output_tensors
@@ -598,8 +573,6 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
             input_slice_tensor = input[:, :, ch0:ch1]
-
-            input_slice_tensor, _ = self._ema_norm[i]( input_slice_tensor, time_delta )
             
             self._input_slice_tensors.append( input_slice_tensor )
 
