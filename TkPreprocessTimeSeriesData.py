@@ -146,6 +146,12 @@ if __name__ == "__main__":
         start_time = time.time()
         feedback_time = time.time()
 
+        # build index
+
+        instrument_index = list(files_by_ticker.keys())
+        with open( "TkInstrumentIndex.json", "w", encoding="utf-8") as file:
+            json.dump( instrument_index, file, indent=4, ensure_ascii=False )
+
         # prepare list of data sources
 
         data_sources = []
@@ -210,9 +216,10 @@ if __name__ == "__main__":
                 training_data_offset = training_data_stream.tell()
             if is_priority_sample and (time.time() - feedback_time) > 1.0:
                 feedback_time = time.time()
-                ts_input = sample[0]
-                ts_long_target = sample[1]
-                ts_short_target = sample[2]
+                ts_index = sample[0]
+                ts_input = sample[1]
+                ts_long_target = sample[2]
+                ts_short_target = sample[3]
                 TkUI.set_series("x_axis_input","y_axis_input","input_series", ts_input)
                 ts_long_target_sample_view = ts_long_target[-1]
                 ts_short_target_sample_view = ts_short_target[-1]
@@ -229,11 +236,12 @@ if __name__ == "__main__":
                 data_source = data_sources[0]
                 del data_sources[0]
 
-                ticker = data_source[0]                
+                ticker = data_source[0]
+                index = instrument_index.index(ticker)
                 is_test_data_source = data_source[1]
                 filename = data_source[2]
 
-                process = mp.Process(target=preprocess_file_for_training, args=(output_queue, ticker, is_test_data_source, filename))
+                process = mp.Process(target=preprocess_file_for_training, args=(output_queue, ticker, index, is_test_data_source, filename))
                 process.start()
                 processes.append(process)
 

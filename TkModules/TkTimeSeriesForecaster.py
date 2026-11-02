@@ -1,7 +1,9 @@
 import math
 import configparser
+from numpy import number
 import torch
 import json
+import itertools
 from torch.distributions import Gamma, Dirichlet
 from TkModules.TkModel import TkModel
 from TkModules.TkStackedLSTM import TkStackedLSTM
@@ -345,6 +347,103 @@ class ParallelContinuousEMANorm(torch.nn.Module):
         return x_norm, (final_mu, final_var)
 
 # --------------------------------------------------------------------------------------------------------------
+# EMA Norm module supporting multiple instrument with separate norm parameters
+# --------------------------------------------------------------------------------------------------------------
+
+class MultiInstrumentParallelContinuousEMANorm(torch.nn.Module):
+    def __init__(self, num_instruments, num_features, eps=1e-5, init_time_constants=None):
+        super().__init__()
+        self.num_instruments = num_instruments
+        self.num_features = num_features
+        self.eps = eps
+        
+        if init_time_constants is not None:
+            tau = torch.tensor(init_time_constants, dtype=torch.float32)
+            target_lambdas = 1.0 / tau
+            if target_lambdas.dim() == 0:
+                target_lambdas = target_lambdas.expand(num_features)
+        else:
+            target_lambdas = torch.full((num_features,), math.log(2.0))
+            
+        # Initialize time constants and expand them for all instruments
+        w_init = torch.log(torch.exp(target_lambdas) - 1.0)
+        w_init = w_init.unsqueeze(0).expand(num_instruments, -1).clone()
+        
+        # Parameters now have shape (num_instruments, num_features)
+        self.w = torch.nn.Parameter(w_init)
+        self.gamma = torch.nn.Parameter(torch.ones(num_instruments, num_features))
+        self.beta = torch.nn.Parameter(torch.zeros(num_instruments, num_features))
+
+    def _parallel_scan(self, u, lam_T):
+        """
+        Computes the parallel prefix sum in log-space for strictly non-negative inputs.
+        """
+        # Clamp strictly above 0 to prevent NaN gradients in backward pass
+        # The backward pass of clamp_min safely assigns a 0 gradient for inputs < 1e-12
+        u_clamped = u.clamp_min(1e-12)
+        
+        # Directly compute log. We no longer inject -inf for 0-values.
+        log_u = torch.log(u_clamped)
+        
+        # Parallel cumulative sum in log space: log( sum( exp(lam_T + log_u) ) )
+        scan = torch.logcumsumexp(lam_T + log_u, dim=1)
+        
+        # Multiply by exp(-lambda * T) by subtracting in log space, then exponentiate
+        return torch.exp(scan - lam_T)
+
+    def forward(self, x, dt, instrument_ids, init_mu=None, init_var=None):
+        batch_size, seq_len, _ = x.shape
+        
+        # --- Parameter Lookup ---
+        # Fetch parameters for the current batch: (batch_size, num_features)
+        # Then unsqueeze to broadcast across seq_len: (batch_size, 1, num_features)
+        w_batch = self.w[instrument_ids]
+        gamma_batch = self.gamma[instrument_ids].unsqueeze(1)
+        beta_batch = self.beta[instrument_ids].unsqueeze(1)
+        
+        # Calculate lambdas dynamically for each batch instance
+        lambdas = torch.nn.functional.softplus(w_batch).unsqueeze(1)
+        
+        # Cumulative time vector T_t
+        T = torch.cumsum(dt, dim=1)
+        lam_T = lambdas * T
+        
+        # Decay factor for current step: alpha_t
+        alpha = torch.exp(-lambdas * dt)
+        
+        # --- 1. PARALLEL MEAN SCAN ---
+        u = (1 - alpha) * x
+        
+        # We must split 'u' into positive and negative streams because log(-x) is undefined
+        mu_pos = self._parallel_scan(torch.relu(u), lam_T)
+        mu_neg = self._parallel_scan(torch.relu(-u), lam_T)
+        mu = mu_pos - mu_neg
+        
+        # Apply the initial mean state decay
+        if init_mu is None:
+            init_mu = x[:, 0, :]
+        mu = mu + init_mu.unsqueeze(1) * torch.exp(-lam_T)
+        
+        # --- 2. PARALLEL VARIANCE SCAN ---
+        # With mu computed for all 't', variance v_t is just another non-negative scan
+        v = (1 - alpha) * (x - mu)**2
+        var = self._parallel_scan(v, lam_T)
+        
+        if init_var is None:
+            init_var = torch.zeros_like(x[:, 0, :])
+        var = var + init_var.unsqueeze(1) * torch.exp(-lam_T)
+        
+        # --- 3. NORMALIZATION ---
+        x_norm = (x - mu) / torch.sqrt(var + self.eps)
+        x_norm = x_norm * gamma_batch + beta_batch
+        
+        # Extract the final hidden states for the next sequence chunk
+        final_mu = mu[:, -1, :]
+        final_var = var[:, -1, :]
+        
+        return x_norm, (final_mu, final_var)
+
+# --------------------------------------------------------------------------------------------------------------
 # Time series forecasting model
 # --------------------------------------------------------------------------------------------------------------
 
@@ -370,6 +469,9 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         self._fusion_attention_heads = int(_cfg['TimeSeries']['FusionAttentionHeads']) 
         self._fusion_dropout = float(_cfg['TimeSeries']['FusionDropout'])    
         self._init_ema_half_life = json.loads(_cfg['TimeSeries']['InitEMAHalfLife'])        
+        
+        with open( "TkInstrumentIndex.json", "r", encoding="utf-8") as file:
+            self._instrument_index = json.load(file)
 
         if len(self._input_slices) != len(self._smm_specification):
             raise RuntimeError('InputSlices and SMM config mismatched!')
@@ -389,7 +491,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             ch1 = self._input_slices[i][1]
             slice_size = ch1 - ch0
 
-            self._ema_norm.append( ParallelContinuousEMANorm( num_features=slice_size, eps=1e-5, init_time_constants=self._init_ema_half_life[i]) )
+            if i % 2 == 0:
+                self._ema_norm.append( ParallelContinuousEMANorm( num_features=slice_size, eps=1e-5, init_time_constants=self._init_ema_half_life[i]) )
+            else:
+                self._ema_norm.append( MultiInstrumentParallelContinuousEMANorm( num_features=slice_size, num_instruments=len(self._instrument_index), eps=1e-5, init_time_constants=self._init_ema_half_life[i]) )
 
             if not self._embedding_specification[i]:
                 self._embedding.append( torch.nn.Identity() )
@@ -564,14 +669,21 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def ema_half_life(self):
 
         result = []
-        for ema_norm in self._ema_norm:
+
+        for i in range(len(self._ema_norm)):
+            ema_norm = self._ema_norm[i]
             w = ema_norm.w.detach()
             w = torch.exp( w )
             w = w + 1
             w = torch.log( w)
             w = 1.0 / w
+            if i%2 == 0:
+                w = w.detach().flatten().tolist()
+                result.extend( w )
+            else:
+                w = torch.mean( w.detach(), dim=0)
+                result.extend( w )
             
-            result.extend( list(w) )
         return result
 
     def smm_output(self):
@@ -580,7 +692,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
     def input_slice(self, idx:int):
         return self._input_slice_tensors[idx]
 
-    def forward(self, input):
+    def forward(self, input, indices):
 
         batch_size = input.shape[0]
 
@@ -599,7 +711,10 @@ class TkTimeSeriesForecaster(torch.nn.Module):
             slice_size = ch1 - ch0
             input_slice_tensor = input[:, :, ch0:ch1]
 
-            input_slice_tensor, _ = self._ema_norm[i]( input_slice_tensor, time_delta )
+            if i%2 == 0:
+                input_slice_tensor, _ = self._ema_norm[i]( input_slice_tensor, time_delta )
+            else:
+                input_slice_tensor, _ = self._ema_norm[i]( input_slice_tensor, time_delta, indices )
             
             self._input_slice_tensors.append( input_slice_tensor )
 

@@ -490,14 +490,13 @@ def try_average_pool_duplicates(raw_samples:list):
 
     if num_pooled_samples > 0:
         print( 'Found & pooled', num_pooled_samples, 'duplicated samples' )
-
-            
+           
 
 #------------------------------------------------------------------------------------------------------------------------
 # Preprocessing for training, adopted for MP
 #------------------------------------------------------------------------------------------------------------------------
 
-def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:bool, filename:str):
+def preprocess_file_for_training(output_queue, ticker:str, index:int, is_test_data_source:bool, filename:str):
 
     pid = os.getpid()
 
@@ -620,7 +619,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                         num_priority_samples = num_priority_samples + 1
                     else:
                         num_ordinary_samples = num_ordinary_samples + 1
-                    output_queue.put( (pid, [ts_input, ts_long_target, ts_short_target, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
+                    output_queue.put( (pid, [index, ts_input, ts_long_target, ts_short_target, ts_is_priority_sample], is_priority_sample, is_test_data_source, False) )
                     time.sleep( 0.0 )
     
     output_queue.put( (pid, [num_priority_samples, num_ordinary_samples, raw_sample_count], False, is_test_data_source, True) )
@@ -631,7 +630,7 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 # Preprocessing for inference
 #------------------------------------------------------------------------------------------------------------------------
 
-def preprocess_file_for_inference(ticker:str, filename:str):
+def preprocess_file_for_inference(ticker:str, index:int, filename:str):
 
     TOKEN = os.environ["TK_TOKEN"]
     with Client(TOKEN, target=INVEST_GRPC_API) as client:

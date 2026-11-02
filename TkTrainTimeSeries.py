@@ -116,22 +116,24 @@ class TkTimeSeriesDataLoader():
         return self._test_sample_id
 
     def get_training_sample(self, idx : int):
-        self._training_data_stream.seek( self._training_index[idx], 0 )
+        self._training_data_stream.seek( self._training_index[idx], 0 )        
         data_chunk = TkIO.read_from_file( self._training_data_stream )
-        input_sample = data_chunk[0]
-        long_target_true_sample = data_chunk[1]
-        short_target_true_sample = data_chunk[2]        
-        is_priority_sample = data_chunk[3]
-        return input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
+        index = data_chunk[0]
+        input_sample = data_chunk[1]
+        long_target_true_sample = data_chunk[2]
+        short_target_true_sample = data_chunk[3]        
+        is_priority_sample = data_chunk[4]
+        return index, input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
         
     def get_test_sample(self, idx : int):
         self._test_data_stream.seek( self._test_index[idx], 0 )
         data_chunk = TkIO.read_from_file( self._test_data_stream )
-        input_sample = data_chunk[0]
-        long_target_true_sample = data_chunk[1]
-        short_target_true_sample = data_chunk[2]        
-        is_priority_sample = data_chunk[3]
-        return input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
+        index = data_chunk[0]
+        input_sample = data_chunk[1]
+        long_target_true_sample = data_chunk[2]
+        short_target_true_sample = data_chunk[3]        
+        is_priority_sample = data_chunk[4]
+        return index, input_sample, long_target_true_sample, short_target_true_sample, is_priority_sample
     
     @staticmethod
     def sort_mutual(*lists: List[Any]) -> tuple[List[Any], ...]:
@@ -149,16 +151,18 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is active!')
 
         def load_training_data_thread():            
+            self._indices = [None] * self._training_batch_size
             self._input_samples = [None] * self._training_batch_size
             self._long_target_true_samples = [None] * self._training_batch_size
             self._short_target_true_samples = [None] * self._training_batch_size            
             self._priority_flags = [None] * self._training_batch_size
             for batch_id in range(self._training_batch_size):
-                input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_training_sample( self._training_sample_id )
+                index, input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_training_sample( self._training_sample_id )
                 self._training_sample_id = self._training_sample_id + 1
                 if self._training_sample_id >= len(self._training_index):
                     self._training_sample_id = 0
                     self._training_index = TkTimeSeriesDataLoader.shuffle_table(self._index_content[0])                    
+                self._indices[batch_id] = index
                 self._input_samples[batch_id] = input_sample
                 self._long_target_true_samples[batch_id] = long_target_true_sample
                 self._short_target_true_samples[batch_id] = short_target_true_sample
@@ -172,15 +176,17 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is active!')
 
         def load_test_data_thread():
+            self._indices = [None] * self._test_batch_size
             self._input_samples = [None] * self._test_batch_size
             self._long_target_true_samples = [None] * self._test_batch_size
             self._short_target_true_samples = [None] * self._test_batch_size            
             self._priority_flags = [None] * self._test_batch_size
             for batch_id in range(self._test_batch_size):
-                input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_test_sample( self._test_sample_id )
+                index, input_sample, long_target_true_sample, short_target_true_sample, priority_flag = self.get_test_sample( self._test_sample_id )
                 self._test_sample_id = self._test_sample_id + 1
                 if self._test_sample_id >= len(self._test_index):
                     self._test_sample_id = 0
+                self._indices[batch_id] = index 
                 self._input_samples[batch_id] = input_sample                
                 self._long_target_true_samples[batch_id] = long_target_true_sample
                 self._short_target_true_samples[batch_id] = short_target_true_sample
@@ -198,7 +204,7 @@ class TkTimeSeriesDataLoader():
             raise RuntimeError('Loading thread is not active!')
         self._loading_thread.join()
         self._loading_thread = None
-        return self._input_samples, self._long_target_true_samples, self._short_target_true_samples, self._priority_flags
+        return self._indices, self._input_samples, self._long_target_true_samples, self._short_target_true_samples, self._priority_flags
          
 #------------------------------------------------------------------------------------------------------------------------
 
@@ -396,8 +402,13 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         show_priority_sample = not show_priority_sample
 
-        input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
+        indices, input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
         test_batch_size = data_loader.test_batch_size()
+
+        indices = torch.Tensor( indices )
+        indices = indices.int()
+        indices = torch.reshape( indices, ( training_batch_size,) )
+        indices = indices.to(cuda)
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( training_batch_size, prior_steps_count * input_width) )
@@ -425,7 +436,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         
         data_loader.start_load_test_data()
 
-        y_long, y_short = ts_model.forward( input )
+        y_long, y_short = ts_model.forward( input, indices )
 
         display_batch_id = 0 if show_priority_sample else training_batch_size-1
         TkUI.set_series_from_tensor("x_axis_input_training", "y_axis_input_training", "training_input_series", input, display_batch_id)
@@ -485,7 +496,12 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
         dpg.render_dearpygui_frame()
 
-        input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
+        indices, input_samples, long_target_true_samples, short_target_true_samples, priority_flags = data_loader.complete_loading()
+
+        indices = torch.Tensor( indices )
+        indices = indices.int()
+        indices = torch.reshape( indices, ( test_batch_size,) )
+        indices = indices.to(cuda)
 
         input = torch.Tensor( list( itertools.chain.from_iterable(input_samples) ) )
         input = torch.reshape( input, ( test_batch_size, prior_steps_count * input_width) )
@@ -507,7 +523,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
         data_loader.start_load_training_data() 
 
         ts_model.train(False)
-        y_long, y_short = ts_model.forward( input )
+        y_long, y_short = ts_model.forward( input, indices )
         ts_model.train(True)
 
         display_batch_id = 0 if show_priority_sample else test_batch_size-1
