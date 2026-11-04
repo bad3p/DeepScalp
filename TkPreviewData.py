@@ -35,13 +35,15 @@ config = configparser.ConfigParser()
 config.read( 'TkConfig.ini' )
 
 data_path = config['Paths']['DataPath']
-data_extension = config['Paths']['OrderbookFileExtension']
+data_extension = config['Paths']['MarketDataFileExtension']
 
 orderbook_width = int(config['Autoencoders']['OrderbookWidth'])
 last_trades_width = int(config['Autoencoders']['LastTradesWidth'])
 
 data_files = [fileName for fileName in listdir(data_path) if (data_extension in fileName) and isfile(join(data_path, fileName))]
 random.shuffle(data_files)
+
+min_price_increment_factor = 1.0
 
 print( 'Data files found:', len(data_files) )
 
@@ -117,7 +119,7 @@ with Client(TOKEN, target=INVEST_GRPC_API) as client:
 
             prev_orderbook_ts = orderbook_sample.orderbook_ts
 
-            price_history.append( quotation_to_float(orderbook_sample.last_price) )
+            price_history.append( float(orderbook_sample.last_price) )
             TkUI.set_series("x_axis_price","y_axis_price","price_series", price_history)
 
             timeout = 0.25

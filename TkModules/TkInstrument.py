@@ -32,15 +32,26 @@ class TkOrderbook():
 
     def __init__(self, orderbook:GetOrderBookResponse):        
 
-        self.bids = [ (quotation_to_decimal( bid.price ), bid.quantity) for bid in orderbook.bids]
-        self.asks = [ (quotation_to_decimal( ask.price ), ask.quantity) for ask in orderbook.asks]
-        self.close_price = quotation_to_decimal( orderbook.close_price )
-        self.close_price_ts = orderbook.close_price_ts
-        self.last_price = quotation_to_decimal( orderbook.last_price )
-        self.last_price_ts = orderbook.last_price_ts
-        self.limit_up = quotation_to_decimal(orderbook.limit_up)
-        self.limit_down = quotation_to_decimal(orderbook.limit_down)
-        self.orderbook_ts = orderbook.orderbook_ts
+        if orderbook is not None:
+            self.bids = [ (quotation_to_decimal( bid.price ), bid.quantity) for bid in orderbook.bids]
+            self.asks = [ (quotation_to_decimal( ask.price ), ask.quantity) for ask in orderbook.asks]
+            self.close_price = quotation_to_decimal( orderbook.close_price )
+            self.close_price_ts = orderbook.close_price_ts
+            self.last_price = quotation_to_decimal( orderbook.last_price )
+            self.last_price_ts = orderbook.last_price_ts
+            self.limit_up = quotation_to_decimal(orderbook.limit_up)
+            self.limit_down = quotation_to_decimal(orderbook.limit_down)
+            self.orderbook_ts = orderbook.orderbook_ts
+        else:
+            self.bids = []
+            self.asks = []
+            self.close_price = Decimal( 0.0 )
+            self.close_price_ts = datetime(2000, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+            self.last_price = Decimal( 0.0 )
+            self.last_price_ts = self.close_price_ts
+            self.limit_up = Decimal(0.0)
+            self.limit_down = Decimal(0.0)
+            self.orderbook_ts = self.close_price_ts
 
     def __eq__(self, other):
         """Overrides the default implementation to compare content."""
@@ -91,20 +102,20 @@ class TkLastTrades():
     trades:list # [(price, quantity, time, direction), ...]
 
     def __init__(self, source, start_ts:int = 0, end_ts:int = 0):
-
-        if isinstance( source, GetLastTradesResponse ):
-            last_trades = source
-            self.trades = [ (quotation_to_decimal( trade.price ), trade.quantity, trade.time, -1 if trade.direction == TradeDirection.TRADE_DIRECTION_SELL else 1) for trade in last_trades.trades]
-
-        elif isinstance( source, dict):
-            all_trades = source
+        if source is None:
             self.trades = []
-            for ts in all_trades:
-                if ts >= start_ts and ts <= end_ts:
-                    self.trades.extend(all_trades[ts])        
-
         else:
-            raise ValueError("Invalid data source!")
+            if isinstance( source, GetLastTradesResponse ):
+                last_trades = source
+                self.trades = [ (quotation_to_decimal( trade.price ), trade.quantity, trade.time, -1 if trade.direction == TradeDirection.TRADE_DIRECTION_SELL else 1) for trade in last_trades.trades]
+            elif isinstance( source, dict):
+                all_trades = source
+                self.trades = []
+                for ts in all_trades:
+                    if ts >= start_ts and ts <= end_ts:
+                        self.trades.extend(all_trades[ts])        
+            else:
+                raise ValueError("Invalid data source!")
         
     def __eq__(self, other):
         """Overrides the default implementation to compare content."""
