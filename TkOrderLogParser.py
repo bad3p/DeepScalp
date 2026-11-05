@@ -469,6 +469,9 @@ class OrderLogReplayer:
         # Last known trade, preserved indefinitely.
         self.last_trade: dict[str, Trade] = {}
 
+        # SECCODE -> last order timestamp in microseconds since midnight.
+        self.last_order_time_us: dict[str, int] = {}
+
         # --------------------------------------------------
         # GLOBAL TRADE EXPIRATION HEAP
         #
@@ -879,6 +882,9 @@ class OrderLogReplayer:
         self.stats["time_rows_parsed"] += 1
         self.stats[f"time_precision_{actual_precision}"] += 1
 
+        # Update per-security activity timestamp.
+        self.last_order_time_us[seccode] = event_time_us
+
         self.advance_time(event_time_us)
 
         try:
@@ -1205,10 +1211,26 @@ def main():
         queue = TkPersistentQueue( gather_data_queue_path, init_gather_data_queue_callback )
         print( len(queue._queue), "tickers in gather queue" )
 
+        samples_captured = 0
+        idle_tickers = []
+
         def capture_sample(order_log_replayer: OrderLogReplayer) -> None:   
-            global samples_captured     
-            ticker = queue.pop()
+            nonlocal samples_captured
+            samples_captured = samples_captured + 1
+
+            ticker = queue.pop()            
             if ticker in order_log_replayer.books.keys():
+
+                last_order_time = order_log_replayer.last_order_time_us[ticker] if ticker in order_log_replayer.last_order_time_us else 0
+                last_order_idle_time = order_log_replayer.current_time_us - last_order_time
+                if last_order_idle_time > 24 * 60 * 1000000:
+                    if not ticker in idle_tickers:
+                        idle_tickers.append( ticker )
+                    queue.push(ticker)
+                    return
+                else:
+                    if ticker in idle_tickers:
+                        idle_tickers.remove( ticker )
 
                 last_trades_sample = TkLastTrades(source=None)
                 if ticker in order_log_replayer.trade_tapes:                        
@@ -1229,7 +1251,7 @@ def main():
                 orderbook_sample = TkOrderbook(orderbook=None)
                 orderbook_sample.bids = [ (b[0],b[1]) for b in bids]
                 orderbook_sample.asks = [ (a[0],a[1]) for a in asks]
-                orderbook_sample.orderbook_ts = filedate + datetime.timedelta( microseconds=order_log_replayer.current_time_us )                
+                orderbook_sample.orderbook_ts = filedate + datetime.timedelta( microseconds=order_log_replayer.current_time_us )
                 if ticker in order_log_replayer.last_trade:
                     last_trade = order_log_replayer.last_trade[ticker]
                     orderbook_sample.close_price = last_trade.price
@@ -1259,9 +1281,9 @@ def main():
                 TkIO.append_at_path( output_path, orderbook_sample )
                 TkIO.append_at_path( output_path, last_trades_sample )
 
-                if random.random() < 0.01:
-                    print(f"\rTimestamp : {orderbook_sample.orderbook_ts}, Ticker: {ticker}            ", end="", flush=True)
-
+                if samples_captured % 100 == 0:
+                    print(f"\rTimestamp : {orderbook_sample.orderbook_ts}, Ticker: {ticker}, Idle tickers: {len(idle_tickers)}   ", end="", flush=True)
+            
             queue.push(ticker)
     
         replayer = replay_orderlog(
