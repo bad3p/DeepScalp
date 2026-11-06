@@ -1879,6 +1879,135 @@ class TkStatistics():
         return trend_regimes
 
     #------------------------------------------------------------------------------------------------------------------------
+    # Calculate signed normalized 1D Wasserstein distance (EMD) between two orderbook sides.
+    # Price coordinates are expressed as percentages of the supplied midprice.    
+    # Returns zero if either distribution has fewer than two valid price levels or zero total quantity.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _calculate_side_emd(prev_levels: list, curr_levels: list, midprice: Decimal, is_bid: bool) -> Decimal:
+
+        def prepare_distribution(levels):
+
+            if not levels:
+                return None
+
+            aggregated = defaultdict(Decimal)
+
+            for price, quantity in levels:
+
+                if price is None or quantity is None:
+                    continue
+
+                price = Decimal(str(price))
+                quantity = Decimal(str(quantity))
+
+                if price <= 0 or quantity <= 0:
+                    continue
+
+                distance_pct = (
+                    (midprice - price) / midprice * Decimal(100)
+                    if is_bid
+                    else (price - midprice) / midprice * Decimal(100)
+                )
+
+                aggregated[distance_pct] += quantity
+
+            # Require at least two distinct valid price levels.
+            if len(aggregated) < 2:
+                return None
+
+            total_quantity = sum(
+                aggregated.values(), Decimal(0)
+            )
+
+            if total_quantity <= 0:
+                return None
+
+            return {
+                position: quantity / total_quantity
+                for position, quantity in aggregated.items()
+            }
+
+        prev_dist = prepare_distribution(prev_levels)
+        curr_dist = prepare_distribution(curr_levels)
+
+        if prev_dist is None or curr_dist is None:
+            return Decimal(0)
+
+        positions = sorted(
+            set(prev_dist.keys()) | set(curr_dist.keys())
+        )
+
+        prev_cdf = Decimal(0)
+        curr_cdf = Decimal(0)
+        emd = Decimal(0)
+
+        for i, position in enumerate(positions):
+
+            prev_cdf += prev_dist.get(position, Decimal(0))
+            curr_cdf += curr_dist.get(position, Decimal(0))
+
+            if i + 1 < len(positions):
+
+                dx = positions[i + 1] - position
+
+                emd += (prev_cdf - curr_cdf) * dx
+
+        return emd
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Estimate bid and ask EMD between two orderbooks.
+    # Both orderbooks use currLOB midprice as reference.
+    # Returns: (bid_emd_pct, ask_emd_pct)
+    # EMD is expressed in percentage points.
+    # Returns zero for a side if either corresponding orderbook side has fewer than two valid price levels.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def estimate_emd(prevLOB, currLOB) -> tuple:    
+
+        zero = Decimal(0)
+
+        if currLOB is None:
+            return zero, zero
+
+        # A current midprice requires a valid best bid and ask.
+        if not currLOB.bids or not currLOB.asks:
+            return zero, zero
+
+        best_bid = currLOB.bids[0][0]
+        best_ask = currLOB.asks[0][0]
+
+        if best_bid is None or best_ask is None:
+            return zero, zero
+
+        midprice = (
+            Decimal(str(best_bid)) +
+            Decimal(str(best_ask))
+        ) / Decimal(2)
+
+        if midprice <= 0:
+            return zero, zero
+
+        # Calculate each side independently.
+        bid_emd = TkStatistics._calculate_side_emd(
+            prevLOB.bids if prevLOB is not None else [],
+            currLOB.bids,
+            midprice,
+            is_bid=True
+        )
+
+        ask_emd = TkStatistics._calculate_side_emd(
+            prevLOB.asks if prevLOB is not None else [],
+            currLOB.asks,
+            midprice,
+            is_bid=False
+        )
+
+        return bid_emd, ask_emd
+
+    #------------------------------------------------------------------------------------------------------------------------
     # MOEX Seasonality
     # Takes a datetime object and returns cyclical seasonality features based on the trading session schedule.
     # Returns: sin_morning, cos_morning, sin_main, cos_main, sin_evening, cos_evening

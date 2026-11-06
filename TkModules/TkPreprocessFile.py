@@ -89,6 +89,12 @@ class PreprocessedData:
     cost_of_liquidity_imbalance_10bps:list
     cost_of_liquidity_imbalance_100bps:list
     cost_of_liquidity_imbalance_500bps:list
+    bid_emd_1q:list
+    ask_emd_1q:list
+    bid_emd_2q:list
+    ask_emd_2q:list
+    bid_emd_4q:list
+    ask_emd_4q:list
 
     @staticmethod
     def interpolate_corrupted_datetimes(dt_list: list[datetime]) -> list[datetime]:
@@ -336,21 +342,48 @@ class PreprocessedData:
         self.queue_depletion_imbalance = [0] * raw_sample_count
         self.order_arrival_intensity = [0] * raw_sample_count
         self.order_arrival_imbalance = [0] * raw_sample_count
+        self.bid_emd_1q = [0] * raw_sample_count
+        self.ask_emd_1q = [0] * raw_sample_count
+        self.bid_emd_2q = [0] * raw_sample_count
+        self.ask_emd_2q = [0] * raw_sample_count
+        self.bid_emd_4q = [0] * raw_sample_count
+        self.ask_emd_4q = [0] * raw_sample_count
 
         for i in range( raw_sample_count ):
             if i == 0:
                 self.order_arrival_intensity[i] = 0.0
                 self.order_arrival_imbalance[i] = 0.0
+                self.bid_emd_1q[i] = 0.0
+                self.ask_emd_1q[i] = 0.0
             else:                    
-                bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=0.5, dt=self.time_delta[i] ) # TODO: configure alpha
+                bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=0.25, dt=self.time_delta[i] ) # TODO: configure alpha
                 self.order_arrival_intensity[i] = bid_intensity + ask_intensity
                 self.order_arrival_imbalance[i] = bid_intensity - ask_intensity
+                bid_emd, ask_emd = TkStatistics.estimate_emd( raw_samples[(i-1)*2], raw_samples[i*2] )
+                self.bid_emd_1q[i] = float(bid_emd)
+                self.ask_emd_1q[i] = float(ask_emd)
 
-            self.queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], self.min_price_increment, alpha=0.5 ) # TODO: configure alpha
+            if i < 2:
+                self.bid_emd_2q[i] = 0.0
+                self.ask_emd_2q[i] = 0.0
+            else:
+                bid_emd, ask_emd = TkStatistics.estimate_emd( raw_samples[(i-2)*2], raw_samples[i*2] )
+                self.bid_emd_2q[i] = float(bid_emd)
+                self.ask_emd_2q[i] = float(ask_emd)
+
+            if i < 4:
+                self.bid_emd_4q[i] = 0.0
+                self.ask_emd_4q[i] = 0.0
+            else:
+                bid_emd, ask_emd = TkStatistics.estimate_emd( raw_samples[(i-4)*2], raw_samples[i*2] )
+                self.bid_emd_4q[i] = float(bid_emd)
+                self.ask_emd_4q[i] = float(ask_emd)
+
+            self.queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], self.min_price_increment, alpha=0.25 ) # TODO: configure alpha
 
             # adjust minimal time for next last trades sample
             depth_weighted_queue_depletion_time_threshold = raw_samples[(i-1)*2].orderbook_ts if i > 0 else None
-            bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], depth_weighted_queue_depletion_time_threshold, alpha=0.5 ) # TODO: configure alpha
+            bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], depth_weighted_queue_depletion_time_threshold, alpha=0.25 ) # TODO: configure alpha
             self.queue_depletion_intensity[i] = bid_depletion + ask_depletion
             self.queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
             
@@ -407,7 +440,7 @@ class PreprocessedData:
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 26 # sizeof quant_sample
+        return 32 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
@@ -446,7 +479,15 @@ class PreprocessedData:
         sample.append( self.queue_depletion_imbalance[i] )
         sample.append( self.order_arrival_imbalance[i] )
 
-        # slice 7: time data
+        # slice 7: EMDs
+        sample.append( self.bid_emd_1q[i] )
+        sample.append( self.ask_emd_1q[i] )
+        sample.append( self.bid_emd_2q[i] )
+        sample.append( self.ask_emd_2q[i] )
+        sample.append( self.bid_emd_4q[i] )
+        sample.append( self.ask_emd_4q[i] )
+
+        # slice 8: time data
         age_seconds = max(0.0, base_timestamp - self.timestamp[i])
         sample.append( self.log_time_delta[i] )
         sample.append( age_seconds )
