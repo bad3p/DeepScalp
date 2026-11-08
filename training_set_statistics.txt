@@ -1,6 +1,6 @@
 num_samples = 26745012
-num_ordinary_samples = 7388020
+num_ordinary_samples = 7388009
 num_priority_samples = 682127
-weight_ordinary = 1.1049566924853127
+weight_ordinary = 1.10495504731873
 weight_priority = 0.02550483058298871
 

@@ -1,10 +1,13 @@
 
+from os import name
 import sys
 import os.path
 import numpy as np
 import random
 import math
 import bisect
+from bisect import bisect_left, bisect_right
+from math import exp, fsum
 from datetime import datetime, date
 from typing import List, Tuple, Optional
 from numpy.lib.stride_tricks import sliding_window_view
@@ -1564,54 +1567,50 @@ class TkStatistics():
     @staticmethod    
     def depth_weighted_queue_imbalance(orderbook : TkOrderbook, min_price_increment : float, depth=None, alpha=1.0):
 
-        bids = []
-        for bid in orderbook.bids:
-            bids.append( (float( bid[0] ), bid[1]) )
+        tick = float(min_price_increment)
 
-        asks = []
-        for ask in orderbook.asks:
-            asks.append( (float( ask[0] ), ask[1]) )
+        def weighted_side(levels, is_bid):
+            # Zero-quantity rows do not define an occupied best quote.
+            levels = [(float(price), qty) for price, qty in levels if qty]
 
-        if not bids or not asks:
-            return 0.0
+            if not levels:
+                return 0.0
 
-        # Sort the book
-        bids_sorted = sorted(bids, key=lambda x: x[0], reverse=True)
-        asks_sorted = sorted(asks, key=lambda x: x[0])
+            best_price = (
+                max(price for price, _ in levels)
+                if is_bid
+                else min(price for price, _ in levels)
+            )
 
-        best_bid = bids_sorted[0][0]
-        best_ask = asks_sorted[0][0]
+            weighted_quantities = []
 
-        weighted_bid = 0.0
-        weighted_ask = 0.0
+            for price, qty in levels:
+                distance = (
+                    best_price - price
+                    if is_bid
+                    else price - best_price
+                )
+                level = round(distance / tick)
 
-        # ----- BIDS -----
-        for price, qty in bids_sorted:
+                if depth is not None and level >= depth:
+                    continue
 
-            level = round((best_bid - price) / min_price_increment)
+                weighted_quantities.append(
+                    qty * math.exp(-alpha * level)
+                )
 
-            if depth is not None and level >= depth:
-                continue
+            return math.fsum(weighted_quantities)
 
-            weight = math.exp(-alpha * level)
-            weighted_bid += weight * qty
-
-        # ----- ASKS -----
-        for price, qty in asks_sorted:
-
-            level = round((price - best_ask) / min_price_increment)
-
-            if depth is not None and level >= depth:
-                continue
-
-            weight = math.exp(-alpha * level)
-            weighted_ask += weight * qty
+        weighted_bid = weighted_side(orderbook.bids, is_bid=True)
+        weighted_ask = weighted_side(orderbook.asks, is_bid=False)
 
         total = weighted_bid + weighted_ask
-        if total == 0:
-            return 0.0
 
-        return (weighted_bid - weighted_ask) / total
+        return (
+            (weighted_bid - weighted_ask) / total
+            if total
+            else 0.0
+        )
     
     #------------------------------------------------------------------------------------------------------------------------
     # Queue depletion rate
@@ -1728,92 +1727,61 @@ class TkStatistics():
         return bid_depletion, ask_depletion
 
     #------------------------------------------------------------------------------------------------------------------------
-    # Order arrival rate    
+    # Return (bid_rate, ask_rate) in depth-weighted lots/second.
     #------------------------------------------------------------------------------------------------------------------------            
 
     @staticmethod
-    def depth_weighted_order_arrival_rate(prev_orderbook : TkOrderbook, curr_orderbook : TkOrderbook, last_trades : TkLastTrades, alpha: float, dt: float = 1.0 ):
-
-        #lob_prev_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in prev_orderbook.bids]
-        #lob_prev_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in prev_orderbook.asks]
-        #lob_curr_bids = [ ( quotation_to_decimal(bid.price), bid.quantity) for bid in curr_orderbook.bids]
-        #lob_curr_asks = [ ( quotation_to_decimal(ask.price), ask.quantity) for ask in curr_orderbook.asks]
-        trades = [ ( trade[0], trade[1], trade[2]) for trade in last_trades.trades ]
+    def depth_weighted_net_addition_rate(
+        prev_orderbook,
+        curr_orderbook,
+        last_trades,
+        alpha,
+        dt,
+    ):
     
-        # Aggregate trades by price to identify consumed liquidity
-        trade_vols = {}
-        for price, qty, time in trades:
-            if time < prev_orderbook.orderbook_ts:
-                continue
-            trade_vols[price] = trade_vols.get(price, 0.0) + qty
+        prev_bids = {float(p): q for p, q in prev_orderbook.bids if q}
+        curr_bids = {float(p): q for p, q in curr_orderbook.bids if q}
+        prev_asks = {float(p): q for p, q in prev_orderbook.asks if q}
+        curr_asks = {float(p): q for p, q in curr_orderbook.asks if q}
 
-        # Convert tuple lists to dictionaries for fast O(1) lookups
-        prev_bids_dict = dict(prev_orderbook.bids)
-        curr_bids_dict = dict(prev_orderbook.asks)
-        prev_asks_dict = dict(curr_orderbook.bids)
-        curr_asks_dict = dict(curr_orderbook.asks)
+        bid_executions = {}
+        ask_executions = {}
+        t0 = prev_orderbook.orderbook_ts
+        t1 = curr_orderbook.orderbook_ts
 
-        # Extract and sort current book prices to establish the dynamic depth hierarchy
-        # Bids descending (highest first), Asks ascending (lowest first)
-        curr_bid_prices = sorted(curr_bids_dict.keys(), reverse=True)
-        curr_ask_prices = sorted(curr_asks_dict.keys())
+        for price, quantity, timestamp, direction in last_trades.trades:
+            if t0 < timestamp <= t1:
+                price = float(price)
+                executions = bid_executions if direction == -1 else ask_executions
+                executions[price] = executions.get(price, 0) + quantity
 
-        # Helper function to find the effective depth level of any price
-        def get_level(price, sorted_curr_prices, is_bid):
-            level = 0
-            for p in sorted_curr_prices:
-                if is_bid and p > price:
-                    level += 1
-                elif not is_bid and p < price:
-                    level += 1
-                elif p == price:
-                    return level
-                else:
-                    break # Optimization: stop searching once we pass the price tier
-            return level
+        def side_rate(previous, current, executions, is_bid):
+            current_prices = sorted(current)
+            weighted_additions = []
 
-        # Helper function to compute weighted arrivals for a specific side
-        def get_weighted_arrivals(prev_dict, curr_dict, sorted_curr_prices, is_bid):
-            weighted_arrivals = 0.0
-            
-            # Evaluate all unique prices that exist in either the previous or current snapshot
-            all_prices = set(prev_dict.keys()).union(curr_dict.keys())
-            
-            for p in all_prices:
-                v_curr = curr_dict.get(p, 0.0)
-                v_prev = prev_dict.get(p, 0.0)
-                
-                # Assume trades at this exact price consumed resting liquidity on this side
-                t_qty = trade_vols.get(p, 0.0) 
-                
-                # Net Order Flow = Change in LOB + Executed Trades
-                raw_arrival = v_curr - v_prev + t_qty
-                
-                # If raw_arrival > 0, new limit orders were added
-                if raw_arrival > 0:
-                    level = get_level(p, sorted_curr_prices, is_bid)
-                    weight = math.exp(-alpha * level)
-                    weighted_arrivals += raw_arrival * weight
-                    
-            return weighted_arrivals
+            for price in previous.keys() | current.keys() | executions.keys():
+                net_addition = (
+                    current.get(price, 0)
+                    - previous.get(price, 0)
+                    + executions.get(price, 0)
+                )
+                if net_addition <= 0:
+                    continue
 
-        # 3. Compute the weighted arrivals for both sides
-        bid_arrivals = get_weighted_arrivals(
-            prev_bids_dict, curr_bids_dict, curr_bid_prices, is_bid=True
+                # Count current occupied price levels strictly better than price.
+                level = (
+                    len(current_prices) - bisect_right(current_prices, price)
+                    if is_bid
+                    else bisect_left(current_prices, price)
+                )
+                weighted_additions.append(net_addition * exp(-alpha * level))
+
+            return fsum(weighted_additions) / dt
+
+        return (
+            side_rate(prev_bids, curr_bids, bid_executions, is_bid=True),
+            side_rate(prev_asks, curr_asks, ask_executions, is_bid=False),
         )
-        
-        ask_arrivals = get_weighted_arrivals(
-            prev_asks_dict, curr_asks_dict, curr_ask_prices, is_bid=False
-        )
-        
-        # 4. Convert absolute weighted volume to intensity (Rate)
-        bid_intensity = bid_arrivals / dt
-        ask_intensity = ask_arrivals / dt
-
-        assert not math.isnan(bid_intensity) , "Bid intensity is NaN!"
-        assert not math.isnan(ask_intensity) , "Ask intensity is NaN!"
-        
-        return float(bid_intensity), float(ask_intensity)
 
     #------------------------------------------------------------------------------------------------------------------------
     # Computes the trend at each position using the past `window_size` prices.

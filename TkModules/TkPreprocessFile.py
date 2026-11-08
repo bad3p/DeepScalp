@@ -356,7 +356,7 @@ class PreprocessedData:
                 self.bid_emd_1q[i] = 0.0
                 self.ask_emd_1q[i] = 0.0
             else:                    
-                bid_intensity, ask_intensity = TkStatistics.depth_weighted_order_arrival_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=0.25, dt=self.time_delta[i] ) # TODO: configure alpha
+                bid_intensity, ask_intensity = TkStatistics.depth_weighted_net_addition_rate( raw_samples[(i-1)*2], raw_samples[i*2], raw_samples[i*2+1], alpha=0.5, dt=self.time_delta[i] ) # TODO: configure alpha
                 self.order_arrival_intensity[i] = bid_intensity + ask_intensity
                 self.order_arrival_imbalance[i] = bid_intensity - ask_intensity
                 bid_emd, ask_emd = TkStatistics.estimate_emd( raw_samples[(i-1)*2], raw_samples[i*2] )
@@ -379,11 +379,11 @@ class PreprocessedData:
                 self.bid_emd_4q[i] = float(bid_emd)
                 self.ask_emd_4q[i] = float(ask_emd)
 
-            self.queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], self.min_price_increment, alpha=0.25 ) # TODO: configure alpha
+            self.queue_imbalance[i] = TkStatistics.depth_weighted_queue_imbalance( raw_samples[i*2], self.min_price_increment, alpha=0.5 ) # TODO: configure alpha
 
             # adjust minimal time for next last trades sample
             depth_weighted_queue_depletion_time_threshold = raw_samples[(i-1)*2].orderbook_ts if i > 0 else None
-            bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], depth_weighted_queue_depletion_time_threshold, alpha=0.25 ) # TODO: configure alpha
+            bid_depletion, ask_depletion = TkStatistics.depth_weighted_queue_depletion_rate( raw_samples[i*2], raw_samples[i*2+1], depth_weighted_queue_depletion_time_threshold, alpha=0.5 ) # TODO: configure alpha
             self.queue_depletion_intensity[i] = bid_depletion + ask_depletion
             self.queue_depletion_imbalance[i] = bid_depletion - ask_depletion            
             
