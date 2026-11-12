@@ -56,8 +56,9 @@ class PreprocessedData:
     # unfiltered data
     
     price: list
+    trade_vwap_offset: list
     volatility: list        
-    spread: list
+    spread: list    
     orderbook_volume: list
     orderbook_slope: list
     orderbook_microprice: list
@@ -278,6 +279,7 @@ class PreprocessedData:
         # extract features from orderbook & last trades
 
         self.price = [0.0] * raw_sample_count
+        self.trade_vwap_offset = [0.0] * raw_sample_count
         self.volatility = [0.0] * raw_sample_count
         self.spread = [0.0] * raw_sample_count
         self.orderbook_volume = [0] * raw_sample_count
@@ -305,7 +307,13 @@ class PreprocessedData:
             volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment )
             vwap, vwvol, normalized_vwvol = TkStatistics.trades_statistics( last_trades_sample, last_trades_time_threshold )
 
-            self.price[i] = vwap if vwap > 0.0 else pivot_price
+            if len(orderbook_sample.bids) > 0 and len(orderbook_sample.asks) > 0:
+                mid_price = 0.5 * ( float(orderbook_sample.bids[0][0]) + float(orderbook_sample.asks[0][0]) )
+            else:
+                mid_price = pivot_price   # one side empty: orderbook_statistics falls back to last_price
+            self.price[i] = mid_price
+
+            self.trade_vwap_offset[i] = ( vwap - mid_price ) / mid_price if vwap > 0.0 else 0.0
             self.volatility[i] = normalized_vwvol
             self.spread[i] = TkStatistics.orderbook_spread( orderbook_sample, orderbook_width, self.min_price_increment )
             self.orderbook_volume[i] = volume
@@ -484,24 +492,25 @@ class PreprocessedData:
         return TkLastTrades( self.all_trades, start_ts, end_ts )
 
     def sample_width(self):
-        return 42 # sizeof quant_sample
+        return 43 # sizeof quant_sample
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
 
-        # slice 1 : price, volatility and trend
-        sample.append( self.price_change[i] )
-        sample.append( self.price_change_rate[i] )
-        sample.append( self.volatility[i] )
-        sample.append( self.trends[i] )
+        # slice 1 : price, volatility and trend        
+        sample.append( self.price_change[i] * 100 )
+        sample.append( self.price_change_rate[i] * 10000 )
+        sample.append( self.trade_vwap_offset[i] * 100)
+        sample.append( self.volatility[i] * 1000 )
+        sample.append( self.trends[i] * 100 )
 
         # slice 2 : liquidity and spread
-        sample.append( self.spread[i] )
+        sample.append( self.spread[i] * 1000)
         sample.append( self.orderbook_volume[i] )
 
         # slice 3 : orderbook structure (shape + microprice)
-        sample.append( self.orderbook_slope[i] )
-        sample.append( self.orderbook_microprice[i] )
+        sample.append( self.orderbook_slope[i] * 10 )
+        sample.append( self.orderbook_microprice[i] * 1000 )
         sample.append( self.queue_imbalance[i] )
 
         # slice 4 : trade activity / trade flow intensity
