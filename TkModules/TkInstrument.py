@@ -130,6 +130,15 @@ class TkLastTrades():
         unique_combined_trades = set(self.trades) | set(other.trades)
         self.trades = sorted(list(unique_combined_trades), key=lambda x: x[2])
 
+    def executed_volume(self, start, end):
+        """Return bid/ask executed lots by price for start < time <= end."""
+        bids, asks = defaultdict(int), defaultdict(int)
+        for price, quantity, timestamp, direction in self.trades:
+            if start < timestamp <= end:
+                executions = bids if direction == -1 else asks
+                executions[price] += quantity
+        return bids, asks
+
 
 #------------------------------------------------------------------------------------------------------------------------
 # Investment instrument wrapper

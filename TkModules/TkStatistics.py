@@ -1346,7 +1346,7 @@ class TkStatistics():
     # Compute Order Flow Imbalance feature for the list of sequential LOB snapshots, 
     # * applying an exponential decay weight to deeper levels of the order book,
     # * considering temporal irregularities
-    # * computes either OFI rate or OFI diffusive shock
+    # * computes both OFI rate and OFI diffusive shock
     #------------------------------------------------------------------------------------------------------------------------
 
     @staticmethod
@@ -1354,8 +1354,7 @@ class TkStatistics():
         orderbooks: List[TkOrderbook],
         delta_time: List[float], 
         depth: int = 8, 
-        depth_decay_rate: float = 0.5,
-        feature_mode: str = 'rate' # 'rate' or 'shock'
+        depth_decay_rate: float = 0.5
     ) -> float:
 
         def get_top_n_levels(levels: list, is_bid: bool, n: int = 5) -> List[Tuple[Optional[Decimal], Decimal]]:
@@ -1385,13 +1384,11 @@ class TkStatistics():
         if len(delta_time) < len(orderbooks):
             raise ValueError("delta_time must provide an interval for every step between orderbooks.")
 
-        if feature_mode not in ('rate', 'shock'):
-            raise ValueError("feature_mode must be 'rate' or 'shock'.")
-
         # Pre-calculate exponential decay weights: e^(-decay_rate * level_index)
         weights = [Decimal(str(math.exp(-depth_decay_rate * k))) for k in range(depth)]
 
-        integrated_ofi = Decimal(0)
+        integrated_ofi_rate = Decimal(0)
+        integrated_ofi_shock = Decimal(0)
     
         prev_bids = get_top_n_levels(orderbooks[0].bids, is_bid=True, n=depth)
         prev_asks = get_top_n_levels(orderbooks[0].asks, is_bid=False, n=depth)
@@ -1439,19 +1436,17 @@ class TkStatistics():
                 tick_ofi += level_ofi
 
             # Normalize temporal sampling
-            if feature_mode == 'rate':
-                # Deterministic assumption: flow is proportional to time
-                scaled_ofi = tick_ofi / Decimal(str(safe_dt))
-            else:
-                # Diffusive assumption: volume volatility scales with sqrt(time)
-                scaled_ofi = tick_ofi / Decimal(str(math.sqrt(safe_dt)))
 
-            integrated_ofi += scaled_ofi
+            scaled_ofi_rate = tick_ofi / Decimal(str(safe_dt))
+            scaled_ofi_shock = tick_ofi / Decimal(str(math.sqrt(safe_dt)))
+
+            integrated_ofi_rate += scaled_ofi_rate
+            integrated_ofi_shock += scaled_ofi_shock
         
             prev_bids = curr_bids
             prev_asks = curr_asks
 
-        return float(integrated_ofi)
+        return float(integrated_ofi_rate), float(integrated_ofi_shock)
 
     #------------------------------------------------------------------------------------------------------------------------
     # Computes the cost of liquidity (slippage) in relative basis points (bps).
@@ -1738,25 +1733,20 @@ class TkStatistics():
         alpha,
         dt,
     ):
-    
-        prev_bids = {float(p): q for p, q in prev_orderbook.bids if q}
-        curr_bids = {float(p): q for p, q in curr_orderbook.bids if q}
-        prev_asks = {float(p): q for p, q in prev_orderbook.asks if q}
-        curr_asks = {float(p): q for p, q in curr_orderbook.asks if q}
 
-        bid_executions = {}
-        ask_executions = {}
-        t0 = prev_orderbook.orderbook_ts
-        t1 = curr_orderbook.orderbook_ts
+        if dt <= 0:
+            return 0.0, 0.0
 
-        for price, quantity, timestamp, direction in last_trades.trades:
-            if t0 < timestamp <= t1:
-                price = float(price)
-                executions = bid_executions if direction == -1 else ask_executions
-                executions[price] = executions.get(price, 0) + quantity
+        prev_bids = {p: q for p, q in prev_orderbook.bids if q}
+        curr_bids = {p: q for p, q in curr_orderbook.bids if q}
+        prev_asks = {p: q for p, q in prev_orderbook.asks if q}
+        curr_asks = {p: q for p, q in curr_orderbook.asks if q}
+        bid_executions, ask_executions = last_trades.executed_volume(
+            prev_orderbook.orderbook_ts, curr_orderbook.orderbook_ts
+        )
 
         def side_rate(previous, current, executions, is_bid):
-            current_prices = sorted(current)
+            current_prices = list(reversed(current)) if is_bid else list(current)
             weighted_additions = []
 
             for price in previous.keys() | current.keys() | executions.keys():
@@ -1782,6 +1772,61 @@ class TkStatistics():
             side_rate(prev_bids, curr_bids, bid_executions, is_bid=True),
             side_rate(prev_asks, curr_asks, ask_executions, is_bid=False),
         )
+
+    #------------------------------------------------------------------------------------------------------------------------
+    # Return bid/ask absorption, then bid/ask replenishment (dimensionless).
+    # Absorption = executed / prior depth / (1 + adverse quote move in ticks).
+    # Replenishment = positive net additions at traded prices / executed.
+    # Both use exp(-alpha * prior level) weights and comparable prior prices.
+    # These are snapshot proxies; additions and cancellations can offset.
+    #------------------------------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def trade_absorption_and_replenishment(
+        prev_orderbook, curr_orderbook, last_trades, min_price_increment, alpha=0.5
+    ):
+
+        min_price_increment = float(min_price_increment)
+        if curr_orderbook.orderbook_ts <= prev_orderbook.orderbook_ts or min_price_increment <= 0:
+            return 0.0, 0.0, 0.0, 0.0
+
+        bid_executions, ask_executions = last_trades.executed_volume(
+            prev_orderbook.orderbook_ts, curr_orderbook.orderbook_ts
+        )
+
+        def side_features(previous, current, executions, is_bid):
+            previous = [(p, q) for p, q in previous if q]
+            current = [(p, q) for p, q in current if q]
+            if not previous or not current:
+                return 0.0, 0.0
+
+            quantities = dict(current)
+            depth = executed = replenished = 0.0
+            for level, (price, quantity) in enumerate(previous):
+                # A price beyond the current reported depth is unobserved, not empty.
+                outside = price < current[-1][0] if is_bid else price > current[-1][0]
+                if outside:
+                    continue
+                weight = exp(-alpha * level)
+                volume = executions.get(price, 0)
+                depth += weight * quantity
+                executed += weight * volume
+                if volume:
+                    replenished += weight * max(0, quantities.get(price, 0) - quantity + volume)
+
+            move = previous[0][0] - current[0][0] if is_bid else current[0][0] - previous[0][0]
+            adverse_ticks = max(0.0, float(move) / min_price_increment)
+            absorption = executed / depth / (1.0 + adverse_ticks) if depth else 0.0
+            replenishment = replenished / executed if executed else 0.0
+            return absorption, replenishment
+
+        bid_absorption, bid_replenishment = side_features(
+            prev_orderbook.bids, curr_orderbook.bids, bid_executions, is_bid=True
+        )
+        ask_absorption, ask_replenishment = side_features(
+            prev_orderbook.asks, curr_orderbook.asks, ask_executions, is_bid=False
+        )
+        return bid_absorption, ask_absorption, bid_replenishment, ask_replenishment
 
     #------------------------------------------------------------------------------------------------------------------------
     # Computes the trend at each position using the past `window_size` prices.
