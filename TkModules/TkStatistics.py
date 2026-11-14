@@ -654,7 +654,7 @@ class TkStatistics():
                 total_volume = total_volume + bid[1]
             for ask in orderbook.asks:
                 total_volume = total_volume + ask[1]
-            return total_volume, float(orderbook.last_price), microprice_offset, order_book_slope, bid_alpha, ask_alpha
+            return total_volume, float(orderbook.last_price), microprice_offset, order_book_slope, bid_alpha, ask_alpha, False
 
         # LOB levels
 
@@ -765,7 +765,7 @@ class TkStatistics():
             print( 'Ask alpha is NaN, others are: ', midprice, microprice_offset, order_book_slope )
             ask_alpha = 1.0
 
-        return total_volume, pivot_price, microprice_offset, order_book_slope, bid_alpha, ask_alpha
+        return total_volume, pivot_price, microprice_offset, order_book_slope, bid_alpha, ask_alpha, True
 
     #------------------------------------------------------------------------------------------------------------------------
     # For the given list of anonymized trades, the method returns distrubution of order volumes,

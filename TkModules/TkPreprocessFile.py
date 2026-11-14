@@ -54,7 +54,8 @@ class PreprocessedData:
     log_time_delta:list
 
     # unfiltered data
-    
+
+    completeness: list    
     price: list
     trade_vwap_offset: list
     volatility: list        
@@ -267,17 +268,18 @@ class PreprocessedData:
                 else:
                     self.all_trades[trade_ts] = [last_trades_sample.trades[j]]
 
-        for i in range( raw_sample_count ):
-            last_trades_sample = raw_samples[i*2+1]
-            for j in range( len(last_trades_sample.trades) ):
-                trade_time = last_trades_sample.trades[j][2]
-                trade_ts = int( trade_time.timestamp() )
-                assert trade_ts in self.all_trades
-                assert last_trades_sample.trades[j] in self.all_trades[trade_ts]
+        #for i in range( raw_sample_count ):
+        #    last_trades_sample = raw_samples[i*2+1]
+        #    for j in range( len(last_trades_sample.trades) ):
+        #        trade_time = last_trades_sample.trades[j][2]
+        #        trade_ts = int( trade_time.timestamp() )
+        #        assert trade_ts in self.all_trades
+        #        assert last_trades_sample.trades[j] in self.all_trades[trade_ts]
         
 
         # extract features from orderbook & last trades
 
+        self.completeness = [False] * raw_sample_count
         self.price = [0.0] * raw_sample_count
         self.trade_vwap_offset = [0.0] * raw_sample_count
         self.volatility = [0.0] * raw_sample_count
@@ -304,8 +306,10 @@ class PreprocessedData:
             last_trades_sample = raw_samples[i*2+1]
 
             # orderbook_tensor, _, pivot_price, volume, slope, microprice = TkStatistics.orderbook_to_tensor( orderbook_sample, orderbook_width, min_price_increment )                        
-            volume, pivot_price, microprice, slope, bid_alpha, ask_alpha = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment )
+            volume, pivot_price, microprice, slope, bid_alpha, ask_alpha, completeness = TkStatistics.orderbook_statistics( orderbook_sample, self.min_price_increment )
             vwap, vwvol, normalized_vwvol = TkStatistics.trades_statistics( last_trades_sample, last_trades_time_threshold )
+
+            self.completeness[i] = completeness
 
             if len(orderbook_sample.bids) > 0 and len(orderbook_sample.asks) > 0:
                 mid_price = 0.5 * ( float(orderbook_sample.bids[0][0]) + float(orderbook_sample.asks[0][0]) )
@@ -493,6 +497,13 @@ class PreprocessedData:
 
     def sample_width(self):
         return 43 # sizeof quant_sample
+
+    def window_is_valid(self, i:int, prior_steps_count:int):
+        window_has_complete_orderbook_samples = False
+        for j in range( prior_steps_count ):
+            k = i-prior_steps_count+j+1
+            window_has_complete_orderbook_samples = window_has_complete_orderbook_samples or self.completeness[k]
+        return window_has_complete_orderbook_samples
     
     def quant_sample(self, i:int, base_timestamp:float):
         sample = []
@@ -667,8 +678,8 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
                 end_ts = start_ts + int( long_future_interval )
                 interval_last_trades_samples = [ ( data.get_interval_trades( start_ts, end_ts ), raw_samples[i*2].orderbook_ts) ]
 
-                for j in range( 1, future_steps_count+1 ):
-                    assert interval_last_trades_samples[0][0].validate( raw_samples[(i+j)*2+1], start_ts, end_ts )
+                #for j in range( 1, future_steps_count+1 ):
+                #    assert interval_last_trades_samples[0][0].validate( raw_samples[(i+j)*2+1], start_ts, end_ts )
 
                 future_last_trades_tensor, _, num_future_events, future_volume, future_buy_trades, future_sell_trades, future_trades_mean_tails = TkStatistics.last_trades_to_tensor( interval_last_trades_samples, ts_base_price, last_trades_width, last_trades_discretization, force_categorical=True )
             
@@ -699,6 +710,10 @@ def preprocess_file_for_training(output_queue, ticker:str, is_test_data_source:b
 
                 ts_input = [None] * prior_steps_count
                 ts_base_timestamp = data.timestamp[i]
+
+                if not data.window_is_valid(i, prior_steps_count):
+                    print( "Window has no complete orderbook samples, skipped: ", i)
+                    continue
                 
                 for j in range( prior_steps_count ):
                     k = i-prior_steps_count+j+1

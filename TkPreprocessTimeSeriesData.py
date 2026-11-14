@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
         for ticker in files_by_ticker:
 
-            #if ticker[0] < 'C': #TEST
+            #if ticker != 'KROT': # TEST TEST TEST
             #    continue
 
             share = TkInstrument(client, config,  InstrumentType.INSTRUMENT_TYPE_SHARE, ticker, "TQBR")
