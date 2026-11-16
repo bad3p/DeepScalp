@@ -253,7 +253,7 @@ class PreprocessedData:
         # Log-scaled time delta for immediate micro-burst detection
         self.log_time_delta = [math.log(td) for td in self.time_delta]
 
-        # container of all trades             
+        # container of all trades
 
         self.all_trades = {}
 
@@ -275,7 +275,16 @@ class PreprocessedData:
         #        trade_ts = int( trade_time.timestamp() )
         #        assert trade_ts in self.all_trades
         #        assert last_trades_sample.trades[j] in self.all_trades[trade_ts]
-        
+
+        # resample trades to the orderbook timestamps (to avoid misalignment of features)
+
+        for i in range( raw_sample_count ):
+            end_ts = int( raw_samples[i*2].orderbook_ts.timestamp() )
+            if i > 0:                
+                start_ts = int( raw_samples[(i-1)*2].orderbook_ts.timestamp() )
+            else:
+                start_ts = end_ts - 120
+            raw_samples[i*2+1] = self.get_interval_trades( start_ts, end_ts )
 
         # extract features from orderbook & last trades
 
