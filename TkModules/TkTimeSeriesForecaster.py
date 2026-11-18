@@ -590,6 +590,8 @@ class TkTimeSeriesForecaster(torch.nn.Module):
         time_delta = torch.exp( log_time_delta )
         log_time_delta = log_time_delta - 4.605 # TODO: configure; 4.605 = ln(100) = ln(max_observed_time)
 
+        age = time_delta.flip(1).cumsum(1).flip(1) - time_delta
+
         self._input_slice_tensors = []
         self._smm_output_tensors = []
 
@@ -626,7 +628,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, log_time_delta )
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, age )
         merged = fused
 
         # monitoring feedback
