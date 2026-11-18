@@ -70,7 +70,7 @@ class MultiHeadFusionGRF(torch.nn.Module):
         self.norm = torch.nn.LayerNorm(embed_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, inputs, pos_encoding=None, log_time_delta=None):
+    def forward(self, inputs, pos_encoding=None, time_distance=None):
 
         # Project to shared embedding (Pure Data)
         projected = []
@@ -100,12 +100,9 @@ class MultiHeadFusionGRF(torch.nn.Module):
 
         # Continuous-Time ALiBi Attention Mask
         attn_mask = None
-        if log_time_delta is not None:
+        if time_distance is not None:
             B = x.size(0)
             N = self.num_sources
-            
-            # Convert log time delta back to continuous temporal distance
-            time_distance = torch.exp(log_time_delta) # (B, T, 1)
             
             # Expand to match concatenated N sources: (B, N*T)
             time_distance = time_distance.repeat(1, N, 1).squeeze(-1)
