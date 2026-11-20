@@ -625,7 +625,7 @@ class TkTimeSeriesForecaster(torch.nn.Module):
 
         # no fusion case
         # merged = torch.cat( self._smm_output_tensors, dim=-1)
-        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, age )
+        fused, source_attn, gates = self._fusion(self._smm_output_tensors, pos_emb, age / 100.0 ) # age / 100.0 --> age scaling is mandatory for ALiBi so that it could operate with different slopes in a window
         merged = fused
 
         # monitoring feedback
