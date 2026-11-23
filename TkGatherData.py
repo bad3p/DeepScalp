@@ -118,18 +118,18 @@ if __name__ ==  '__main__':
     orderbook_depth = int(config['GatherData']['OrderBookDepth'])
     last_trades_period_in_minutes = int(config['GatherData']['LastTradesPeriodInMinutes'])
     max_iteration_time = int(config['GatherData']['MaxIterationTime'])
-    ignore_tickers = json.loads(config['GatherData']['IgnoreTickers'])
+    allowed_tickers = json.loads(config['GatherData']['Tickers'])
     regularize_gathering = config['GatherData']['RegularizeGathering'] == "True"
     regular_iteration_time_mean = float(config['GatherData']['RegularIterationTimeMean'])
     regular_iteration_time_std_dev = float(config['GatherData']['RegularIterationTimeStdDev'])    
     
     def init_gather_data_queue_callback():
         print( 'Initializing gather data queue...' )
-        global ignore_tickers
+        global allowed_tickers
         TOKEN = os.environ["TK_TOKEN"]
         with Client(TOKEN, target=INVEST_GRPC_API) as client:        
             tickers = TkInstrument.get_instrument_tickers(client, InstrumentType.INSTRUMENT_TYPE_SHARE, "TQBR")
-            tickers = [ticker for ticker in tickers if ticker not in ignore_tickers]
+            tickers = [ticker for ticker in tickers if ticker in allowed_tickers]
             return tickers
 
     gather_data_queue_path = join( data_path, gather_data_queue_filename )
@@ -139,7 +139,7 @@ if __name__ ==  '__main__':
 
         ticker = queue.pop()
 
-        if not ( ticker in ignore_tickers ):
+        if ( ticker in allowed_tickers ):
 
             if use_mpc:
 

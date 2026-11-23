@@ -53,12 +53,13 @@ def date_from_filename(filename:str): # TICKER_Month_Day_Year_Anchor.obs
 def ticker_from_filename(filename:str):
     return filename[ 0: filename.find("_") ]
 
-def group_by_ticker(filenames:list):
+def group_by_ticker(filenames:list, allowed_tickers:list):
     result = defaultdict(list)
     for filename in filenames:
         ticker = ticker_from_filename(filename)
-        date = date_from_filename(filename)
-        result[ticker].append( (date, filename) )
+        if ticker in allowed_tickers:
+            date = date_from_filename(filename)
+            result[ticker].append( (date, filename) )
 
     for key in result:
         files = result[key]
@@ -78,6 +79,7 @@ if __name__ == "__main__":
     config = configparser.ConfigParser()
     config.read( 'TkConfig.ini' )
 
+    allowed_tickers = json.loads(config['GatherData']['Tickers'])
     data_path = config['Paths']['DataPath']
     time_series_index_filename = config['Paths']['TimeSeriesIndexFileName']
     time_series_training_data_filename = config['Paths']['TimeSeriesTrainingDataFileName']
@@ -100,7 +102,7 @@ if __name__ == "__main__":
     data_files = [filename for filename in listdir(data_path) if (data_extension in filename) and isfile(join(data_path, filename))]
     print( 'Data files found:', len(data_files) )
 
-    files_by_ticker = group_by_ticker(data_files)
+    files_by_ticker = group_by_ticker(data_files, allowed_tickers)
     print( 'Tickers found:', len(files_by_ticker) )
 
     with Client(TOKEN, target=INVEST_GRPC_API) as client:
